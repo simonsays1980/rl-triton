@@ -1,5 +1,7 @@
 import time
 
+# numpy is used intentionally: RLlib v2's compute_value_targets runs on CPU with NumPy,
+# so rllib_gae mirrors that faithfully rather than porting it to PyTorch.
 import numpy as np
 import pytest
 import torch
@@ -27,6 +29,21 @@ def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
         gae = deltas[:, t] + decays[:, t] * gae
         adv[:, t] = gae
     return adv
+
+
+def rllib_gae_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
+    """
+    Realistic RLlib-user adoption path: NumPy arrays in, NumPy arrays out.
+
+    Mirrors what an RLlib user would do to swap in the Triton kernel without
+    changing the surrounding pipeline — episode data stays as NumPy throughout,
+    conversion to/from GPU tensor is part of the measured cost.
+    """
+    deltas_gpu = torch.as_tensor(deltas_np, dtype=torch.float32, device="cuda")
+    decays_gpu = torch.as_tensor(decays_np, dtype=torch.float32, device="cuda")
+    result = compute_gae_triton(deltas_gpu, decays_gpu)
+    torch.cuda.synchronize()
+    return result.cpu().numpy()
 
 
 def rllib_gae(deltas: torch.Tensor, decays: torch.Tensor) -> np.ndarray:
@@ -185,15 +202,16 @@ BENCH_CONFIGS = [
 @pytest.mark.slow
 def test_gae_performance():
     """
-    Sweep over (num_envs, seq_len) configs comparing:
-      - Triton kernel           (GPU, fair baseline for the assertion)
-      - torch.compile loop      (GPU, strongest realistic PyTorch baseline)
-      - RLlib v2 compute_value_targets  (CPU/NumPy, labelled separately)
-      - Raw Python loop         (GPU, context only — not asserted against)
+    Sweep over (num_envs, seq_len) configs comparing four implementations:
 
-    The speedup assertion is Triton vs torch.compile only.
-    RLlib is CPU-bound and shown purely for context of what practitioners
-    typically run today.
+      triton(gpu)  — tensors already on GPU, no transfer cost (best case).
+      compiled     — torch.compile on the GPU loop (strongest PyTorch baseline).
+      np→triton→np — NumPy in, Triton kernel, NumPy out; the realistic adoption
+                     path for an RLlib user whose episode data lives in NumPy.
+      rllib(cpu)   — pure NumPy backward loop on CPU, what RLlib ships today.
+
+    Assertion: Triton must be >=1.5x faster than torch.compile (GPU vs GPU).
+    The np→triton→np column answers whether transfer overhead erases the gain.
     """
     # torch.compile sees the loop structure and fuses the sequential CUDA ops —
     # this is the strongest realistic PyTorch baseline without a custom kernel.
@@ -209,39 +227,48 @@ def test_gae_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'compiled':>10} {'rllib(cpu)':>12} {'py-loop':>10} "
-        f"{'vs compile':>12} {'vs rllib':>10}"
+        f"{'triton(gpu)':>12} {'compiled':>10} {'np→triton→np':>14} {'rllib(cpu)':>12} "
+        f"{'vs compile':>12} {'vs np→tri→np':>14} {'vs rllib':>10}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups = []
+    all_speedups_compile = []
+    all_speedups_e2e = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        deltas = torch.randn(num_envs, seq_len, device="cuda")
-        decays = torch.rand(num_envs, seq_len, device="cuda") * 0.99
+        deltas_gpu = torch.randn(num_envs, seq_len, device="cuda")
+        decays_gpu = torch.rand(num_envs, seq_len, device="cuda") * 0.99
+        # NumPy copies — what RLlib hands to the GAE function from SingleAgentEpisode.
+        deltas_np = deltas_gpu.cpu().numpy()
+        decays_np = decays_gpu.cpu().numpy()
 
-        triton_ms   = _bench_gpu(compute_gae_triton, deltas, decays)
-        compiled_ms = _bench_gpu(compiled_gae, deltas, decays)
-        rllib_ms    = _bench_cpu(rllib_gae, deltas, decays)
-        loop_ms     = _bench_gpu(reference_gae, deltas, decays, n_warmup=3, n_iter=10)
+        triton_ms   = _bench_gpu(compute_gae_triton, deltas_gpu, decays_gpu)
+        compiled_ms = _bench_gpu(compiled_gae, deltas_gpu, decays_gpu)
+        e2e_ms      = _bench_cpu(rllib_gae_triton, deltas_np, decays_np)
+        rllib_ms    = _bench_cpu(rllib_gae, deltas_gpu, decays_gpu)
 
         speedup_vs_compile = compiled_ms / triton_ms
+        speedup_vs_e2e     = e2e_ms / triton_ms
         speedup_vs_rllib   = rllib_ms / triton_ms
-        all_speedups.append(speedup_vs_compile)
+        all_speedups_compile.append(speedup_vs_compile)
+        all_speedups_e2e.append(rllib_ms / e2e_ms)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {compiled_ms:>9.3f}ms "
-            f"{rllib_ms:>10.3f}ms {loop_ms:>9.3f}ms "
-            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_rllib:>8.1f}x"
+            f"{triton_ms:>11.3f}ms {compiled_ms:>9.3f}ms "
+            f"{e2e_ms:>13.3f}ms {rllib_ms:>11.3f}ms "
+            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>12.1f}x  {speedup_vs_rllib:>8.1f}x"
         )
 
     print(
-        f"\nNote: rllib column is CPU/NumPy — different device, shown for context only."
+        "\nTriton(gpu)  : tensors already on GPU — best case, no transfer cost."
+        "\nnp→triton→np : NumPy in, NumPy out — realistic RLlib adoption path."
+        "\nrllib(cpu)   : pure NumPy backward loop on CPU — what RLlib ships today."
+        "\ncompiled     : torch.compile on the GPU loop — strongest PyTorch baseline."
     )
 
-    min_speedup = min(all_speedups)
+    min_speedup = min(all_speedups_compile)
     assert min_speedup >= 1.5, (
         f"Expected >=1.5x speedup over torch.compile across all configs, "
         f"worst was {min_speedup:.2f}x"

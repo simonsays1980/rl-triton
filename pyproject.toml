@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rl-triton"
+version = "0.1.0"
+description = "High-performance Triton GPU kernels for RL computations"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "triton>=2.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-benchmark"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

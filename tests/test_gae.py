@@ -244,9 +244,12 @@ def test_gae_performance():
         decays_np = decays_gpu.cpu().numpy()
 
         triton_ms   = _bench_gpu(compute_gae_triton, deltas_gpu, decays_gpu)
-        compiled_ms = _bench_gpu(compiled_gae, deltas_gpu, decays_gpu)
+        # torch.compile still runs a sequential Python loop per timestep, so the
+        # CPU dispatch overhead is real — wall-clock time captures it, CUDA events
+        # would only measure the GPU portion and undercount the true cost.
+        compiled_ms = _bench_cpu(compiled_gae, deltas_gpu, decays_gpu)
         e2e_ms      = _bench_cpu(rllib_gae_triton, deltas_np, decays_np)
-        rllib_ms    = _bench_cpu(rllib_gae, deltas_gpu, decays_gpu)
+        rllib_ms    = _bench_cpu(rllib_gae, deltas_np, decays_np)
 
         speedup_vs_compile = compiled_ms / triton_ms
         speedup_vs_e2e     = e2e_ms / triton_ms

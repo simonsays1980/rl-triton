@@ -46,35 +46,20 @@ def rllib_gae_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray
     return result.cpu().numpy()
 
 
-def rllib_gae(deltas: torch.Tensor, decays: torch.Tensor) -> np.ndarray:
+def rllib_gae(deltas: np.ndarray, decays: np.ndarray) -> np.ndarray:
     """
     RLlib v2 compute_value_targets adapted to our (deltas, decays) interface.
 
-    RLlib operates on a flat [T] sequence per environment and uses NumPy on CPU.
-    To match our batched [num_envs, seq_len] interface we loop over environments,
-    which is exactly what RLlib does in practice (one episode at a time).
-
-    Mapping from our inputs:
-      delta[t]  = r[t] + gamma * V[t+1] - V[t]          (pre-computed TD error)
-      decay[t]  = gamma * lambda * (1 - terminated[t])
-
-    We factor out gamma*lambda from decay to recover the RLlib inputs:
-      gamma * lambda  = decay.max()  (constant across non-terminal steps)
-      terminated[t]   = 1 if decay[t] == 0 else 0
-
-    Because we only have deltas (not raw rewards + vf_preds separately), we pass
-    the delta directly as the "intermediate" value and set gamma*(1-lambda)=0,
-    which collapses compute_value_targets to the plain GAE backward scan.
-    No truncation resets are applied (all episodes are treated as terminated).
+    Accepts NumPy arrays, mirroring what RLlib passes from SingleAgentEpisode.
+    Loops over environments, which is exactly what RLlib does in practice
+    (one episode at a time), and runs the backward scan in pure NumPy on CPU.
     """
     num_envs, seq_len = deltas.shape
-    deltas_np = deltas.cpu().numpy()
-    decays_np = decays.cpu().numpy()
     results = np.empty((num_envs, seq_len), dtype=np.float32)
 
     for i in range(num_envs):
-        d = deltas_np[i]   # [seq_len]
-        c = decays_np[i]   # [seq_len]
+        d = deltas[i]
+        c = decays[i]
 
         # Recover terminated mask: wherever decay==0, the episode ended.
         terminateds = (c == 0.0).astype(np.float32)

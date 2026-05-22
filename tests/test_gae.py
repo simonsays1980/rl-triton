@@ -11,7 +11,8 @@ cuda_only = pytest.mark.skipif(
 
 
 def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
-    """Pure-PyTorch backward scan — ground truth for correctness tests."""
+    """Pure-PyTorch backward scan — ground truth for correctness tests only.
+    Not used as a benchmark: Python loop overhead dominates GPU compute time."""
     T = deltas.shape[1]
     adv = torch.zeros_like(deltas)
     gae = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)
@@ -19,6 +20,11 @@ def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
         gae = deltas[:, t] + decays[:, t] * gae
         adv[:, t] = gae
     return adv
+
+
+# torch.compile sees the loop structure and fuses the sequential CUDA ops —
+# this is the strongest realistic PyTorch baseline without a custom kernel.
+compiled_gae = torch.compile(reference_gae)
 
 
 # ---------------------------------------------------------------------------
@@ -83,60 +89,57 @@ def test_gae_non_contiguous_input():
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _bench(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
+    for _ in range(n_warmup):
+        fn(*args)
+    torch.cuda.synchronize()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(n_iter):
+        fn(*args)
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / n_iter
+
+
+# ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------
 
-def _bench_triton(num_envs: int, seq_len: int, n_warmup: int = 25, n_iter: int = 100) -> float:
-    deltas = torch.randn(num_envs, seq_len, device="cuda")
-    decays = torch.rand(num_envs, seq_len, device="cuda") * 0.99
-
-    for _ in range(n_warmup):
-        compute_gae_triton(deltas, decays)
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        compute_gae_triton(deltas, decays)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
-
-
-def _bench_reference(num_envs: int, seq_len: int, n_warmup: int = 5, n_iter: int = 20) -> float:
-    deltas = torch.randn(num_envs, seq_len, device="cuda")
-    decays = torch.rand(num_envs, seq_len, device="cuda") * 0.99
-
-    for _ in range(n_warmup):
-        reference_gae(deltas, decays)
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        reference_gae(deltas, decays)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
-
-
 @cuda_only
 def test_gae_performance():
-    """Triton kernel must be at least 2x faster than the reference PyTorch loop."""
+    """
+    Triton kernel vs torch.compile(reference_gae) — the strongest realistic
+    PyTorch baseline. The raw Python loop is shown for context only and is not
+    used in the speedup assertion.
+    """
     num_envs, seq_len = 512, 2048
 
-    triton_ms = _bench_triton(num_envs, seq_len)
-    ref_ms = _bench_reference(num_envs, seq_len)
-    speedup = ref_ms / triton_ms
+    deltas = torch.randn(num_envs, seq_len, device="cuda")
+    decays = torch.rand(num_envs, seq_len, device="cuda") * 0.99
+
+    # Trigger torch.compile's first-run tracing outside the timed region.
+    compiled_gae(deltas, decays)
+    torch.cuda.synchronize()
+
+    triton_ms  = _bench(compute_gae_triton, deltas, decays)
+    compiled_ms = _bench(compiled_gae, deltas, decays)
+    loop_ms    = _bench(reference_gae, deltas, decays, n_warmup=5, n_iter=20)
+
+    speedup = compiled_ms / triton_ms
 
     print(f"\nGAE benchmark — num_envs={num_envs}, seq_len={seq_len}")
-    print(f"  Triton : {triton_ms:.3f} ms/iter")
-    print(f"  PyTorch: {ref_ms:.3f} ms/iter")
-    print(f"  Speedup: {speedup:.1f}x")
+    print(f"  Triton             : {triton_ms:.3f} ms/iter")
+    print(f"  torch.compile loop : {compiled_ms:.3f} ms/iter  (fair baseline)")
+    print(f"  Python loop        : {loop_ms:.3f} ms/iter  (context only)")
+    print(f"  Speedup vs compile : {speedup:.1f}x")
 
-    assert speedup >= 2.0, (
-        f"Expected >=2x speedup over PyTorch reference, got {speedup:.2f}x "
-        f"(Triton {triton_ms:.3f} ms vs PyTorch {ref_ms:.3f} ms)"
+    assert speedup >= 1.5, (
+        f"Expected >=1.5x speedup over torch.compile baseline, got {speedup:.2f}x "
+        f"(Triton {triton_ms:.3f} ms vs compiled {compiled_ms:.3f} ms)"
     )

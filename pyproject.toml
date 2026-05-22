@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-benchmark"]
+dev = ["pytest", "pytest-benchmark", "numpy"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

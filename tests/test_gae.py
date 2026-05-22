@@ -29,11 +29,6 @@ def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
     return adv
 
 
-# torch.compile sees the loop structure and fuses the sequential CUDA ops —
-# this is the strongest realistic PyTorch baseline without a custom kernel.
-compiled_gae = torch.compile(reference_gae)
-
-
 def rllib_gae(deltas: torch.Tensor, decays: torch.Tensor) -> np.ndarray:
     """
     RLlib v2 compute_value_targets adapted to our (deltas, decays) interface.
@@ -187,6 +182,7 @@ BENCH_CONFIGS = [
 
 
 @cuda_only
+@pytest.mark.slow
 def test_gae_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
@@ -199,6 +195,12 @@ def test_gae_performance():
     RLlib is CPU-bound and shown purely for context of what practitioners
     typically run today.
     """
+    # torch.compile sees the loop structure and fuses the sequential CUDA ops —
+    # this is the strongest realistic PyTorch baseline without a custom kernel.
+    # Defined here (not module-level) to avoid triggering JIT compilation on
+    # every test session, even when this test is not selected.
+    compiled_gae = torch.compile(reference_gae)
+
     # Trigger torch.compile tracing once outside the timed region.
     _d = torch.randn(64, 512, device="cuda")
     _c = torch.rand(64, 512, device="cuda") * 0.99

@@ -39,8 +39,8 @@ def rllib_gae_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray
     changing the surrounding pipeline — episode data stays as NumPy throughout,
     conversion to/from GPU tensor is part of the measured cost.
     """
-    deltas_gpu = torch.as_tensor(deltas_np, dtype=torch.float32, device="cuda")
-    decays_gpu = torch.as_tensor(decays_np, dtype=torch.float32, device="cuda")
+    deltas_gpu = torch.from_numpy(deltas_np).to(device="cuda", dtype=torch.float32)
+    decays_gpu = torch.from_numpy(decays_np).to(device="cuda", dtype=torch.float32)
     result = compute_gae_triton(deltas_gpu, decays_gpu)
     torch.cuda.synchronize()
     return result.cpu().numpy()

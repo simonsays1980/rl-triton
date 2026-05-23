@@ -79,6 +79,51 @@ def rllib_gae(deltas: np.ndarray, decays: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Ground-truth value tests
+# ---------------------------------------------------------------------------
+#
+# These tests verify the kernel against values computed by hand from the
+# recurrence A[t] = delta[t] + decay[t] * A[t+1], A[T] = 0.
+# They catch bugs that would be invisible to reference_gae comparisons —
+# e.g. a wrong scan direction that both implementations share.
+
+@cuda_only
+def test_gae_known_values_single_env():
+    # Hand-computed for seq_len=3:
+    #   A[2] = 3.0 + 0.7 * 0.0 = 3.0
+    #   A[1] = 2.0 + 0.8 * 3.0 = 4.4
+    #   A[0] = 1.0 + 0.9 * 4.4 = 4.96
+    deltas = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    decays = torch.tensor([[0.9, 0.8, 0.7]], device="cuda")
+    expected = torch.tensor([[4.96, 4.4, 3.0]], device="cuda")
+    torch.testing.assert_close(compute_gae_triton(deltas, decays), expected, atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_gae_known_values_episode_boundary():
+    # decay=0 at t=1 simulates an episode boundary: the sequence splits into
+    # two independent episodes [t=0] and [t=1, t=2].
+    #   A[2] = 3.0 + 0.9 * 0.0 = 3.0
+    #   A[1] = 2.0 + 0.0 * 3.0 = 2.0   <- boundary resets carry
+    #   A[0] = 1.0 + 0.9 * 2.0 = 2.8   <- but A[0] still sees A[1]=2.0 via decay[0]
+    deltas = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    decays = torch.tensor([[0.9, 0.0, 0.9]], device="cuda")
+    expected = torch.tensor([[2.8, 2.0, 3.0]], device="cuda")
+    torch.testing.assert_close(compute_gae_triton(deltas, decays), expected, atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_gae_known_values_batch():
+    # Two environments with different values — verifies batch indexing.
+    # Env 0: A[1]=2.0, A[0]=1.0+0.5*2.0=2.0
+    # Env 1: A[1]=4.0, A[0]=3.0+0.5*4.0=5.0
+    deltas = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda")
+    decays = torch.tensor([[0.5, 0.9], [0.5, 0.9]], device="cuda")
+    expected = torch.tensor([[2.0, 2.0], [5.0, 4.0]], device="cuda")
+    torch.testing.assert_close(compute_gae_triton(deltas, decays), expected, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
 # Correctness
 # ---------------------------------------------------------------------------
 
@@ -170,6 +215,20 @@ def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20) -> float:
     return (time.perf_counter() - t0) / n_iter * 1000.0
 
 
+def _n_iter_for_seq_len(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
+    """Scale CPU benchmark iterations to bound runtime.
+
+    torch.compile and the NumPy loop both dispatch O(seq_len * num_envs) Python
+    calls per iteration.  Target ~500k total to keep each config under ~10s on
+    a mid-range GPU.
+    """
+    target = 500_000
+    work = seq_len * num_envs
+    n_warmup = max(1, min(5,  target // (2 * work)))
+    n_iter   = max(1, min(20, target // work))
+    return n_warmup, n_iter
+
+
 # ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------
@@ -228,13 +287,15 @@ def test_gae_performance():
         deltas_np = deltas_gpu.cpu().numpy()
         decays_np = decays_gpu.cpu().numpy()
 
+        n_warmup, n_iter = _n_iter_for_seq_len(seq_len, num_envs)
+
         triton_ms   = _bench_gpu(compute_gae_triton, deltas_gpu, decays_gpu)
         # torch.compile still runs a sequential Python loop per timestep, so the
         # CPU dispatch overhead is real — wall-clock time captures it, CUDA events
         # would only measure the GPU portion and undercount the true cost.
-        compiled_ms = _bench_cpu(compiled_gae, deltas_gpu, decays_gpu)
-        e2e_ms      = _bench_cpu(rllib_gae_triton, deltas_np, decays_np)
-        rllib_ms    = _bench_cpu(rllib_gae, deltas_np, decays_np)
+        compiled_ms = _bench_cpu(compiled_gae, deltas_gpu, decays_gpu, n_warmup=n_warmup, n_iter=n_iter)
+        e2e_ms      = _bench_cpu(rllib_gae_triton, deltas_np, decays_np, n_warmup=n_warmup, n_iter=n_iter)
+        rllib_ms    = _bench_cpu(rllib_gae, deltas_np, decays_np, n_warmup=n_warmup, n_iter=n_iter)
 
         speedup_vs_compile = compiled_ms / triton_ms
         speedup_vs_e2e     = e2e_ms / triton_ms

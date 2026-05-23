@@ -2,6 +2,11 @@ import torch
 import triton
 
 from rl_triton.kernels.gae import gae_scan_kernel
+from rl_triton.ops.gae_chunked import compute_gae_chunked
+
+# tl.associative_scan requires BLOCK_SIZE <= 2^17.  Above this the flat kernel
+# cannot launch, so we fall back to the chunked kernel automatically.
+_FLAT_MAX_SEQ_LEN = 131072
 
 
 def compute_gae_triton(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
@@ -9,6 +14,10 @@ def compute_gae_triton(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tens
     Compute Generalized Advantage Estimation via a backward associative scan.
 
     Recurrence: A[t] = delta[t] + decay[t] * A[t+1],  A[T] = 0.
+
+    Dispatches to the flat single-block kernel for seq_len <= 131072, and falls
+    back to the chunked kernel for longer sequences — the caller never needs to
+    choose.
 
     Args:
         deltas: TD residuals, shape [num_envs, seq_len], float32, CUDA, contiguous.
@@ -26,6 +35,10 @@ def compute_gae_triton(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tens
     decays = decays.contiguous()
 
     num_envs, seq_len = deltas.shape
+
+    if seq_len > _FLAT_MAX_SEQ_LEN:
+        return compute_gae_chunked(deltas, decays)
+
     advantages = torch.empty_like(deltas)
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
 

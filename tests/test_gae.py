@@ -19,12 +19,18 @@ cuda_only = pytest.mark.skipif(
 # Reference implementations
 # ---------------------------------------------------------------------------
 
-def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
+def reference_gae(
+    deltas: torch.Tensor,
+    decays: torch.Tensor,
+    bootstrap_values: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Pure-PyTorch backward scan — ground truth for correctness tests only.
     Not used as a benchmark: Python loop overhead dominates GPU compute time."""
     T = deltas.shape[1]
     adv = torch.zeros_like(deltas)
     gae = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)
+    if bootstrap_values is not None:
+        gae = bootstrap_values.clone()
     for t in reversed(range(T)):
         gae = deltas[:, t] + decays[:, t] * gae
         adv[:, t] = gae
@@ -83,13 +89,13 @@ def rllib_gae(deltas: np.ndarray, decays: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 #
 # These tests verify the kernel against values computed by hand from the
-# recurrence A[t] = delta[t] + decay[t] * A[t+1], A[T] = 0.
+# recurrence A[t] = delta[t] + decay[t] * A[t+1], A[T] = bootstrap.
 # They catch bugs that would be invisible to reference_gae comparisons —
 # e.g. a wrong scan direction that both implementations share.
 
 @cuda_only
 def test_gae_known_values_single_env():
-    # Hand-computed for seq_len=3:
+    # Hand-computed for seq_len=3, terminated (bootstrap=0):
     #   A[2] = 3.0 + 0.7 * 0.0 = 3.0
     #   A[1] = 2.0 + 0.8 * 3.0 = 4.4
     #   A[0] = 1.0 + 0.9 * 4.4 = 4.96
@@ -100,12 +106,42 @@ def test_gae_known_values_single_env():
 
 
 @cuda_only
+def test_gae_known_values_truncated():
+    # Hand-computed for seq_len=3, truncated (bootstrap=2.0):
+    #   A[2] = 3.0 + 0.7 * 2.0 = 4.4
+    #   A[1] = 2.0 + 0.8 * 4.4 = 5.52
+    #   A[0] = 1.0 + 0.9 * 5.52 = 5.968
+    deltas = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    decays = torch.tensor([[0.9, 0.8, 0.7]], device="cuda")
+    bootstrap = torch.tensor([2.0], device="cuda")
+    expected = torch.tensor([[5.968, 5.52, 4.4]], device="cuda")
+    torch.testing.assert_close(
+        compute_gae_triton(deltas, decays, bootstrap_values=bootstrap),
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
+def test_gae_known_values_mixed_termination():
+    # Two environments: env 0 terminated (bootstrap=0), env 1 truncated (bootstrap=5.0).
+    # Env 0: A[1]=2.0+0.9*0.0=2.0,  A[0]=1.0+0.5*2.0=2.0
+    # Env 1: A[1]=2.0+0.9*5.0=6.5,  A[0]=1.0+0.5*6.5=4.25
+    deltas    = torch.tensor([[1.0, 2.0], [1.0, 2.0]], device="cuda")
+    decays    = torch.tensor([[0.5, 0.9], [0.5, 0.9]], device="cuda")
+    bootstrap = torch.tensor([0.0, 5.0], device="cuda")
+    expected  = torch.tensor([[2.0, 2.0], [4.25, 6.5]], device="cuda")
+    torch.testing.assert_close(
+        compute_gae_triton(deltas, decays, bootstrap_values=bootstrap),
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
 def test_gae_known_values_episode_boundary():
-    # decay=0 at t=1 simulates an episode boundary: the sequence splits into
-    # two independent episodes [t=0] and [t=1, t=2].
+    # decay=0 at t=1 simulates an episode boundary within the trajectory.
     #   A[2] = 3.0 + 0.9 * 0.0 = 3.0
     #   A[1] = 2.0 + 0.0 * 3.0 = 2.0   <- boundary resets carry
-    #   A[0] = 1.0 + 0.9 * 2.0 = 2.8   <- but A[0] still sees A[1]=2.0 via decay[0]
+    #   A[0] = 1.0 + 0.9 * 2.0 = 2.8
     deltas = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     decays = torch.tensor([[0.9, 0.0, 0.9]], device="cuda")
     expected = torch.tensor([[2.8, 2.0, 3.0]], device="cuda")

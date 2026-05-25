@@ -13,10 +13,16 @@ cuda_only = pytest.mark.skipif(
 )
 
 
-def reference_gae(deltas: torch.Tensor, decays: torch.Tensor) -> torch.Tensor:
+def reference_gae(
+    deltas: torch.Tensor,
+    decays: torch.Tensor,
+    bootstrap_values: torch.Tensor | None = None,
+) -> torch.Tensor:
     T = deltas.shape[1]
     adv = torch.zeros_like(deltas)
     gae = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)
+    if bootstrap_values is not None:
+        gae = bootstrap_values.clone()
     for t in reversed(range(T)):
         gae = deltas[:, t] + decays[:, t] * gae
         adv[:, t] = gae
@@ -44,6 +50,25 @@ def test_chunked_correctness(num_envs, seq_len):
 
     expected = reference_gae(deltas, decays)
     actual = compute_gae_chunked(deltas, decays)
+
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+@pytest.mark.parametrize("num_envs,seq_len", [
+    (4,   1024),
+    (8,   2048),
+    (32,  3000),
+])
+def test_chunked_bootstrap_truncated(num_envs, seq_len):
+    """Truncated episodes: bootstrap propagates V(s_T) across all chunk boundaries."""
+    torch.manual_seed(5)
+    deltas    = torch.randn(num_envs, seq_len, device="cuda")
+    decays    = torch.rand(num_envs, seq_len, device="cuda") * 0.99
+    bootstrap = torch.rand(num_envs, device="cuda") * 2.0
+
+    expected = reference_gae(deltas, decays, bootstrap_values=bootstrap)
+    actual   = compute_gae_chunked(deltas, decays, bootstrap_values=bootstrap)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 

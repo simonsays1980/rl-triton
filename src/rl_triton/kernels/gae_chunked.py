@@ -7,12 +7,14 @@ from rl_triton.kernels.gae import _combine
 @triton.jit
 def chunked_gae_kernel(
     delta_ptr, decay_ptr, adv_ptr,
+    bootstrap_ptr,
     seq_len, stride_env,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Chunked backward scan for GAE: A[t] = delta[t] + decay[t] * A[t+1], A[T] = 0.
+    Chunked backward scan for GAE: A[t] = delta[t] + decay[t] * A[t+1], A[T] = bootstrap.
 
+    bootstrap is 0 for terminated episodes and V(s_T) for truncated episodes.
     Splits the sequence into fixed-size chunks and processes them right-to-left,
     carrying the boundary value across chunk boundaries.  This removes the
     BLOCK_SIZE >= seq_len constraint of the flat kernel (which is limited to
@@ -27,17 +29,20 @@ def chunked_gae_kernel(
                        and decay_prod is the cumulative product of decays from each
                        position to the chunk boundary.
 
-    Only the leftmost (last-processed) chunk may be partial; all intermediate
-    chunks are full, so carry extraction from BLOCK_SIZE-1 is always valid for
-    chunks that feed a successor.
+    The initial carry is the per-environment bootstrap value A[T], loaded from
+    bootstrap_ptr.  Only the leftmost (last-processed) chunk may be partial; all
+    intermediate chunks are full, so carry extraction from BLOCK_SIZE-1 is always
+    valid for chunks that feed a successor.
 
     Args:
-        delta_ptr:  Pointer to TD residuals [num_envs, seq_len], float32.
-        decay_ptr:  Pointer to per-step decay factors, same shape.
-        adv_ptr:    Pointer to output advantages, same shape.
-        seq_len:    Number of timesteps (runtime value).
-        stride_env: Row stride in elements (== seq_len for contiguous tensors).
-        BLOCK_SIZE: Chunk size, must be a power of 2.  Need not be >= seq_len.
+        delta_ptr:     Pointer to TD residuals [num_envs, seq_len], float32.
+        decay_ptr:     Pointer to per-step decay factors, same shape.
+        adv_ptr:       Pointer to output advantages, same shape.
+        bootstrap_ptr: Pointer to bootstrap values [num_envs], float32.
+                       Pass zeros for terminated episodes.
+        seq_len:       Number of timesteps (runtime value).
+        stride_env:    Row stride in elements (== seq_len for contiguous tensors).
+        BLOCK_SIZE:    Chunk size, must be a power of 2.  Need not be >= seq_len.
     """
     env_idx = tl.program_id(0)
     base = env_idx * stride_env
@@ -45,8 +50,8 @@ def chunked_gae_kernel(
     num_chunks = tl.cdiv(seq_len, BLOCK_SIZE)
     offsets = tl.arange(0, BLOCK_SIZE)
 
-    # A[T] = 0; updated at each chunk boundary as we sweep right-to-left.
-    carry_adv = 0.0
+    # Seed the rightmost boundary with the per-environment bootstrap value.
+    carry_adv = tl.load(bootstrap_ptr + env_idx)
 
     for chunk_idx in range(num_chunks):
         # Map chunk_idx=0 to the rightmost chunk (latest in time).

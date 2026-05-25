@@ -426,11 +426,17 @@ def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20) -> float:
     return (time.perf_counter() - t0) / n_iter * 1000.0
 
 
-def _n_iter_for_seq_len(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
-    target = 500_000
+def _n_iter_gpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
+    elements = seq_len * num_envs
+    n_warmup = max(5,  min(25,  5_000_000 // elements))
+    n_iter   = max(20, min(200, 20_000_000 // elements))
+    return n_warmup, n_iter
+
+
+def _n_iter_cpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
     work = seq_len * num_envs
-    n_warmup = max(1, min(5,  target // (2 * work)))
-    n_iter   = max(1, min(20, target // work))
+    n_warmup = max(1, min(5,  500_000 // (2 * work)))
+    n_iter   = max(1, min(20, 500_000 // work))
     return n_warmup, n_iter
 
 
@@ -481,12 +487,13 @@ def test_vtrace_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        n_warmup, n_iter = _n_iter_for_seq_len(seq_len, num_envs)
+        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        cpu_warmup, cpu_iter = _n_iter_cpu(seq_len, num_envs)
 
-        triton_ms    = _bench_gpu(compute_vtrace_triton, *args_gpu, gamma=0.99)
-        compiled_ms  = _bench_cpu(compiled_vtrace, *args_gpu, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        rllib_ms     = _bench_cpu(rllib_vtrace, *args_gpu, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        np_triton_ms = _bench_cpu(rllib_vtrace_triton, *args_np, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        triton_ms    = _bench_gpu(compute_vtrace_triton, *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        compiled_ms  = _bench_cpu(compiled_vtrace, *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        rllib_ms     = _bench_cpu(rllib_vtrace, *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        np_triton_ms = _bench_cpu(rllib_vtrace_triton, *args_np, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
         speedup      = compiled_ms / triton_ms
         all_speedups.append(speedup)
 

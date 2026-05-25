@@ -173,26 +173,22 @@ LONG_SEQ_CONFIGS = [
 @pytest.mark.slow
 def test_vtrace_chunked_performance():
     """
-    Benchmark three implementations across long seq_len configs:
-      - chunked(direct): compute_vtrace_chunked called on pre-computed deltas/decays
-      - auto-dispatch:   compute_vtrace_triton, routes to flat below 131072 and
-                         chunked above — the two columns converge above the threshold
-      - compiled:        torch.compile on the reference loop (CUDA events)
+    Benchmark two implementations across long seq_len configs:
+      - chunked:  compute_vtrace_chunked on pre-computed deltas/decays (always chunked)
+      - triton:   compute_vtrace_triton (public API) — routes to flat or chunked
 
-    All columns use CUDA events so the speedup ratio is apples-to-apples.
-    The 'dispatch' column shows which kernel auto-dispatch selects.
+    pt.compile is excluded: a Python loop over T=65536+ steps dispatches that many
+    sequential CUDA kernels and takes minutes, so it is not a meaningful comparison
+    at this scale. See test_vtrace_performance for the pt.compile comparison at shorter
+    sequences where it is a legitimate baseline.
+
+    'auto used' shows which kernel compute_vtrace_triton selected.
     """
-    from test_vtrace import reference_vtrace, _make_inputs
-
-    compiled_vtrace = torch.compile(reference_vtrace)
-    _args = _make_inputs(16, 8192)
-    compiled_vtrace(*_args, gamma=0.99)
-    torch.cuda.synchronize()
+    from test_vtrace import _make_inputs
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>10} "
-        f"{'chunked':>12} {'auto-dispatch':>14} {'compiled':>10} "
-        f"{'vs compiled':>12} {'dispatch':>10}"
+        f"{'chunked':>12} {'triton':>10} {'auto used':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -204,16 +200,13 @@ def test_vtrace_chunked_performance():
 
         n_warmup, n_iter = _n_iters(seq_len)
 
-        chunked_ms  = _bench_gpu(compute_vtrace_chunked, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
-        auto_ms     = _bench_gpu(compute_vtrace_triton, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        compiled_ms = _bench_gpu(compiled_vtrace, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        chunked_ms = _bench_gpu(compute_vtrace_chunked, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
+        triton_ms  = _bench_gpu(compute_vtrace_triton, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
 
-        dispatch = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
-        speedup  = compiled_ms / chunked_ms
+        auto_used = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
 
         print(
             f"{num_envs:>10} {seq_len:>10,} "
-            f"{chunked_ms:>11.3f}ms {auto_ms:>13.3f}ms "
-            f"{compiled_ms:>9.3f}ms "
-            f"{speedup:>10.1f}x  {dispatch:>10}"
+            f"{chunked_ms:>11.3f}ms {triton_ms:>9.3f}ms "
+            f"  {auto_used:>10}"
         )

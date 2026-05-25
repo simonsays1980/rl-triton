@@ -132,15 +132,15 @@ def test_autodispatch_above_threshold():
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _bench_gpu(fn, *args, n_warmup: int, n_iter: int) -> float:
+def _bench_gpu(fn, *args, n_warmup: int, n_iter: int, **kwargs) -> float:
     for _ in range(n_warmup):
-        fn(*args)
+        fn(*args, **kwargs)
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end   = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(n_iter):
-        fn(*args)
+        fn(*args, **kwargs)
     end.record()
     torch.cuda.synchronize()
     return start.elapsed_time(end) / n_iter

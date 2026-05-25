@@ -135,15 +135,15 @@ def test_vtrace_autodispatch_above_threshold():
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _bench_gpu(fn, *args, n_warmup: int, n_iter: int) -> float:
+def _bench_gpu(fn, *args, n_warmup: int, n_iter: int, **kwargs) -> float:
     for _ in range(n_warmup):
-        fn(*args)
+        fn(*args, **kwargs)
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end   = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(n_iter):
-        fn(*args)
+        fn(*args, **kwargs)
     end.record()
     torch.cuda.synchronize()
     return start.elapsed_time(end) / n_iter
@@ -200,8 +200,8 @@ def test_vtrace_chunked_performance():
 
         n_warmup, n_iter = _n_iters(seq_len)
 
-        chunked_ms = _bench_gpu(compute_vtrace_chunked, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
-        triton_ms  = _bench_gpu(compute_vtrace_triton, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        chunked_ms = _bench_gpu(compute_vtrace_chunked, deltas, decays,          n_warmup=n_warmup, n_iter=n_iter)
+        triton_ms  = _bench_gpu(compute_vtrace_triton,  *args,  gamma=0.99,      n_warmup=n_warmup, n_iter=n_iter)
 
         auto_used = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
 

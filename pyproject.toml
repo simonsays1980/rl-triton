@@ -20,6 +20,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]

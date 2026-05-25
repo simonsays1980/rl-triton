@@ -388,8 +388,9 @@ def test_rllib_vtrace_matches_reference():
 @cuda_only
 def test_rllib_vtrace_triton_matches_reference():
     """NumPy→GPU→NumPy path must agree with reference_vtrace."""
-    args_np  = _make_inputs_np(32, 256, seed=11)
-    args_gpu = _make_inputs(32, 256, seed=11)
+    args_np = _make_inputs_np(32, 256, seed=11)
+    # Derive GPU tensors from the same numpy arrays so RNG is identical.
+    args_gpu = tuple(torch.from_numpy(a).cuda() for a in args_np)
     exp_t, exp_a = reference_vtrace(*args_gpu, gamma=0.99)
 
     act_t_np, act_a_np = rllib_vtrace_triton(*args_np, gamma=0.99)
@@ -403,26 +404,26 @@ def test_rllib_vtrace_triton_matches_reference():
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
+def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> float:
     for _ in range(n_warmup):
-        fn(*args)
+        fn(*args, **kwargs)
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
     end   = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(n_iter):
-        fn(*args)
+        fn(*args, **kwargs)
     end.record()
     torch.cuda.synchronize()
     return start.elapsed_time(end) / n_iter
 
 
-def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20) -> float:
+def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20, **kwargs) -> float:
     for _ in range(n_warmup):
-        fn(*args)
+        fn(*args, **kwargs)
     t0 = time.perf_counter()
     for _ in range(n_iter):
-        fn(*args)
+        fn(*args, **kwargs)
     return (time.perf_counter() - t0) / n_iter * 1000.0
 
 
@@ -490,10 +491,10 @@ def test_vtrace_performance():
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
         cpu_warmup, cpu_iter = _n_iter_cpu(seq_len, num_envs)
 
-        triton_ms    = _bench_gpu(compute_vtrace_triton, *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms  = _bench_cpu(compiled_vtrace, *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        rllib_ms     = _bench_cpu(rllib_vtrace, *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        np_triton_ms = _bench_cpu(rllib_vtrace_triton, *args_np, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        triton_ms    = _bench_gpu(compute_vtrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
         speedup      = compiled_ms / triton_ms
         all_speedups.append(speedup)
 

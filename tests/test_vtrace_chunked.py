@@ -1,5 +1,3 @@
-import time
-
 import pytest
 import torch
 
@@ -137,7 +135,7 @@ def test_vtrace_autodispatch_above_threshold():
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
+def _bench_gpu(fn, *args, n_warmup: int, n_iter: int) -> float:
     for _ in range(n_warmup):
         fn(*args)
     torch.cuda.synchronize()
@@ -151,19 +149,10 @@ def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
     return start.elapsed_time(end) / n_iter
 
 
-def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20) -> float:
-    for _ in range(n_warmup):
-        fn(*args)
-    t0 = time.perf_counter()
-    for _ in range(n_iter):
-        fn(*args)
-    return (time.perf_counter() - t0) / n_iter * 1000.0
-
-
-def _n_iter_for_seq_len(seq_len: int) -> tuple[int, int]:
-    target = 500_000
-    n_warmup = max(1, min(5,  target // (2 * seq_len)))
-    n_iter   = max(1, min(20, target // seq_len))
+def _n_iters(seq_len: int) -> tuple[int, int]:
+    """Scale warmup/measurement iterations so benchmark stays under ~30 s total."""
+    n_warmup = max(2, min(10,  200_000 // seq_len))
+    n_iter   = max(2, min(50, 1_000_000 // seq_len))
     return n_warmup, n_iter
 
 
@@ -172,11 +161,11 @@ def _n_iter_for_seq_len(seq_len: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 LONG_SEQ_CONFIGS = [
-    (16,   8_192),
-    (16,  65_536),
-    (16, 131_072),
-    (16, 262_144),
-    (16, 524_288),
+    (16,   8_192),    # well inside flat range
+    (16,  65_536),    # still flat, approaching limit
+    (16, 131_072),    # exactly at the flat limit
+    (16, 262_144),    # above threshold — auto-dispatch uses chunked
+    (16, 524_288),    # 4x threshold
 ]
 
 
@@ -184,8 +173,14 @@ LONG_SEQ_CONFIGS = [
 @pytest.mark.slow
 def test_vtrace_chunked_performance():
     """
-    Benchmark chunked vs torch.compile across long seq_len configs, including
-    sequences that exceed the flat kernel limit and trigger auto-dispatch.
+    Benchmark three implementations across long seq_len configs:
+      - chunked(direct): compute_vtrace_chunked called on pre-computed deltas/decays
+      - auto-dispatch:   compute_vtrace_triton, routes to flat below 131072 and
+                         chunked above — the two columns converge above the threshold
+      - compiled:        torch.compile on the reference loop (CUDA events)
+
+    All columns use CUDA events so the speedup ratio is apples-to-apples.
+    The 'dispatch' column shows which kernel auto-dispatch selects.
     """
     from test_vtrace import reference_vtrace, _make_inputs
 
@@ -196,29 +191,29 @@ def test_vtrace_chunked_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>10} "
-        f"{'chunked':>10} {'flat/auto':>10} {'compiled':>10} "
-        f"{'vs compile':>12} {'kernel':>10}"
+        f"{'chunked':>12} {'auto-dispatch':>14} {'compiled':>10} "
+        f"{'vs compiled':>12} {'dispatch':>10}"
     )
     print(header)
     print("-" * len(header))
 
     for num_envs, seq_len in LONG_SEQ_CONFIGS:
-        args = _make_inputs(num_envs, seq_len)
+        args   = _make_inputs(num_envs, seq_len)
         deltas = torch.randn(num_envs, seq_len, device="cuda")
         decays = torch.rand(num_envs, seq_len, device="cuda") * 0.99
 
-        n_warmup, n_iter = _n_iter_for_seq_len(seq_len)
+        n_warmup, n_iter = _n_iters(seq_len)
 
-        chunked_ms  = _bench_gpu(compute_vtrace_chunked, deltas, decays)
-        auto_ms     = _bench_gpu(compute_vtrace_triton, *args, gamma=0.99)
-        compiled_ms = _bench_cpu(compiled_vtrace, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        chunked_ms  = _bench_gpu(compute_vtrace_chunked, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
+        auto_ms     = _bench_gpu(compute_vtrace_triton, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        compiled_ms = _bench_gpu(compiled_vtrace, *args, gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
 
-        which   = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
-        speedup = compiled_ms / chunked_ms
+        dispatch = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
+        speedup  = compiled_ms / chunked_ms
 
         print(
             f"{num_envs:>10} {seq_len:>10,} "
-            f"{chunked_ms:>9.3f}ms {auto_ms:>9.3f}ms "
-            f"{compiled_ms:>9.3f}ms (n={n_iter}) "
-            f"{speedup:>10.1f}x  {which:>10}"
+            f"{chunked_ms:>11.3f}ms {auto_ms:>13.3f}ms "
+            f"{compiled_ms:>9.3f}ms "
+            f"{speedup:>10.1f}x  {dispatch:>10}"
         )

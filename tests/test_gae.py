@@ -293,8 +293,6 @@ def test_gae_performance():
     Assertion: Triton must be >=1.5x faster than torch.compile (GPU vs GPU).
     The np→triton→np column answers whether transfer overhead erases the gain.
     """
-    # torch.compile sees the loop structure and fuses the sequential CUDA ops —
-    # this is the strongest realistic PyTorch baseline without a custom kernel.
     # Defined here (not module-level) to avoid triggering JIT compilation on
     # every test session, even when this test is not selected.
     compiled_gae = torch.compile(reference_gae)
@@ -326,10 +324,7 @@ def test_gae_performance():
         n_warmup, n_iter = _n_iter_for_seq_len(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_gae_triton, deltas_gpu, decays_gpu)
-        # torch.compile still runs a sequential Python loop per timestep, so the
-        # CPU dispatch overhead is real — wall-clock time captures it, CUDA events
-        # would only measure the GPU portion and undercount the true cost.
-        compiled_ms = _bench_cpu(compiled_gae, deltas_gpu, decays_gpu, n_warmup=n_warmup, n_iter=n_iter)
+        compiled_ms = _bench_gpu(compiled_gae, deltas_gpu, decays_gpu)
         e2e_ms      = _bench_cpu(rllib_gae_triton, deltas_np, decays_np, n_warmup=n_warmup, n_iter=n_iter)
         rllib_ms    = _bench_cpu(rllib_gae, deltas_np, decays_np, n_warmup=n_warmup, n_iter=n_iter)
 
@@ -347,10 +342,10 @@ def test_gae_performance():
         )
 
     print(
-        "\nTriton(gpu)  : tensors already on GPU — best case, no transfer cost."
-        "\nnp→triton→np : NumPy in, NumPy out — realistic RLlib adoption path."
-        "\nrllib(cpu)   : pure NumPy backward loop on CPU — what RLlib ships today."
-        "\ncompiled     : torch.compile on the GPU loop — strongest PyTorch baseline."
+        "\nTriton(gpu)  : tensors on GPU, CUDA events — best case, no transfer cost."
+        "\ncompiled     : torch.compile on the GPU loop, CUDA events — strongest PyTorch baseline."
+        "\nnp→triton→np : NumPy in, NumPy out, wall-clock — realistic RLlib adoption path."
+        "\nrllib(cpu)   : pure NumPy backward loop, wall-clock — what RLlib ships today."
     )
 
     min_speedup = min(all_speedups_compile)

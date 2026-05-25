@@ -1,5 +1,3 @@
-import time
-
 import pytest
 import torch
 
@@ -134,12 +132,12 @@ def test_autodispatch_above_threshold():
 # Benchmark helpers
 # ---------------------------------------------------------------------------
 
-def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
+def _bench_gpu(fn, *args, n_warmup: int, n_iter: int) -> float:
     for _ in range(n_warmup):
         fn(*args)
     torch.cuda.synchronize()
     start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+    end   = torch.cuda.Event(enable_timing=True)
     start.record()
     for _ in range(n_iter):
         fn(*args)
@@ -148,26 +146,11 @@ def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100) -> float:
     return start.elapsed_time(end) / n_iter
 
 
-def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20) -> float:
-    for _ in range(n_warmup):
-        fn(*args)
-    t0 = time.perf_counter()
-    for _ in range(n_iter):
-        fn(*args)
-    return (time.perf_counter() - t0) / n_iter * 1000.0
-
-
-def _n_iter_for_seq_len(seq_len: int) -> tuple[int, int]:
-    """Scale iteration counts down for very long sequences to bound runtime.
-
-    torch.compile dispatches one CUDA kernel per timestep from Python, so
-    n_iter * seq_len Python calls must stay reasonable.  Target ~500k total
-    dispatches: at seq_len=524288 that means just 1 warmup + 1 measured call.
-    GPU-only benchmarks are unaffected (CUDA events amortise launch overhead).
-    """
-    target_dispatches = 500_000
-    n_warmup = max(1, min(5,  target_dispatches // (2 * seq_len)))
-    n_iter   = max(1, min(20, target_dispatches // seq_len))
+def _n_iters(seq_len: int) -> tuple[int, int]:
+    """Scale warmup/measurement iterations so benchmark stays under ~30 s total."""
+    # Target: ~200 kernel calls measured, scaled down for very long sequences.
+    n_warmup = max(2, min(10,  200_000 // seq_len))
+    n_iter   = max(2, min(50, 1_000_000 // seq_len))
     return n_warmup, n_iter
 
 
@@ -175,14 +158,13 @@ def _n_iter_for_seq_len(seq_len: int) -> tuple[int, int]:
 # Performance benchmark — long sequences
 # ---------------------------------------------------------------------------
 
-# Configs deliberately span the flat/chunked boundary at _FLAT_MAX_SEQ_LEN=131072.
-# num_envs is kept small because very long sequences already saturate the GPU.
+# Configs span the flat/chunked boundary at _FLAT_MAX_SEQ_LEN=131072.
 LONG_SEQ_CONFIGS = [
     (16,   8_192),    # well inside flat range
     (16,  65_536),    # still flat, approaching limit
     (16, 131_072),    # exactly at the flat limit
-    (16, 262_144),    # chunked only (above threshold)
-    (16, 524_288),    # chunked, 4x threshold
+    (16, 262_144),    # above threshold — auto-dispatch uses chunked
+    (16, 524_288),    # 4x threshold
 ]
 
 
@@ -190,11 +172,15 @@ LONG_SEQ_CONFIGS = [
 @pytest.mark.slow
 def test_chunked_performance():
     """
-    Benchmark chunked vs torch.compile across long seq_len configs, including
-    sequences that exceed the flat kernel limit and trigger auto-dispatch.
+    Benchmark three implementations across long seq_len configs:
+      - chunked(direct): compute_gae_chunked called directly
+      - auto-dispatch:   compute_gae_triton, which routes to flat below 131072
+                         and to chunked above — so the two columns converge above
+                         the threshold
+      - compiled:        torch.compile on the reference loop (CUDA events)
 
-    Reports the crossover point where chunked becomes the only viable option
-    and how it compares to the best PyTorch alternative at each scale.
+    All columns use CUDA events so the speedup ratio is apples-to-apples.
+    The 'dispatch' column shows which kernel auto-dispatch selects.
     """
     compiled_gae = torch.compile(reference_gae)
     _d = torch.randn(16, 8192, device="cuda")
@@ -204,8 +190,8 @@ def test_chunked_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>10} "
-        f"{'chunked':>10} {'flat/auto':>10} {'compiled':>10} "
-        f"{'vs compile':>12} {'kernel':>10}"
+        f"{'chunked':>12} {'auto-dispatch':>14} {'compiled':>10} "
+        f"{'vs compiled':>12} {'dispatch':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -214,19 +200,18 @@ def test_chunked_performance():
         d = torch.randn(num_envs, seq_len, device="cuda")
         c = torch.rand(num_envs, seq_len, device="cuda") * 0.99
 
-        n_warmup, n_iter = _n_iter_for_seq_len(seq_len)
+        n_warmup, n_iter = _n_iters(seq_len)
 
-        chunked_ms  = _bench_gpu(compute_gae_chunked, d, c)
-        # compute_gae_triton auto-dispatches — flat for <=131072, chunked above.
-        auto_ms     = _bench_gpu(compute_gae_triton, d, c)
-        compiled_ms = _bench_cpu(compiled_gae, d, c, n_warmup=n_warmup, n_iter=n_iter)
+        chunked_ms  = _bench_gpu(compute_gae_chunked, d, c, n_warmup=n_warmup, n_iter=n_iter)
+        auto_ms     = _bench_gpu(compute_gae_triton,  d, c, n_warmup=n_warmup, n_iter=n_iter)
+        compiled_ms = _bench_gpu(compiled_gae,         d, c, n_warmup=n_warmup, n_iter=n_iter)
 
-        which = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
-        speedup = compiled_ms / chunked_ms
+        dispatch = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
+        speedup  = compiled_ms / chunked_ms
 
         print(
             f"{num_envs:>10} {seq_len:>10,} "
-            f"{chunked_ms:>9.3f}ms {auto_ms:>9.3f}ms "
-            f"{compiled_ms:>9.3f}ms (n={n_iter}) "
-            f"{speedup:>10.1f}x  {which:>10}"
+            f"{chunked_ms:>11.3f}ms {auto_ms:>13.3f}ms "
+            f"{compiled_ms:>9.3f}ms "
+            f"{speedup:>10.1f}x  {dispatch:>10}"
         )

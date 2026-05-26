@@ -119,24 +119,24 @@ def test_retrace_known_values_done():
 
 @cuda_only
 def test_retrace_known_values_clipping():
-    # IS ratio = pi_a / mu = 0.5 / 1.0 = 0.5.  c_bar=1 -> c=lambda*0.5=0.5.
-    # seq_len=2, gamma=1, no dones.
-    # delta[0] = 1 + 0.5 - 0 = 1.5,  delta[1] = 1 + 0.5 - 0 = 1.5
-    # decay[0] = 1 * c[1] = 0.5,  decay[1] = 0  (c[T]=0)
+    # pi_a=1.0 (single action, on-policy), mu=0.5 -> IS ratio=2.0, clipped to c_bar=1.0 -> c=1.0.
+    # E_pi[Q_next] = 1.0 * q_next = q_next (single action, probs_t=1.0).
+    # seq_len=2, gamma=1, no dones, q_next=0.5.
+    # delta[0] = 1 + 1*0.5 - 0 = 1.5,  delta[1] = 1 + 1*0.5 - 0 = 1.5
+    # c=min(1.0, 2.0)=1.0 everywhere; decay[0]=1*c[1]=1.0, decay[1]=0 (c[T]=0)
     # Delta[1] = 1.5
-    # Delta[0] = 1.5 + 0.5*1.5 = 2.25
-    # Q_ret = [2.25, 1.5]
-    # Single action; target policy assigns 0.5 to that action.
-    probs_t   = torch.full((1, 2, 1), 0.5, device="cuda")
-    probs_b   = torch.ones(1, 2, device="cuda")              # mu=1.0
+    # Delta[0] = 1.5 + 1.0*1.5 = 3.0
+    # Q_ret = [3.0, 1.5]
+    probs_t   = torch.ones(1, 2, 1, device="cuda")           # pi_a = 1.0
+    probs_b   = torch.full((1, 2), 0.5, device="cuda")       # mu = 0.5 -> IS ratio=2, clipped to 1
     q         = torch.zeros(1, 2, device="cuda")
-    q_next    = torch.full((1, 2, 1), 0.5, device="cuda")   # E_pi[Q_next]=0.5
+    q_next    = torch.full((1, 2, 1), 0.5, device="cuda")    # E_pi[Q_next] = 0.5
     actions   = torch.zeros(1, 2, dtype=torch.int64, device="cuda")
     rewards   = torch.ones(1, 2, device="cuda")
     dones     = torch.zeros(1, 2, device="cuda")
 
     out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
-    torch.testing.assert_close(out, torch.tensor([[2.25, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(out, torch.tensor([[3.0, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 @cuda_only

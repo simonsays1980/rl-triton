@@ -86,10 +86,11 @@ def vtrace_fused_kernel(
 
     # --- Step 4: advantages ---
     # next_vtrace_target[t] = target[t+1].
-    # targets are stored at physical address base + t (= base + rev_offsets).
-    # So target[t+1] lives at base + rev_offsets + 1.
-    # The boundary case t=T-1 (rev_offsets == seq_len-1) uses next_values[:, -1]
-    # at physical address base + seq_len - 1.
+    # target[t] is stored at targets_ptr + base + t = targets_ptr + base + rev_offsets.
+    # So target[t+1] is at targets_ptr + base + rev_offsets + 1.
+    # Boundary: offsets==0 (time t=seq_len-1) uses next_values[:, seq_len-1].
+    # debug_barrier() ensures the step-3 stores are visible before we load them back.
+    tl.debug_barrier()
     next_v_last = tl.load(next_values_ptr + base + seq_len - 1)
     next_target = tl.load(
         targets_ptr + base + rev_offsets + 1,

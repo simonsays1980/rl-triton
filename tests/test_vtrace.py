@@ -11,6 +11,7 @@ import torch
 triton = pytest.importorskip("triton")
 
 from rl_triton.ops.vtrace import compute_vtrace_triton, _FLAT_MAX_SEQ_LEN
+from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 cuda_only = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA not available"
@@ -372,6 +373,48 @@ def test_vtrace_non_contiguous_input():
 
 
 # ---------------------------------------------------------------------------
+# Fused kernel correctness
+# ---------------------------------------------------------------------------
+
+@cuda_only
+@pytest.mark.parametrize("num_envs,seq_len", [
+    (1,   1),
+    (1,   7),
+    (4,   128),
+    (32,  512),
+    (128, 1024),
+])
+def test_vtrace_fused_correctness(num_envs, seq_len):
+    """Fused kernel must match reference_vtrace."""
+    args = _make_inputs(num_envs, seq_len, seed=20)
+    exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
+    act_t, act_a = compute_vtrace_fused(*args, gamma=0.99)
+    torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+def test_vtrace_fused_bootstrap():
+    """Bootstrap propagates correctly through the fused kernel."""
+    args = _make_inputs(32, 512, seed=21)
+    bootstrap = torch.rand(32, device="cuda")
+    exp_t, exp_a = reference_vtrace(*args, gamma=0.99, bootstrap_values=bootstrap)
+    act_t, act_a = compute_vtrace_fused(*args, gamma=0.99, bootstrap_values=bootstrap)
+    torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+def test_vtrace_fused_matches_unfused():
+    """Fused and unfused kernels must agree on identical inputs."""
+    args = _make_inputs(64, 512, seed=22)
+    ref_t, ref_a = compute_vtrace_triton(*args, gamma=0.99)
+    act_t, act_a = compute_vtrace_fused(*args, gamma=0.99)
+    torch.testing.assert_close(act_t, ref_t, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(act_a, ref_a, atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # RLlib adapter correctness
 # ---------------------------------------------------------------------------
 
@@ -478,7 +521,7 @@ def test_vtrace_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
+        f"{'triton':>10} {'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
         f"{'vs compile':>12} {'vs np->tri->np':>16} {'vs rllib':>10}"
     )
     print(header)
@@ -493,28 +536,30 @@ def test_vtrace_performance():
         cpu_warmup, cpu_iter = _n_iter_cpu(seq_len, num_envs)
 
         triton_ms    = _bench_gpu(compute_vtrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        fused_ms     = _bench_gpu(compute_vtrace_fused,   *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
         np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
         rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
 
-        speedup_vs_compile = compiled_ms  / triton_ms
-        speedup_vs_e2e     = np_triton_ms / triton_ms
-        speedup_vs_rllib   = rllib_ms     / triton_ms
+        speedup_vs_compile = compiled_ms  / fused_ms
+        speedup_vs_e2e     = np_triton_ms / fused_ms
+        speedup_vs_rllib   = rllib_ms     / fused_ms
         all_speedups.append(speedup_vs_compile)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms "
+            f"{triton_ms:>9.3f}ms {fused_ms:>7.3f}ms {compiled_ms:>11.3f}ms "
             f"{np_triton_ms:>15.3f}ms {rllib_ms:>11.3f}ms "
             f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>14.1f}x  {speedup_vs_rllib:>8.1f}x"
         )
 
     print(
-        "\ntriton:        CUDA events — pure kernel time."
-        "\npt.compile:    wall-clock — dispatches one CUDA op per timestep from Python;"
-        "\n               CUDA events would miss that CPU stall and make it look unrealistically fast."
+        "\ntriton:         unfused — scan only, IS ratios/advantages computed by separate PyTorch ops."
+        "\nfused:          single kernel — IS ratios, scan, targets, advantages all in one pass."
+        "\npt.compile:     wall-clock — dispatches one CUDA op per timestep from Python."
         "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy path replacing rllib_vtrace in an RLlib worker."
-        "\nrllib(cpu):    wall-clock — CPU Python loop matching RLlib's from_importance_weights."
+        "\nrllib(cpu):     wall-clock — CPU Python loop matching RLlib's from_importance_weights."
+        "\nspeedups are relative to the fused kernel."
     )
 
     assert min(all_speedups) >= 1.5, (

@@ -1,11 +1,7 @@
 import torch
 
-from rl_triton.ops.vtrace_chunked import compute_vtrace_chunked
+from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
-
-# tl.associative_scan requires BLOCK_SIZE <= 2^17.  Above this the flat kernel
-# cannot launch, so we fall back to the chunked kernel automatically.
-_FLAT_MAX_SEQ_LEN = 131072
 
 
 def compute_vtrace_triton(
@@ -69,9 +65,9 @@ def compute_vtrace_triton(
         ("rewards",         rewards),
         ("dones",           dones),
     ]:
-        assert t.is_cuda,                         f"{name} must be on CUDA"
-        assert t.dtype == torch.float32,          f"{name}: expected float32, got {t.dtype}"
-        assert t.shape == rewards.shape,          f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+        assert t.is_cuda,                f"{name} must be on CUDA"
+        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
 
     num_envs, seq_len = rewards.shape
 
@@ -99,17 +95,16 @@ def compute_vtrace_triton(
             bootstrap_values=bootstrap_values,
         )
 
-    # Chunked path for seq_len > 131072: run elementwise ops in PyTorch then
-    # hand the scan to the chunked kernel.
+    # Chunked path for seq_len > 131072.
+    # u[t] = ρ[t] * (r[t] + γV'[t](1-d[t]) - V[t])
+    # v[t] = γ * c[t] * (1-d[t])
     is_ratios = torch.exp(log_pi_target - log_pi_behavior)
     rho = torch.clamp(is_ratios, max=rho_bar)
     c   = torch.clamp(is_ratios, max=c_bar)
+    u = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
+    v = gamma * c * (1.0 - dones)
 
-    deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
-    decays = gamma * c * (1.0 - dones)
-
-    value_deltas = compute_vtrace_chunked(deltas, decays, bootstrap_values)
-
+    value_deltas   = _run_scan(u, v, bootstrap_values)
     vtrace_targets = value_deltas + values
 
     next_vtrace_targets = torch.empty_like(vtrace_targets)
@@ -117,5 +112,4 @@ def compute_vtrace_triton(
     next_vtrace_targets[:, -1]  = next_values[:, -1]
 
     vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * (1.0 - dones) - values)
-
     return vtrace_targets, vtrace_advantages

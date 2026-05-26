@@ -316,8 +316,8 @@ def test_gae_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton(gpu)':>12} {'compiled':>10} {'np→triton→np':>14} {'rllib(cpu)':>12} "
-        f"{'vs compile':>12} {'vs np→tri→np':>14} {'vs rllib':>10}"
+        f"{'triton(gpu)':>12} {'compiled':>10} {'np->triton->np':>16} {'rllib(cpu)':>12} "
+        f"{'vs compile':>12} {'vs np->tri->np':>16} {'vs rllib':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -349,16 +349,16 @@ def test_gae_performance():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{triton_ms:>11.3f}ms {compiled_ms:>9.3f}ms "
-            f"{e2e_ms:>13.3f}ms {rllib_ms:>11.3f}ms "
-            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>12.1f}x  {speedup_vs_rllib:>8.1f}x"
+            f"{e2e_ms:>15.3f}ms {rllib_ms:>11.3f}ms "
+            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>14.1f}x  {speedup_vs_rllib:>8.1f}x"
         )
 
     print(
-        "\ntriton(gpu)  : CUDA events — pure kernel time, no CPU overhead."
-        "\ncompiled     : wall-clock — torch.compile dispatches one CUDA op per timestep from Python;"
-        "\n               CUDA events would miss that CPU stall and make it look unrealistically fast."
-        "\nnp→triton→np : wall-clock — NumPy→GPU→NumPy, realistic RLlib adoption path."
-        "\nrllib(cpu)   : wall-clock — pure NumPy backward loop, what RLlib ships today."
+        "\ntriton(gpu)   : CUDA events — pure kernel time, no CPU overhead."
+        "\ncompiled      : wall-clock — torch.compile dispatches one CUDA op per timestep from Python;"
+        "\n                CUDA events would miss that CPU stall and make it look unrealistically fast."
+        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy, realistic RLlib adoption path."
+        "\nrllib(cpu)    : wall-clock — pure NumPy backward loop, what RLlib ships today."
     )
 
     min_speedup = min(all_speedups_compile)

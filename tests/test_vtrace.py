@@ -478,7 +478,8 @@ def test_vtrace_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'compiled':>10} {'rllib(cpu)':>12} {'np→triton→np':>14} {'vs compile':>12}"
+        f"{'triton':>10} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
+        f"{'vs compile':>12} {'vs np->tri->np':>16} {'vs rllib':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -493,24 +494,27 @@ def test_vtrace_performance():
 
         triton_ms    = _bench_gpu(compute_vtrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
         np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        speedup      = compiled_ms / triton_ms
-        all_speedups.append(speedup)
+        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+
+        speedup_vs_compile = compiled_ms  / triton_ms
+        speedup_vs_e2e     = np_triton_ms / triton_ms
+        speedup_vs_rllib   = rllib_ms     / triton_ms
+        all_speedups.append(speedup_vs_compile)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {compiled_ms:>9.3f}ms "
-            f"{rllib_ms:>11.3f}ms {np_triton_ms:>13.3f}ms "
-            f"{speedup:>10.1f}x"
+            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms "
+            f"{np_triton_ms:>15.3f}ms {rllib_ms:>11.3f}ms "
+            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>14.1f}x  {speedup_vs_rllib:>8.1f}x"
         )
 
     print(
-        "\ntriton:       CUDA events — pure kernel time."
-        "\npt.compile:   wall-clock — dispatches one CUDA op per timestep from Python;"
-        "\n              CUDA events would miss that CPU stall and make it look unrealistically fast."
-        "\nrllib(cpu):   wall-clock — CPU Python loop matching RLlib's from_importance_weights."
-        "\nnp→triton→np: wall-clock — NumPy→GPU→NumPy path replacing rllib_vtrace in an RLlib worker."
+        "\ntriton:        CUDA events — pure kernel time."
+        "\npt.compile:    wall-clock — dispatches one CUDA op per timestep from Python;"
+        "\n               CUDA events would miss that CPU stall and make it look unrealistically fast."
+        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy path replacing rllib_vtrace in an RLlib worker."
+        "\nrllib(cpu):    wall-clock — CPU Python loop matching RLlib's from_importance_weights."
     )
 
     assert min(all_speedups) >= 1.5, (

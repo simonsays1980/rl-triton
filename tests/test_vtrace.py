@@ -10,7 +10,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from rl_triton.ops.vtrace import compute_vtrace_triton, _FLAT_MAX_SEQ_LEN
+from rl_triton.ops.vtrace import compute_vtrace_triton
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 cuda_only = pytest.mark.skipif(
@@ -291,15 +291,6 @@ def test_vtrace_known_values_clipping():
 # ---------------------------------------------------------------------------
 
 @cuda_only
-def test_vtrace_correctness_basic():
-    args = _make_inputs(64, 512)
-    exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99)
-    torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
-
-
-@cuda_only
 @pytest.mark.parametrize("num_envs,seq_len", [
     (1,   1),
     (1,   7),
@@ -404,16 +395,6 @@ def test_vtrace_fused_bootstrap():
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 
 
-@cuda_only
-def test_vtrace_fused_matches_unfused():
-    """Fused and unfused kernels must agree on identical inputs."""
-    args = _make_inputs(64, 512, seed=22)
-    ref_t, ref_a = compute_vtrace_triton(*args, gamma=0.99)
-    act_t, act_a = compute_vtrace_fused(*args, gamma=0.99)
-    torch.testing.assert_close(act_t, ref_t, atol=1e-4, rtol=1e-4)
-    torch.testing.assert_close(act_a, ref_a, atol=1e-4, rtol=1e-4)
-
-
 # ---------------------------------------------------------------------------
 # RLlib adapter correctness
 # ---------------------------------------------------------------------------
@@ -501,16 +482,16 @@ BENCH_CONFIGS = [
 def test_vtrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
-      - triton:       GPU Triton kernel  (CUDA events)
-      - pt.compile:   torch.compile on the reference loop  (wall-clock)
-      - rllib(cpu):   CPU Python loop matching RLlib's from_importance_weights  (wall-clock)
-      - np→triton→np: NumPy→GPU→NumPy adoption path  (wall-clock, includes transfer overhead)
+      - fused:          single Triton kernel — IS ratios, scan, targets, advantages in one pass  (CUDA events)
+      - pt.compile:     torch.compile on the reference loop  (wall-clock)
+      - np->triton->np: NumPy->GPU->NumPy adoption path  (wall-clock, includes transfer overhead)
+      - rllib(cpu):     CPU Python loop matching RLlib's from_importance_weights  (wall-clock)
 
-    triton uses CUDA events (pure kernel time). All others use wall-clock because
+    fused uses CUDA events (pure kernel time). All others use wall-clock because
     torch.compile dispatches one CUDA op per timestep from Python — CUDA events would
     miss that CPU stall and make it look unrealistically fast.
 
-    Assertion: Triton must be >=1.5x faster than torch.compile (wall-clock vs CUDA events).
+    Assertion: fused must be >=1.5x faster than torch.compile (wall-clock vs CUDA events).
     """
     compiled_vtrace = torch.compile(reference_vtrace)
 
@@ -520,7 +501,7 @@ def test_vtrace_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
+        f"{'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
         f"{'vs compile':>12} {'vs np->tri->np':>16} {'vs rllib':>10}"
     )
     print(header)
@@ -533,7 +514,6 @@ def test_vtrace_performance():
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms    = _bench_gpu(compute_vtrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         fused_ms     = _bench_gpu(compute_vtrace_fused,   *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99)
         np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99)
@@ -546,14 +526,13 @@ def test_vtrace_performance():
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {fused_ms:>7.3f}ms {compiled_ms:>11.3f}ms "
+            f"{fused_ms:>7.3f}ms {compiled_ms:>11.3f}ms "
             f"{np_triton_ms:>15.3f}ms {rllib_ms:>11.3f}ms "
             f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>14.1f}x  {speedup_vs_rllib:>8.1f}x"
         )
 
     print(
-        "\ntriton:         unfused — scan only, IS ratios/advantages computed by separate PyTorch ops."
-        "\nfused:          single kernel — IS ratios, scan, targets, advantages all in one pass."
+        "\nfused:          CUDA events — single kernel, pure GPU time, no Python overhead."
         "\npt.compile:     wall-clock — dispatches one CUDA op per timestep from Python."
         "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy path replacing rllib_vtrace in an RLlib worker."
         "\nrllib(cpu):     wall-clock — CPU Python loop matching RLlib's from_importance_weights."

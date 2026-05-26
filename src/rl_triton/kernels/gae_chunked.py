@@ -1,7 +1,7 @@
 import triton
 import triton.language as tl
 
-from rl_triton.kernels.gae import _combine
+from rl_triton.kernels.scan import _combine
 
 
 @triton.jit

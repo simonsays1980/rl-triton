@@ -1,26 +1,25 @@
 """
-Internal scan dispatch used by all RL return estimators.
+Internal scan dispatch used by all RL sequence estimators.
 
-Every algorithm in this package reduces to the same linear recurrence:
+Two directions of the same linear recurrence are supported:
 
-    A[t] = u[t] + v[t] * A[t+1],   A[T] = bootstrap
-
-with algorithm-specific definitions of u and v:
-
+Backward (right-to-left): A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap
     Discounted returns:  u = r,          v = γ(1-d)
     GAE:                 u = δ_gae,      v = γλ(1-d)
     V-Trace:             u = ρδ_vt,      v = γc(1-d)
     Retrace(λ):          u = δ_ret,      v = γc_{t+1}(1-d)
+    Lambda returns:      u = r+γ(1-λ)(1-d)V', v = γλ(1-d)
 
-_run_scan(u, v, bootstrap) is the single implementation of this recurrence.
-It owns all input validation, contiguous enforcement, and flat/chunked dispatch.
-Public functions (compute_gae_triton, compute_discounted_returns, etc.) are thin
-wrappers that compute u and v from raw RL quantities, then call _run_scan.
+Forward (left-to-right): e[t] = u[t] + v[t] * e[t-1],   e[-1] = seed
+    Eligibility traces:  u = x_t,        v = γλ(1-d)
+
+_run_scan / _run_scan_forward own all input validation, contiguous enforcement,
+and flat/chunked dispatch.  Public wrappers compute u and v, then call them.
 """
 import torch
 import triton
 
-from rl_triton.kernels.gae import gae_scan_kernel
+from rl_triton.kernels.scan import backward_scan_kernel, forward_scan_kernel
 from rl_triton.kernels.gae_chunked import chunked_gae_kernel
 
 # tl.associative_scan requires BLOCK_SIZE <= 2^17.  Above this the flat kernel
@@ -79,7 +78,7 @@ def _run_scan(
         )
     else:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        gae_scan_kernel[(num_envs,)](
+        backward_scan_kernel[(num_envs,)](
             u, v, out,
             bootstrap,
             seq_len,
@@ -87,4 +86,62 @@ def _run_scan(
             BLOCK_SIZE=BLOCK_SIZE,
         )
 
+    return out
+
+
+def _run_scan_forward(
+    u: torch.Tensor,
+    v: torch.Tensor,
+    seed: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Forward linear scan: e[t] = u[t] + v[t] * e[t-1], e[-1] = seed.
+
+    Processes the sequence left-to-right (natural time order).  Only the flat
+    single-block kernel is supported; sequences longer than _FLAT_MAX_SEQ_LEN
+    are rejected because the chunked kernel for forward scans has not been
+    implemented yet (see NOTES.md).
+
+    Args:
+        u:    Additive term [num_envs, seq_len], float32, CUDA.
+        v:    Multiplicative decay [num_envs, seq_len], float32, CUDA.
+        seed: Initial carry e[-1] per environment, shape [num_envs], float32.
+              Defaults to zeros (traces start from scratch).
+
+    Returns:
+        out: e[t] values, shape [num_envs, seq_len], float32.
+    """
+    assert u.shape == v.shape,      "u and v must have the same shape"
+    assert u.is_cuda and v.is_cuda, "u and v must be on CUDA"
+    assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
+    assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
+
+    u = u.contiguous()
+    v = v.contiguous()
+
+    num_envs, seq_len = u.shape
+
+    assert seq_len <= _FLAT_MAX_SEQ_LEN, (
+        f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
+        "A chunked forward scan kernel has not been implemented yet."
+    )
+
+    if seed is None:
+        seed = torch.zeros(num_envs, device=u.device, dtype=torch.float32)
+    else:
+        assert seed.shape == (num_envs,), \
+            f"seed must have shape [{num_envs}], got {seed.shape}"
+        assert seed.is_cuda, "seed must be on CUDA"
+        seed = seed.contiguous()
+
+    out        = torch.empty_like(u)
+    BLOCK_SIZE = triton.next_power_of_2(seq_len)
+
+    forward_scan_kernel[(num_envs,)](
+        u, v, out,
+        seed,
+        seq_len,
+        u.stride(0),
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
     return out

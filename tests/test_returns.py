@@ -5,7 +5,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from rl_triton.ops.returns import compute_discounted_returns, compute_lambda_returns
+from rl_triton.ops.returns import compute_discounted_returns, compute_eligibility_traces, compute_lambda_returns
 
 cuda_only = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA not available"
@@ -180,6 +180,114 @@ def test_lambda_returns_lambda1_matches_discounted_returns():
 
 
 # ---------------------------------------------------------------------------
+# Ground-truth value tests — compute_eligibility_traces
+# ---------------------------------------------------------------------------
+
+@cuda_only
+def test_eligibility_traces_known_values_basic():
+    # gamma=1, lambda=1, no dones, seed=0.
+    # e[0] = 1 + 1*0 = 1
+    # e[1] = 2 + 1*1 = 3
+    # e[2] = 3 + 1*3 = 6
+    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    dones    = torch.zeros(1, 3, device="cuda")
+    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=1.0)
+    torch.testing.assert_close(out, torch.tensor([[1.0, 3.0, 6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_eligibility_traces_known_values_decay():
+    # gamma=1, lambda=0.5, no dones, seed=0.
+    # e[0] = 1 + 0.5*0 = 1
+    # e[1] = 2 + 0.5*1 = 2.5
+    features = torch.tensor([[1.0, 2.0]], device="cuda")
+    dones    = torch.zeros(1, 2, device="cuda")
+    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=0.5)
+    torch.testing.assert_close(out, torch.tensor([[1.0, 2.5]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_eligibility_traces_known_values_done():
+    # done[1]=1 resets the trace: e[1] = x[1] + gamma*lambda*(1-1)*e[0] = x[1].
+    # e[0] = 1,  e[1] = 2 + 0.9*0 = 2,  e[2] = 3 + 0.9*2 = 4.8
+    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
+    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=0.9)
+    torch.testing.assert_close(out, torch.tensor([[1.0, 2.0, 4.8]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_eligibility_traces_known_values_seed():
+    # Non-zero seed: e[-1]=2, gamma=1, lambda=1, no dones.
+    # e[0] = 1 + 1*2 = 3
+    # e[1] = 2 + 1*3 = 5
+    features = torch.tensor([[1.0, 2.0]], device="cuda")
+    dones    = torch.zeros(1, 2, device="cuda")
+    seed     = torch.tensor([2.0], device="cuda")
+    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=1.0, seed_values=seed)
+    torch.testing.assert_close(out, torch.tensor([[3.0, 5.0]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_eligibility_traces_lambda0():
+    """lambda=0: trace equals the feature at every step (no accumulation)."""
+    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    dones    = torch.zeros(1, 3, device="cuda")
+    out = compute_eligibility_traces(features, dones, gamma=0.99, lambda_=0.0)
+    torch.testing.assert_close(out, features, atol=1e-6, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Correctness vs reference — compute_eligibility_traces
+# ---------------------------------------------------------------------------
+
+def reference_eligibility_traces(
+    features: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+    seed_values: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Pure-PyTorch forward scan — ground truth."""
+    T     = features.shape[1]
+    out   = torch.zeros_like(features)
+    carry = torch.zeros(features.shape[0], device=features.device, dtype=features.dtype)
+    if seed_values is not None:
+        carry = seed_values.clone()
+    for t in range(T):
+        carry     = features[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        out[:, t] = carry
+    return out
+
+
+@cuda_only
+@pytest.mark.parametrize("num_envs,seq_len,lambda_", [
+    (1,   1,    0.0),
+    (1,   7,    1.0),
+    (4,   128,  0.5),
+    (32,  333,  0.9),
+    (128, 1024, 0.95),
+])
+def test_eligibility_traces_correctness(num_envs, seq_len, lambda_):
+    rewards, _, dones = _make_inputs(num_envs, seq_len, seed=50)
+    features = rewards   # any float tensor works as features
+    expected = reference_eligibility_traces(features, dones, gamma=0.99, lambda_=lambda_)
+    actual   = compute_eligibility_traces(features, dones, gamma=0.99, lambda_=lambda_)
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+def test_eligibility_traces_correctness_seed():
+    rewards, _, dones = _make_inputs(32, 512, seed=51)
+    seed     = torch.rand(32, device="cuda")
+    expected = reference_eligibility_traces(rewards, dones, gamma=0.99, lambda_=0.9,
+                                             seed_values=seed)
+    actual   = compute_eligibility_traces(rewards, dones, gamma=0.99, lambda_=0.9,
+                                           seed_values=seed)
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # Ground-truth value tests — compute_discounted_returns
 # ---------------------------------------------------------------------------
 
@@ -278,16 +386,19 @@ def test_returns_performance():
     """
     compiled_lambda = torch.compile(reference_lambda_returns)
     compiled_disc   = torch.compile(reference_discounted_returns)
+    compiled_traces = torch.compile(reference_eligibility_traces)
 
     _r, _nv, _d = _make_inputs(64, 512)
     compiled_lambda(_r, _nv, _d, gamma=0.99, lambda_=0.95)
     compiled_disc(_r, _d, gamma=0.99)
+    compiled_traces(_r, _d, gamma=0.99, lambda_=0.95)
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'lambda(tri)':>12} {'disc(tri)':>10} {'pt.compile λ':>14} {'pt.compile G':>14} "
-        f"{'vs λ compile':>14} {'vs G compile':>14}"
+        f"{'lambda(tri)':>12} {'disc(tri)':>10} {'traces(tri)':>12} "
+        f"{'compile λ':>11} {'compile G':>11} {'compile e':>11} "
+        f"{'vs λ':>7} {'vs G':>7} {'vs e':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -298,28 +409,33 @@ def test_returns_performance():
         rewards, next_values, dones = _make_inputs(num_envs, seq_len)
         n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
 
-        lambda_ms       = _bench_gpu(compute_lambda_returns,  rewards, next_values, dones,
+        lambda_ms       = _bench_gpu(compute_lambda_returns,     rewards, next_values, dones,
                                      gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
-        disc_ms         = _bench_gpu(compute_discounted_returns, rewards, dones,
+        disc_ms         = _bench_gpu(compute_discounted_returns,  rewards, dones,
                                      gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        compiled_lam_ms = _bench_cpu(compiled_lambda, rewards, next_values, dones,
+        traces_ms       = _bench_gpu(compute_eligibility_traces,  rewards, dones,
+                                     gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        compiled_lam_ms = _bench_cpu(compiled_lambda,  rewards, next_values, dones,
                                      gamma=0.99, lambda_=0.95)
-        compiled_disc_ms= _bench_cpu(compiled_disc,   rewards, dones, gamma=0.99)
+        compiled_disc_ms= _bench_cpu(compiled_disc,    rewards, dones, gamma=0.99)
+        compiled_trc_ms = _bench_cpu(compiled_traces,  rewards, dones,
+                                     gamma=0.99, lambda_=0.95)
 
-        speedup_lam  = compiled_lam_ms  / lambda_ms
-        speedup_disc = compiled_disc_ms / disc_ms
-        all_speedups.extend([speedup_lam, speedup_disc])
+        su_lam    = compiled_lam_ms  / lambda_ms
+        su_disc   = compiled_disc_ms / disc_ms
+        su_traces = compiled_trc_ms  / traces_ms
+        all_speedups.extend([su_lam, su_disc, su_traces])
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{lambda_ms:>11.3f}ms {disc_ms:>9.3f}ms "
-            f"{compiled_lam_ms:>13.3f}ms {compiled_disc_ms:>13.3f}ms "
-            f"{speedup_lam:>12.1f}x  {speedup_disc:>12.1f}x"
+            f"{lambda_ms:>11.3f}ms {disc_ms:>9.3f}ms {traces_ms:>11.3f}ms "
+            f"{compiled_lam_ms:>10.3f}ms {compiled_disc_ms:>10.3f}ms {compiled_trc_ms:>10.3f}ms "
+            f"{su_lam:>6.1f}x {su_disc:>6.1f}x {su_traces:>6.1f}x"
         )
 
     print(
-        "\nlambda(tri)/disc(tri): CUDA events — pure kernel time."
-        "\npt.compile:            wall-clock — dispatches one CUDA op per timestep from Python."
+        "\nlambda(tri)/disc(tri)/traces(tri): CUDA events — pure kernel time."
+        "\npt.compile: wall-clock — dispatches one CUDA op per timestep from Python."
         "\nspeedups are relative to each kernel's pt.compile baseline."
     )
 

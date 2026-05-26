@@ -119,9 +119,11 @@ def test_gae_autodispatch_above_threshold():
 
 @cuda_only
 def test_vtrace_autodispatch_below_threshold():
+    # Use a small seq_len — the point is that the fused path is taken, not that
+    # reference_vtrace runs over 131072 steps (which would take minutes in Python).
     from test_vtrace import reference_vtrace, _make_inputs
     torch.manual_seed(3)
-    args = _make_inputs(2, _FLAT_MAX_SEQ_LEN)
+    args = _make_inputs(2, 512)
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
     act_t, act_a = compute_vtrace_triton(*args, gamma=0.99)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)

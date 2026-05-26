@@ -1,8 +1,7 @@
 import torch
-import triton
 
-from rl_triton.kernels.vtrace import vtrace_scan_kernel
 from rl_triton.ops.vtrace_chunked import compute_vtrace_chunked
+from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 # tl.associative_scan requires BLOCK_SIZE <= 2^17.  Above this the flat kernel
 # cannot launch, so we fall back to the chunked kernel automatically.
@@ -40,8 +39,9 @@ def compute_vtrace_triton(
     V-Trace advantages (for actor loss):
       A[t] = ρ[t] * (r[t] + γ * v[t+1] * (1 - done[t]) - V(s_t))
 
-    Dispatches to the flat single-block kernel for seq_len <= 131072, and falls
-    back to the chunked kernel for longer sequences.
+    Dispatches to the fully-fused single-block kernel for seq_len <= 131072
+    (IS ratios, scan, targets, and advantages in one GPU kernel), and falls back
+    to the chunked scan + PyTorch elementwise ops for longer sequences.
 
     Args:
         log_pi_target:    Log probabilities under target policy, [num_envs, seq_len], float32, CUDA.
@@ -90,35 +90,28 @@ def compute_vtrace_triton(
         assert bootstrap_values.is_cuda, "bootstrap_values must be on CUDA"
         bootstrap_values = bootstrap_values.contiguous()
 
-    # Importance sampling ratios, computed in log-space for numerical stability.
+    if seq_len <= _FLAT_MAX_SEQ_LEN:
+        # Fused path: IS ratios, deltas, scan, targets, and advantages in one kernel.
+        return compute_vtrace_fused(
+            log_pi_target, log_pi_behavior,
+            values, next_values, rewards, dones,
+            gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
+            bootstrap_values=bootstrap_values,
+        )
+
+    # Chunked path for seq_len > 131072: run elementwise ops in PyTorch then
+    # hand the scan to the chunked kernel.
     is_ratios = torch.exp(log_pi_target - log_pi_behavior)
     rho = torch.clamp(is_ratios, max=rho_bar)
     c   = torch.clamp(is_ratios, max=c_bar)
 
-    # Scan inputs.
     deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
     decays = gamma * c * (1.0 - dones)
 
-    # Run the backward scan.
-    if seq_len > _FLAT_MAX_SEQ_LEN:
-        value_deltas = compute_vtrace_chunked(deltas, decays, bootstrap_values)
-    else:
-        value_deltas = torch.empty_like(rewards)
-        BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        vtrace_scan_kernel[(num_envs,)](
-            deltas, decays, value_deltas,
-            bootstrap_values,
-            seq_len,
-            rewards.stride(0),
-            BLOCK_SIZE=BLOCK_SIZE,
-        )
+    value_deltas = compute_vtrace_chunked(deltas, decays, bootstrap_values)
 
-    # V-Trace targets: v[t] = Δ[t] + V(s_t).
     vtrace_targets = value_deltas + values
 
-    # V-Trace advantages: A[t] = ρ[t] * (r[t] + γ * v[t+1] * (1-done[t]) - V(s_t)).
-    # v[t+1] is vtrace_targets shifted left by one; the last position uses next_values
-    # as the bootstrap (correct for both terminated and truncated endings).
     next_vtrace_targets = torch.empty_like(vtrace_targets)
     next_vtrace_targets[:, :-1] = vtrace_targets[:, 1:]
     next_vtrace_targets[:, -1]  = next_values[:, -1]

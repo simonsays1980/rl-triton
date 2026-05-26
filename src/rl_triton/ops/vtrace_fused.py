@@ -21,13 +21,11 @@ def compute_vtrace_fused(
     """
     Fully-fused V-Trace targets and advantages via a single Triton kernel.
 
-    Identical semantics to compute_vtrace_triton but avoids the eight intermediate
-    PyTorch elementwise kernels by computing IS ratios, deltas, decays, targets,
-    and advantages entirely inside one GPU kernel per environment row.
-
-    Faster than compute_vtrace_triton for all sequence lengths where the tensor
-    shapes fit in a single Triton block (seq_len <= 131072).  For longer sequences
-    use compute_vtrace_triton which auto-dispatches to the chunked path.
+    Called by compute_vtrace_triton for seq_len <= 131072.  Avoids the eight
+    intermediate PyTorch elementwise kernels by computing IS ratios, deltas,
+    decays, targets, and advantages entirely inside one GPU kernel per environment
+    row.  For longer sequences compute_vtrace_triton falls back to the chunked
+    path automatically — do not call this function directly for seq_len > 131072.
 
     Args:
         log_pi_target:    Log probs under target policy, [num_envs, seq_len], float32, CUDA.

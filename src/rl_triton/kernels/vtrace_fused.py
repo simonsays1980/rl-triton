@@ -86,14 +86,14 @@ def vtrace_fused_kernel(
 
     # --- Step 4: advantages ---
     # next_vtrace_target[t] = target[t+1].
-    # In the reversed block, real t+1 lives at rev_offset-1 (one position earlier
-    # in reversed indexing).  The boundary case t=T-1 (rev_offset==0) uses
-    # next_values[:, -1] which sits at physical index base+seq_len-1 = base+0
-    # in the reversed layout, i.e. next_values_ptr + base + 0.
+    # targets are stored at physical address base + t (= base + rev_offsets).
+    # So target[t+1] lives at base + rev_offsets + 1.
+    # The boundary case t=T-1 (rev_offsets == seq_len-1) uses next_values[:, -1]
+    # at physical address base + seq_len - 1.
     next_v_last = tl.load(next_values_ptr + base + seq_len - 1)
     next_target = tl.load(
-        targets_ptr + base + (rev_offsets - 1),
-        mask=(rev_offsets > 0) & mask,
+        targets_ptr + base + rev_offsets + 1,
+        mask=(rev_offsets < seq_len - 1) & mask,
         other=next_v_last,
     )
 

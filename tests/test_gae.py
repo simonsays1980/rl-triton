@@ -240,39 +240,25 @@ def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> fl
     return start.elapsed_time(end) / n_iter
 
 
-def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20, **kwargs) -> float:
-    """Returns mean milliseconds per call, measured with time.perf_counter."""
+def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) -> float:
+    """Run fn until at least target_s seconds of wall time, return mean ms per call."""
     for _ in range(n_warmup):
         fn(*args, **kwargs)
-
+    elapsed = 0.0
+    n = 0
     t0 = time.perf_counter()
-    for _ in range(n_iter):
+    while elapsed < target_s or n < 5:
         fn(*args, **kwargs)
-    return (time.perf_counter() - t0) / n_iter * 1000.0
+        n += 1
+        elapsed = time.perf_counter() - t0
+    return elapsed / n * 1000.0
 
 
 def _n_iter_gpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
-    """Iteration counts for GPU kernels (CUDA events).
-
-    A single fused Triton kernel is very fast, so we run many iterations to
-    get a stable measurement and to keep the GPU visibly busy under nvidia-smi.
-    Scale down only for very large tensors that are slow even on GPU.
-    """
+    """Iteration counts for GPU kernels (CUDA events)."""
     elements = seq_len * num_envs
     n_warmup = max(5,  min(25,  5_000_000 // elements))
     n_iter   = max(20, min(200, 20_000_000 // elements))
-    return n_warmup, n_iter
-
-
-def _n_iter_cpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
-    """Iteration counts for CPU/wall-clock benchmarks.
-
-    torch.compile and NumPy loops dispatch O(seq_len) Python calls per
-    iteration, so we scale down aggressively to keep total runtime reasonable.
-    """
-    work = seq_len * num_envs
-    n_warmup = max(1, min(5,  500_000 // (2 * work)))
-    n_iter   = max(1, min(20, 500_000 // work))
     return n_warmup, n_iter
 
 
@@ -333,12 +319,11 @@ def test_gae_performance():
         decays_np = decays_gpu.cpu().numpy()
 
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
-        cpu_warmup, cpu_iter = _n_iter_cpu(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_gae_triton,  deltas_gpu, decays_gpu, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms = _bench_cpu(compiled_gae,        deltas_gpu, decays_gpu, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        e2e_ms      = _bench_cpu(rllib_gae_triton,    deltas_np,  decays_np,  n_warmup=cpu_warmup, n_iter=cpu_iter)
-        rllib_ms    = _bench_cpu(rllib_gae,           deltas_np,  decays_np,  n_warmup=cpu_warmup, n_iter=cpu_iter)
+        compiled_ms = _bench_cpu(compiled_gae,        deltas_gpu, decays_gpu)
+        e2e_ms      = _bench_cpu(rllib_gae_triton,    deltas_np,  decays_np)
+        rllib_ms    = _bench_cpu(rllib_gae,           deltas_np,  decays_np)
 
         speedup_vs_compile = compiled_ms / triton_ms
         speedup_vs_e2e     = e2e_ms / triton_ms

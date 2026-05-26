@@ -461,26 +461,25 @@ def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> fl
     return start.elapsed_time(end) / n_iter
 
 
-def _bench_cpu(fn, *args, n_warmup: int = 5, n_iter: int = 20, **kwargs) -> float:
+def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) -> float:
+    """Run fn until at least target_s seconds of wall time, return mean ms per call."""
     for _ in range(n_warmup):
         fn(*args, **kwargs)
+    # Run at least 5 iterations, keep going until target_s is reached.
+    elapsed = 0.0
+    n = 0
     t0 = time.perf_counter()
-    for _ in range(n_iter):
+    while elapsed < target_s or n < 5:
         fn(*args, **kwargs)
-    return (time.perf_counter() - t0) / n_iter * 1000.0
+        n += 1
+        elapsed = time.perf_counter() - t0
+    return elapsed / n * 1000.0
 
 
 def _n_iter_gpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
     elements = seq_len * num_envs
     n_warmup = max(5,  min(25,  5_000_000 // elements))
     n_iter   = max(20, min(200, 20_000_000 // elements))
-    return n_warmup, n_iter
-
-
-def _n_iter_cpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
-    work = seq_len * num_envs
-    n_warmup = max(1, min(5,  500_000 // (2 * work)))
-    n_iter   = max(1, min(20, 500_000 // work))
     return n_warmup, n_iter
 
 
@@ -533,13 +532,12 @@ def test_vtrace_performance():
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
-        cpu_warmup, cpu_iter = _n_iter_cpu(seq_len, num_envs)
 
         triton_ms    = _bench_gpu(compute_vtrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         fused_ms     = _bench_gpu(compute_vtrace_fused,   *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
-        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99, n_warmup=cpu_warmup, n_iter=cpu_iter)
+        compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99)
+        np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99)
+        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99)
 
         speedup_vs_compile = compiled_ms  / fused_ms
         speedup_vs_e2e     = np_triton_ms / fused_ms

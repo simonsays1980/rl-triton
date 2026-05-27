@@ -4,43 +4,32 @@ Triton kernels for the backward and forward linear recurrence:
     Backward:  A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap   (right-to-left)
     Forward:   e[t] = u[t] + v[t] * e[t-1],  e[-1] = seed       (left-to-right)
 
-Both directions share the same associative structure and are used by multiple
-RL algorithms:
+Both directions share the same associative structure and the same combine
+function.  The only difference between the two kernels is data layout: the
+backward kernel reverses the array before scanning; the forward kernel reads
+in natural time order.
 
     Backward: GAE, discounted returns, lambda-returns, V-Trace, Retrace(λ)
     Forward:  eligibility traces
-
-The two combine functions (_combine / _combine_fwd) are the only algorithmic
-difference — one composes affine maps right-to-left, the other left-to-right.
 """
 import triton
 import triton.language as tl
 
 
 # ---------------------------------------------------------------------------
-# Combine functions
+# Combine function (shared by backward and forward kernels)
 # ---------------------------------------------------------------------------
 
 @triton.jit
 def _combine(u_a, v_a, u_b, v_b):
     """
-    Associative combine for the backward recurrence (right-to-left composition).
+    Associative combine for the linear recurrence A[t] = u[t] + v[t]*A[prev].
 
-    Affine map x -> u + v*x.  Composing f_B after f_A:
+    Represents affine map x -> u + v*x.  Composing f_B after f_A (A is the
+    earlier/left element whose output feeds into f_B):
       f_B(f_A(x)) = u_B + v_B*(u_A + v_A*x) = (u_B + v_B*u_A) + (v_A*v_B)*x
     """
     return u_b + v_b * u_a, v_a * v_b
-
-
-@triton.jit
-def _combine_fwd(u_a, v_a, u_b, v_b):
-    """
-    Associative combine for the forward recurrence (left-to-right composition).
-
-    Affine map x -> u + v*x.  Composing f_B after f_A with A applied first:
-      f_B(f_A(x)) = u_A + v_A*(u_B + v_B*x) = (u_A + v_A*u_B) + (v_A*v_B)*x
-    """
-    return u_a + v_a * u_b, v_a * v_b
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +118,7 @@ def forward_scan_kernel(
     u = tl.load(u_ptr + base + offsets, mask=mask, other=0.0)
     v = tl.load(v_ptr + base + offsets, mask=mask, other=1.0)
 
-    out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine_fwd)
+    out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
     seed = tl.load(seed_ptr + env_idx)
     out  = out_local + v_prod * seed

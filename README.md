@@ -4,9 +4,14 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 
 ## Kernels
 
-| Kernel | Op | Description |
+| Function | Algorithm | Description |
 |---|---|---|
-| GAE | `compute_gae_triton` | Generalized Advantage Estimation — backward scan over `δ + γλ · A` |
+| `compute_gae_triton` | GAE | Generalized Advantage Estimation — backward scan over `δ + γλ·A` |
+| `compute_vtrace_triton` | V-Trace | IS-weighted targets and advantages — fused single-kernel for seq_len ≤ 131072 |
+| `compute_retrace_triton` | Retrace(λ) | Off-policy return estimate with truncated IS ratios |
+| `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo |
+| `compute_discounted_returns` | Returns | Discounted reward-to-go |
+| `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d)e[t-1]` |
 
 ## Installation
 
@@ -28,5 +33,26 @@ advantages = compute_gae_triton(deltas, decays)
 ## Testing
 
 ```bash
+# Correctness tests
 pytest tests/ -v
+
+# PR performance safeguard (one config per algorithm, requires CUDA)
+pytest -m perf -v
+
+# Full slow benchmark suite (all configs, requires CUDA)
+pytest -m slow -v
 ```
+
+## Benchmarking
+
+The release benchmark runs all algorithms across multiple (num_envs, seq_len) configs
+and updates the Performance section of this README automatically:
+
+```bash
+python tests/bench_release.py --gpu "RTX 4090"
+```
+
+Use `--no-update` to print results without modifying the README.
+
+<!-- BENCH_START -->
+<!-- BENCH_END -->

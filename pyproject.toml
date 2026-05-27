@@ -21,6 +21,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
+python_files = ["test_*.py", "bench_*.py"]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "slow: marks tests as slow — full sweep across all configs (deselect with '-m \"not slow\"')",
+    "perf: PR safeguard performance tests — one config per algorithm, assert >=1.5x vs pt.compile",
 ]

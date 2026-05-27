@@ -1,10 +1,10 @@
-import time
-
 # numpy is used intentionally: RLlib v2's compute_value_targets runs on CPU with NumPy,
 # so rllib_gae mirrors that faithfully rather than porting it to PyTorch.
 import numpy as np
 import pytest
 import torch
+
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
 triton = pytest.importorskip("triton")
 
@@ -223,44 +223,6 @@ def test_gae_non_contiguous_input():
 # ---------------------------------------------------------------------------
 # Benchmark helpers
 # ---------------------------------------------------------------------------
-
-def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> float:
-    """Returns mean milliseconds per call, measured with CUDA events."""
-    for _ in range(n_warmup):
-        fn(*args, **kwargs)
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        fn(*args, **kwargs)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
-
-
-def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) -> float:
-    """Run fn until at least target_s seconds of wall time, return mean ms per call."""
-    for _ in range(n_warmup):
-        fn(*args, **kwargs)
-    elapsed = 0.0
-    n = 0
-    t0 = time.perf_counter()
-    while elapsed < target_s or n < 5:
-        fn(*args, **kwargs)
-        n += 1
-        elapsed = time.perf_counter() - t0
-    return elapsed / n * 1000.0
-
-
-def _n_iter_gpu(seq_len: int, num_envs: int = 1) -> tuple[int, int]:
-    """Iteration counts for GPU kernels (CUDA events)."""
-    elements = seq_len * num_envs
-    n_warmup = max(5,  min(25,  5_000_000 // elements))
-    n_iter   = max(20, min(200, 20_000_000 // elements))
-    return n_warmup, n_iter
-
 
 # ---------------------------------------------------------------------------
 # Performance benchmark

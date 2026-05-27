@@ -100,8 +100,11 @@ def test_scan_flat_matches_chunked():
 
 @cuda_only
 def test_gae_autodispatch_below_threshold():
+    # Use a modest seq_len — the point is that the flat kernel path is taken and
+    # produces correct output, not that the reference loop runs at maximum scale
+    # (131072 Python iterations would kill the process).
     torch.manual_seed(3)
-    deltas, decays = _make_scan_inputs(2, _FLAT_MAX_SEQ_LEN)
+    deltas, decays = _make_scan_inputs(2, 512)
     expected = _reference_scan(deltas, decays)
     actual   = compute_gae_triton(deltas, decays)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)

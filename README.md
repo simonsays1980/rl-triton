@@ -1,4 +1,5 @@
-# rl-triton
+![rl-triton banner](assets/banner_dark.svg)
+
 
 High-performance [Triton](https://github.com/openai/triton) GPU kernels for common reinforcement learning computations.
 

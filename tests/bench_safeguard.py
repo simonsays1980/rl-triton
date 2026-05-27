@@ -73,8 +73,8 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, next_values, rewards, dones, gamma,
     return targets, advantages
 
 
-def _ref_retrace(rewards, dones, values, next_q_all, q_values, actions,
-                 action_probs_target, action_probs_behavior, gamma, lambda_=1.0,
+def _ref_retrace(action_probs_target, action_probs_behavior, q_values, next_q_all,
+                 actions, rewards, dones, gamma, lambda_=1.0,
                  c_bar=1.0, bootstrap_values=None):
     num_envs, T = rewards.shape
     pi_a    = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
@@ -163,14 +163,13 @@ def _retrace_inputs(num_actions=4):
     torch.manual_seed(0)
     d = "cuda"
     return (
-        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),           # rewards
-        (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float(),  # dones
-        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),           # values (unused by retrace but kept for ref)
-        torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d),     # next_q_all
-        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),           # q_values
-        torch.randint(0, num_actions, (_NUM_ENVS, _SEQ_LEN), device=d),  # actions
-        torch.softmax(torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d), dim=-1),  # probs_target
-        torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) * 0.8 + 0.1,      # probs_behavior
+        torch.softmax(torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d), dim=-1),  # action_probs_target
+        torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) * 0.8 + 0.1,                          # action_probs_behavior
+        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),                                      # q_values
+        torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d),                         # next_q_values_all
+        torch.randint(0, num_actions, (_NUM_ENVS, _SEQ_LEN), device=d),                  # actions
+        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),                                      # rewards
+        (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float(),                     # dones
     )
 
 

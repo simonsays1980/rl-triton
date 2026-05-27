@@ -26,7 +26,7 @@
     <line x1="1088" y1="0" x2="1088" y2="320"/><line x1="1152" y1="0" x2="1152" y2="320"/>
     <line x1="1216" y1="0" x2="1216" y2="320"/>
   </g>
-  <!-- logo mark left, block=26 step=29 -->
+  <!-- logo mark left -->
   <rect x="60"  y="40" width="26" height="26" fill="#f77f00" rx="3"/>
   <rect x="89"  y="40" width="26" height="26" fill="#f77f00" rx="3"/>
   <rect x="118" y="40" width="26" height="26" fill="#e040c0" rx="3"/>
@@ -53,14 +53,7 @@
   <rect x="176" y="214" width="26" height="26" fill="#6620cc" rx="3"/>
   <!-- separator -->
   <line x1="320" y1="40" x2="320" y2="280" stroke="#2a2a4a" stroke-width="1.5"/>
-  <!-- wordmark -->
-  <text x="370" y="148" class="wm" font-size="64" letter-spacing="6">rl-triton</text>
-  <text x="370" y="192" class="sub" font-size="14" letter-spacing="4">GPU KERNELS FOR REINFORCEMENT LEARNING</text>
-  <!-- badges -->
-  <rect x="370" y="216" width="110" height="26" fill="#1e1060" rx="4"/>
-  <text x="425" y="234" text-anchor="middle" class="sub" font-size="9" letter-spacing="1">TRITON</text>
-  <rect x="492" y="216" width="110" height="26" fill="#0c1e30" rx="4"/>
-  <text x="547" y="234" text-anchor="middle" fill="#38bdf8" font-size="9" letter-spacing="1" font-family="'Press Start 2P', monospace">PYTORCH</text>
-  <rect x="614" y="216" width="110" height="26" fill="#1a0c00" rx="4"/>
-  <text x="669" y="234" text-anchor="middle" fill="#f77f00" font-size="9" letter-spacing="1" font-family="'Press Start 2P', monospace">OPEN SRC</text>
+  <!-- wordmark — vertically centered in 320px -->
+  <text x="370" y="162" class="wm" font-size="64" letter-spacing="6">rl-triton</text>
+  <text x="370" y="210" class="sub" font-size="14" letter-spacing="4">GPU KERNELS FOR REINFORCEMENT LEARNING</text>
 </svg>

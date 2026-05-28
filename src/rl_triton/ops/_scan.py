@@ -16,8 +16,20 @@ Forward (left-to-right): e[t] = u[t] + v[t] * e[t-1],   e[-1] = seed
 _run_scan / _run_scan_forward own all input validation, contiguous enforcement,
 and flat/chunked dispatch.  Public wrappers compute u and v, then call them.
 """
+import os
+import warnings
+
 import torch
 import triton
+
+# Set RL_TRITON_PERF_WARNINGS=1 to enable warnings about performance bottlenecks
+# such as non-contiguous inputs that trigger implicit copies.
+_PERF_WARNINGS = os.environ.get("RL_TRITON_PERF_WARNINGS", "0") == "1"
+
+
+def _perf_warn(msg: str) -> None:
+    if _PERF_WARNINGS:
+        warnings.warn(msg, stacklevel=3)
 
 from rl_triton.kernels.scan import backward_scan_kernel, forward_scan_kernel
 from rl_triton.kernels.gae_chunked import chunked_gae_kernel
@@ -53,6 +65,10 @@ def _run_scan(
     assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
     assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
 
+    if not u.is_contiguous():
+        _perf_warn("u is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
+    if not v.is_contiguous():
+        _perf_warn("v is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
     u = u.contiguous()
     v = v.contiguous()
 
@@ -116,6 +132,10 @@ def _run_scan_forward(
     assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
     assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
 
+    if not u.is_contiguous():
+        _perf_warn("u is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
+    if not v.is_contiguous():
+        _perf_warn("v is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
     u = u.contiguous()
     v = v.contiguous()
 

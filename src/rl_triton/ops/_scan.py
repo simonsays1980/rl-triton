@@ -48,12 +48,17 @@ def _run_scan(
     """
     Backward linear scan: A[t] = u[t] + v[t] * A[t+1], A[T] = bootstrap.
 
-    Dispatches to the flat single-block kernel for seq_len <= 131072 and the
-    chunked kernel for longer sequences.
+    Shared implementation for GAE, V-Trace, Retrace, discounted returns, and
+    lambda returns — callers compute u and v from their own inputs and delegate
+    here.  Dispatches to the flat single-block kernel for seq_len <= 131072 and
+    the chunked kernel for longer sequences.
+
+    Non-contiguous inputs are accepted; a contiguous copy is made automatically.
+    Set RL_TRITON_PERF_WARNINGS=1 to be warned when this happens.
 
     Args:
-        u:         Additive term [num_envs, seq_len], float32, CUDA, contiguous.
-        v:         Multiplicative decay [num_envs, seq_len], float32, CUDA, contiguous.
+        u:         Additive term [num_envs, seq_len], float32, CUDA.
+        v:         Multiplicative decay [num_envs, seq_len], float32, CUDA.
         bootstrap: Per-environment boundary value A[T], shape [num_envs], float32.
                    Defaults to zeros (terminated episodes).
 

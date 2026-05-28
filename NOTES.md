@@ -51,6 +51,39 @@ points: the chunked two-pass structure is already correct and tested, and the
 fused kernel's IS-ratio and advantage logic can be reused inside each chunk's
 kernel.
 
+## dtype support and autocast
+
+All kernels require float32 inputs and will raise if passed anything else.
+This is intentional: the backward scan accumulates additions over potentially
+thousands of timesteps, and bf16's limited precision (7 mantissa bits vs 23
+for float32) causes meaningful numerical drift at those sequence lengths.
+
+### torch.autocast compatibility
+
+`torch.autocast` silently casts tensors to bf16 inside its context, which will
+hit the float32 assertion.  Cast inputs explicitly before entering the scan:
+
+```python
+with torch.autocast("cuda"):
+    # ... policy forward pass in bf16 ...
+    deltas = deltas.float()
+    decays = decays.float()
+    advantages = compute_gae_triton(deltas, decays)
+```
+
+This matches standard mixed-precision RL practice: the policy network runs in
+bf16 for speed, while value targets and advantage estimates are kept in float32
+for numerical stability.
+
+### bf16 support
+
+bf16 kernels are not planned.  If a use case arises where float32 is a
+bottleneck (e.g. very large batches on memory-bandwidth-limited hardware),
+the right approach is to benchmark whether the precision loss is acceptable
+for that specific workload rather than enabling it globally.
+
+---
+
 ## Performance warnings
 
 Set the environment variable `RL_TRITON_PERF_WARNINGS=1` to enable opt-in

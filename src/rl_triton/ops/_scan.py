@@ -32,7 +32,7 @@ def _perf_warn(msg: str) -> None:
         warnings.warn(msg, stacklevel=3)
 
 from rl_triton.kernels.scan import backward_scan_kernel, forward_scan_kernel
-from rl_triton.kernels.gae_chunked import chunked_gae_kernel
+from rl_triton.kernels.scan_chunked import chunked_backward_scan_kernel
 
 # tl.associative_scan requires BLOCK_SIZE <= 2^17.  Above this the flat kernel
 # cannot launch; the chunked kernel handles arbitrary lengths.
@@ -90,7 +90,7 @@ def _run_scan(
     out = torch.empty_like(u)
 
     if seq_len > _FLAT_MAX_SEQ_LEN:
-        chunked_gae_kernel[(num_envs,)](
+        chunked_backward_scan_kernel[(num_envs,)](
             u, v, out,
             bootstrap,
             seq_len,

@@ -3,6 +3,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 
 cuda_only = pytest.mark.skipif(
@@ -214,6 +215,124 @@ def test_prefix_sum_non_contiguous_input():
     actual   = compute_episodic_prefix_sum(inputs, dones)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Performance benchmark
+# ---------------------------------------------------------------------------
+
+BENCH_CONFIGS = [
+    (64,  512),
+    (128, 1024),
+    (256, 1024),
+    (512, 2048),
+    (512, 4096),
+]
+
+
+def cumsum_episodic_prefix_sum(
+    inputs: torch.Tensor,
+    dones: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Episodic prefix sum via torch.cumsum with a segment-correction trick.
+
+    Used as a strong compiled baseline: a competent PyTorch user would write
+    something like this to avoid a Python timestep loop.  Not production-
+    hardened for all edge cases — only used for benchmarking.
+
+    The idea: global cumsum minus the cumsum value carried in from the start
+    of each episode segment.
+
+      running  = cumsum(inputs)               # global, ignores resets
+      boundary = running * dones              # value at each terminal step
+      offset   = cumsum(boundary).shift(1)   # value to subtract per segment
+      result   = running - offset
+    """
+    running  = torch.cumsum(inputs, dim=1)
+    boundary = running * dones
+    offset   = torch.cumsum(boundary, dim=1) - boundary
+    return running - offset
+
+
+@cuda_only
+@pytest.mark.slow
+def test_prefix_sum_performance():
+    """
+    Benchmark compute_episodic_prefix_sum against three baselines:
+
+      triton             — Triton kernel  (CUDA events)
+      pt.compile(cumsum) — torch.compile on the vectorized cumsum trick  (CUDA events)
+      pt.compile(loop)   — torch.compile on the reference timestep loop  (wall-clock)
+      numpy(cpu)         — pure NumPy loop on CPU  (wall-clock)
+
+    Both Triton and pt.compile(cumsum) are fully vectorized (no Python timestep
+    loop), so CUDA events are appropriate for both.  pt.compile(loop) dispatches
+    one op per timestep from Python; wall-clock captures that stall.
+
+    Assertion: Triton must be >=1.5x faster than pt.compile(cumsum) — the
+    strongest fully-vectorized PyTorch baseline.
+    """
+    compiled_cumsum = torch.compile(cumsum_episodic_prefix_sum)
+    compiled_loop   = torch.compile(reference_episodic_prefix_sum)
+
+    _i = torch.randn(64, 512, device="cuda")
+    _d = (torch.rand(64, 512, device="cuda") < 0.05).float()
+    compiled_cumsum(_i, _d)
+    compiled_loop(_i, _d)
+    torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>10} {'compile(cumsum)':>16} {'compile(loop)':>15} {'numpy(cpu)':>12} "
+        f"{'vs cumsum':>11} {'vs loop':>9} {'vs numpy':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    all_speedups_cumsum = []
+
+    for num_envs, seq_len in BENCH_CONFIGS:
+        inputs   = torch.randn(num_envs, seq_len, device="cuda")
+        dones    = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        inputs_np = inputs.cpu().numpy()
+        dones_np  = dones.cpu().numpy()
+        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        triton_ms  = _bench_gpu(compute_episodic_prefix_sum, inputs, dones,
+                                n_warmup=n_warmup, n_iter=n_iter)
+        cumsum_ms  = _bench_gpu(compiled_cumsum, inputs, dones,
+                                n_warmup=n_warmup, n_iter=n_iter)
+        loop_ms    = _bench_cpu(compiled_loop, inputs, dones)
+        numpy_ms   = _bench_cpu(
+            lambda i, d: reference_episodic_prefix_sum(
+                torch.from_numpy(i), torch.from_numpy(d)
+            ),
+            inputs_np, dones_np,
+        )
+
+        su_cumsum = cumsum_ms / triton_ms
+        su_loop   = loop_ms   / triton_ms
+        su_numpy  = numpy_ms  / triton_ms
+        all_speedups_cumsum.append(su_cumsum)
+
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{triton_ms:>9.3f}ms {cumsum_ms:>15.3f}ms {loop_ms:>14.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_cumsum:>9.1f}x {su_loop:>7.1f}x {su_numpy:>8.1f}x"
+        )
+
+    print(
+        "\ntriton          : CUDA events — pure kernel time, no CPU overhead."
+        "\ncompile(cumsum) : CUDA events — vectorized cumsum correction, no Python loop."
+        "\ncompile(loop)   : wall-clock  — one CUDA op per timestep from Python;"
+        "\n                  CUDA events would miss the CPU stall."
+        "\nnumpy(cpu)      : wall-clock  — pure NumPy loop on CPU."
+    )
+
+    assert min(all_speedups_cumsum) >= 1.5, (
+        f"Expected >=1.5x speedup over pt.compile(cumsum), worst was {min(all_speedups_cumsum):.2f}x"
+    )
 
 
 # ---------------------------------------------------------------------------

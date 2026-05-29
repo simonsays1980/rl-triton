@@ -321,6 +321,54 @@ def test_discounted_returns_correctness(num_envs, seq_len):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+# Compiled cumsum baselines (benchmark only)
+# ---------------------------------------------------------------------------
+
+def cumsum_discounted_returns(
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """
+    Discounted returns via flipped cumsum — strong compiled baseline.
+
+    Reverses the sequence, applies the cumsum correction trick with geometric
+    discounting via log-space, then flips back.  Not production-hardened;
+    only used for benchmarking.
+    """
+    not_done  = 1.0 - dones
+    # Build per-step discount factors and compute log-cumsum for geometric weights.
+    log_gamma = torch.full_like(rewards, gamma).log() * not_done
+    log_disc  = torch.flip(torch.cumsum(torch.flip(log_gamma, [1]), dim=1), [1])
+    discounted = rewards * log_disc.exp()
+    running   = torch.flip(torch.cumsum(torch.flip(discounted, [1]), dim=1), [1])
+    return running / log_disc.exp()
+
+
+def cumsum_eligibility_traces(
+    features: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """
+    Eligibility traces via cumsum correction trick — strong compiled baseline.
+
+    Same segment-correction approach as cumsum_episodic_prefix_sum, extended
+    with per-step geometric decay gamma*lambda*(1-done).  Not production-
+    hardened; only used for benchmarking.
+    """
+    decay    = gamma * lambda_ * (1.0 - dones)
+    log_acc  = torch.cumsum(torch.log(decay.clamp(min=1e-38)), dim=1)
+    weights  = torch.exp(log_acc)
+    scaled   = features * weights
+    running  = torch.cumsum(scaled, dim=1)
+    boundary = running * dones
+    offset   = torch.cumsum(boundary, dim=1) - boundary
+    return (running - offset) / weights
+
+
+# ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------
 
@@ -346,21 +394,29 @@ def test_returns_performance():
 
     Assertion: both kernels must be >=1.5x faster than torch.compile.
     """
-    compiled_lambda = torch.compile(reference_lambda_returns)
-    compiled_disc   = torch.compile(reference_discounted_returns)
-    compiled_traces = torch.compile(reference_eligibility_traces)
+    compiled_lam_loop  = torch.compile(reference_lambda_returns)
+    compiled_disc_loop = torch.compile(reference_discounted_returns)
+    compiled_trc_loop  = torch.compile(reference_eligibility_traces)
+    compiled_disc_vec  = torch.compile(cumsum_discounted_returns)
+    compiled_trc_vec   = torch.compile(cumsum_eligibility_traces)
 
     _r, _nv, _d = _make_inputs(64, 512)
-    compiled_lambda(_r, _nv, _d, gamma=0.99, lambda_=0.95)
-    compiled_disc(_r, _d, gamma=0.99)
-    compiled_traces(_r, _d, gamma=0.99, lambda_=0.95)
+    compiled_lam_loop(_r, _nv, _d, gamma=0.99, lambda_=0.95)
+    compiled_disc_loop(_r, _d, gamma=0.99)
+    compiled_trc_loop(_r, _d, gamma=0.99, lambda_=0.95)
+    compiled_disc_vec(_r, _d, gamma=0.99)
+    compiled_trc_vec(_r, _d, gamma=0.99, lambda_=0.95)
     torch.cuda.synchronize()
 
+    # lambda returns have no clean vectorized cumsum equivalent — loop is the baseline.
+    # discounted returns and eligibility traces have a vectorized cumsum baseline.
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'lambda(tri)':>12} {'disc(tri)':>10} {'traces(tri)':>12} "
-        f"{'compile λ':>11} {'compile G':>11} {'compile e':>11} "
-        f"{'vs λ':>7} {'vs G':>7} {'vs e':>7}"
+        f"{'λ(tri)':>8} {'G(tri)':>8} {'e(tri)':>8} "
+        f"{'λ loop':>8} {'G loop':>8} {'e loop':>8} "
+        f"{'G vec':>7} {'e vec':>7} "
+        f"{'numpy λ':>9} {'numpy G':>9} {'numpy e':>9} "
+        f"{'vs λ':>6} {'vs G':>6} {'vs e':>6}"
     )
     print(header)
     print("-" * len(header))
@@ -369,38 +425,53 @@ def test_returns_performance():
 
     for num_envs, seq_len in BENCH_CONFIGS:
         rewards, next_values, dones = _make_inputs(num_envs, seq_len)
+        rewards_cpu, next_values_cpu, dones_cpu = _make_inputs(num_envs, seq_len, device="cpu")
         n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
 
-        lambda_ms       = _bench_gpu(compute_lambda_returns,     rewards, next_values, dones,
-                                     gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
-        disc_ms         = _bench_gpu(compute_discounted_returns,  rewards, dones,
-                                     gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        traces_ms       = _bench_gpu(compute_eligibility_traces,  rewards, dones,
-                                     gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
-        compiled_lam_ms = _bench_cpu(compiled_lambda,  rewards, next_values, dones,
-                                     gamma=0.99, lambda_=0.95)
-        compiled_disc_ms= _bench_cpu(compiled_disc,    rewards, dones, gamma=0.99)
-        compiled_trc_ms = _bench_cpu(compiled_traces,  rewards, dones,
-                                     gamma=0.99, lambda_=0.95)
+        lam_ms      = _bench_gpu(compute_lambda_returns,    rewards, next_values, dones,
+                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        disc_ms     = _bench_gpu(compute_discounted_returns, rewards, dones,
+                                  gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        traces_ms   = _bench_gpu(compute_eligibility_traces, rewards, dones,
+                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
 
-        su_lam    = compiled_lam_ms  / lambda_ms
-        su_disc   = compiled_disc_ms / disc_ms
-        su_traces = compiled_trc_ms  / traces_ms
-        all_speedups.extend([su_lam, su_disc, su_traces])
+        lam_loop_ms  = _bench_cpu(compiled_lam_loop,  rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        disc_loop_ms = _bench_cpu(compiled_disc_loop,  rewards, dones, gamma=0.99)
+        trc_loop_ms  = _bench_cpu(compiled_trc_loop,   rewards, dones, gamma=0.99, lambda_=0.95)
+
+        disc_vec_ms  = _bench_gpu(compiled_disc_vec,   rewards, dones,
+                                  gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        trc_vec_ms   = _bench_gpu(compiled_trc_vec,    rewards, dones,
+                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+
+        numpy_lam_ms  = _bench_cpu(reference_lambda_returns,    rewards_cpu, next_values_cpu, dones_cpu, gamma=0.99, lambda_=0.95)
+        numpy_disc_ms = _bench_cpu(reference_discounted_returns, rewards_cpu, dones_cpu, gamma=0.99)
+        numpy_trc_ms  = _bench_cpu(reference_eligibility_traces, rewards_cpu, dones_cpu, gamma=0.99, lambda_=0.95)
+
+        # Assert against strongest compiled baseline per kernel.
+        su_lam  = lam_loop_ms  / lam_ms
+        su_disc = disc_vec_ms  / disc_ms
+        su_trc  = trc_vec_ms   / traces_ms
+        all_speedups.extend([su_lam, su_disc, su_trc])
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{lambda_ms:>11.3f}ms {disc_ms:>9.3f}ms {traces_ms:>11.3f}ms "
-            f"{compiled_lam_ms:>10.3f}ms {compiled_disc_ms:>10.3f}ms {compiled_trc_ms:>10.3f}ms "
-            f"{su_lam:>6.1f}x {su_disc:>6.1f}x {su_traces:>6.1f}x"
+            f"{lam_ms:>7.3f}ms {disc_ms:>7.3f}ms {traces_ms:>7.3f}ms "
+            f"{lam_loop_ms:>7.3f}ms {disc_loop_ms:>7.3f}ms {trc_loop_ms:>7.3f}ms "
+            f"{disc_vec_ms:>6.3f}ms {trc_vec_ms:>6.3f}ms "
+            f"{numpy_lam_ms:>8.3f}ms {numpy_disc_ms:>8.3f}ms {numpy_trc_ms:>8.3f}ms "
+            f"{su_lam:>5.1f}x {su_disc:>5.1f}x {su_trc:>5.1f}x"
         )
 
     print(
-        "\nlambda(tri)/disc(tri)/traces(tri): CUDA events — pure kernel time."
-        "\npt.compile: wall-clock — dispatches one CUDA op per timestep from Python."
-        "\nspeedups are relative to each kernel's pt.compile baseline."
+        "\nλ/G/e (tri)   : CUDA events — pure kernel time, no CPU overhead."
+        "\nloop baselines : wall-clock — one CUDA op per timestep from Python."
+        "\nvec baselines  : CUDA events — vectorized cumsum (no Python loop); "
+        "\n                 not available for λ-returns (mixed V term prevents clean cumsum)."
+        "\nnumpy          : wall-clock — reference loop on CPU tensors."
+        "\nspeedups vs strongest compiled baseline: λ vs loop, G vs vec, e vs vec."
     )
 
     assert min(all_speedups) >= 1.5, (
-        f"Expected >=1.5x speedup over pt.compile, worst was {min(all_speedups):.2f}x"
+        f"Expected >=1.5x speedup over strongest compiled baseline, worst was {min(all_speedups):.2f}x"
     )

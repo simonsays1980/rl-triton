@@ -4,9 +4,9 @@ import torch
 
 from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
-# numpy is used intentionally: RLlib v2 stores episode data as NumPy arrays in
-# SingleAgentEpisode, so rllib_vtrace_triton mirrors the real adoption path
-# (np -> GPU -> np) a user would take to swap in the Triton kernel.
+# numpy is used intentionally: episode data is typically stored as NumPy arrays,
+# so numpy_to_triton_to_numpy mirrors the real adoption path (np -> GPU -> np)
+# a user would take to swap in the Triton kernel.
 
 triton = pytest.importorskip("triton")
 
@@ -82,16 +82,15 @@ def _make_inputs_np(num_envs, seq_len, seed=0):
 
 
 # ---------------------------------------------------------------------------
-# RLlib-style reference (CPU, mirrors ray.rllib.utils.vtrace_torch)
+# CPU numpy baseline and end-to-end adoption path
 # ---------------------------------------------------------------------------
 #
-# RLlib's from_importance_weights works on [T, B]-shaped tensors and receives
-# `discounts` (γ*(1-done), pre-multiplied) rather than separate gamma/dones.
-# It also hard-clips c at 1.0 and runs the backward loop on CPU.
+# numpy_vtrace mirrors how a CPU-based framework computes V-Trace:
+# a plain Python backward loop on CPU tensors.
 # These adapters expose the same interface as the public API (num_envs, seq_len)
 # so they can be benchmarked head-to-head.
 
-def rllib_vtrace(
+def numpy_vtrace(
     log_pi_target: torch.Tensor,
     log_pi_behavior: torch.Tensor,
     values: torch.Tensor,
@@ -103,11 +102,10 @@ def rllib_vtrace(
     c_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    CPU V-Trace backward loop matching RLlib's from_importance_weights logic.
+    CPU V-Trace backward loop — plain Python loop on CPU tensors.
 
-    Mirrors the [T, B] + discounts convention of RLlib internally but accepts
-    and returns [num_envs, seq_len] tensors (CPU) to match our public API.
-    Runs entirely on CPU — no GPU involved.
+    Accepts and returns [num_envs, seq_len] tensors (CPU) to match our public
+    API.  Runs entirely on CPU — no GPU involved.
     """
     # Move to CPU for an apples-to-apples comparison with the RLlib baseline.
     cpu = lambda t: t.cpu().float()
@@ -144,7 +142,7 @@ def rllib_vtrace(
     return vtrace_targets, vtrace_advantages
 
 
-def rllib_vtrace_triton(
+def numpy_to_triton_to_numpy(
     log_pi_target_np: np.ndarray,
     log_pi_behavior_np: np.ndarray,
     values_np: np.ndarray,
@@ -156,10 +154,10 @@ def rllib_vtrace_triton(
     c_bar: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    NumPy → GPU Triton kernel → NumPy adoption path.
+    NumPy → GPU Triton kernel → NumPy end-to-end adoption path.
 
-    Mirrors how an RLlib user would replace rllib_vtrace with the Triton kernel:
-    read NumPy arrays from SingleAgentEpisode, move to GPU, compute, move back.
+    Mirrors how a user would replace numpy_vtrace with the Triton kernel:
+    read NumPy arrays, move to GPU, compute, move back.
     """
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
     log_pi_target   = to_gpu(log_pi_target_np)
@@ -400,24 +398,23 @@ def test_vtrace_fused_bootstrap():
 # ---------------------------------------------------------------------------
 
 @cuda_only
-def test_rllib_vtrace_matches_reference():
-    """rllib_vtrace (CPU loop) must agree with reference_vtrace within float32 tolerance."""
+def test_numpy_vtrace_matches_reference():
+    """numpy_vtrace (CPU loop) must agree with reference_vtrace within float32 tolerance."""
     args = _make_inputs(32, 256, device="cpu", seed=10)
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
-    act_t, act_a = rllib_vtrace(*args, gamma=0.99)
+    act_t, act_a = numpy_vtrace(*args, gamma=0.99)
     torch.testing.assert_close(act_t, exp_t.cpu(), atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a.cpu(), atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
-def test_rllib_vtrace_triton_matches_reference():
+def test_numpy_to_triton_to_numpy_matches_reference():
     """NumPy→GPU→NumPy path must agree with reference_vtrace."""
     args_np = _make_inputs_np(32, 256, seed=11)
-    # Derive GPU tensors from the same numpy arrays so RNG is identical.
     args_gpu = tuple(torch.from_numpy(a).cuda() for a in args_np)
     exp_t, exp_a = reference_vtrace(*args_gpu, gamma=0.99)
 
-    act_t_np, act_a_np = rllib_vtrace_triton(*args_np, gamma=0.99)
+    act_t_np, act_a_np = numpy_to_triton_to_numpy(*args_np, gamma=0.99)
     act_t = torch.from_numpy(act_t_np)
     act_a = torch.from_numpy(act_a_np)
     torch.testing.assert_close(act_t, exp_t.cpu(), atol=1e-4, rtol=1e-4)
@@ -446,13 +443,17 @@ def test_vtrace_performance():
       - fused:          single Triton kernel — IS ratios, scan, targets, advantages in one pass  (CUDA events)
       - pt.compile:     torch.compile on the reference loop  (wall-clock)
       - np->triton->np: NumPy->GPU->NumPy adoption path  (wall-clock, includes transfer overhead)
-      - rllib(cpu):     CPU Python loop matching RLlib's from_importance_weights  (wall-clock)
+      - numpy(cpu):     CPU Python loop  (wall-clock)
 
     fused uses CUDA events (pure kernel time). All others use wall-clock because
     torch.compile dispatches one CUDA op per timestep from Python — CUDA events would
     miss that CPU stall and make it look unrealistically fast.
 
-    Assertion: fused must be >=1.5x faster than torch.compile (wall-clock vs CUDA events).
+    Assertions:
+      - fused must be >=1.5x faster than torch.compile (GPU vs GPU).
+      - np->triton->np must be >=1.5x faster than numpy(cpu) — below this the
+        kernel gain would likely be lost to inter-worker communication overhead
+        in a distributed setup.
     """
     compiled_vtrace = torch.compile(reference_vtrace)
 
@@ -462,44 +463,53 @@ def test_vtrace_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'rllib(cpu)':>12} "
-        f"{'vs compile':>12} {'vs np->tri->np':>16} {'vs rllib':>10}"
+        f"{'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'numpy(cpu)':>12} "
+        f"{'vs compile':>12} {'np->tri->np vs numpy':>22} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups = []
+    all_speedups_compile = []
+    all_speedups_e2e     = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        fused_ms     = _bench_gpu(compute_vtrace_fused,   *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms  = _bench_cpu(compiled_vtrace,        *args_gpu, gamma=0.99)
-        np_triton_ms = _bench_cpu(rllib_vtrace_triton,    *args_np,  gamma=0.99)
-        rllib_ms     = _bench_cpu(rllib_vtrace,           *args_gpu, gamma=0.99)
+        fused_ms     = _bench_gpu(compute_vtrace_fused,      *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        compiled_ms  = _bench_cpu(compiled_vtrace,           *args_gpu, gamma=0.99)
+        np_triton_ms = _bench_cpu(numpy_to_triton_to_numpy,  *args_np,  gamma=0.99)
+        numpy_ms     = _bench_cpu(numpy_vtrace,              *args_gpu, gamma=0.99)
 
-        speedup_vs_compile = compiled_ms  / fused_ms
-        speedup_vs_e2e     = np_triton_ms / fused_ms
-        speedup_vs_rllib   = rllib_ms     / fused_ms
-        all_speedups.append(speedup_vs_compile)
+        speedup_vs_compile   = compiled_ms / fused_ms
+        speedup_e2e_vs_numpy = numpy_ms    / np_triton_ms
+        speedup_vs_numpy     = numpy_ms    / fused_ms
+        all_speedups_compile.append(speedup_vs_compile)
+        all_speedups_e2e.append(speedup_e2e_vs_numpy)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{fused_ms:>7.3f}ms {compiled_ms:>11.3f}ms "
-            f"{np_triton_ms:>15.3f}ms {rllib_ms:>11.3f}ms "
-            f"{speedup_vs_compile:>10.1f}x  {speedup_vs_e2e:>14.1f}x  {speedup_vs_rllib:>8.1f}x"
+            f"{np_triton_ms:>15.3f}ms {numpy_ms:>11.3f}ms "
+            f"{speedup_vs_compile:>10.1f}x  {speedup_e2e_vs_numpy:>20.1f}x  {speedup_vs_numpy:>8.1f}x"
         )
 
     print(
         "\nfused:          CUDA events — single kernel, pure GPU time, no Python overhead."
         "\npt.compile:     wall-clock — dispatches one CUDA op per timestep from Python."
-        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy path replacing rllib_vtrace in an RLlib worker."
-        "\nrllib(cpu):     wall-clock — CPU Python loop matching RLlib's from_importance_weights."
+        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy, realistic adoption path."
+        "\nnumpy(cpu)    : wall-clock — pure CPU Python loop."
         "\nspeedups are relative to the fused kernel."
     )
 
-    assert min(all_speedups) >= 1.5, (
-        f"Expected >=1.5x speedup over torch.compile, worst was {min(all_speedups):.2f}x"
+    assert min(all_speedups_compile) >= 1.5, (
+        f"Expected >=1.5x speedup over torch.compile, worst was {min(all_speedups_compile):.2f}x"
+    )
+
+    min_e2e_speedup = min(all_speedups_e2e)
+    assert min_e2e_speedup >= 1.5, (
+        f"Expected >=1.5x end-to-end speedup (np->triton->np vs numpy(cpu)) across all configs — "
+        f"below this the kernel gain is likely lost to inter-worker communication overhead in a "
+        f"distributed setup. Worst was {min_e2e_speedup:.2f}x"
     )

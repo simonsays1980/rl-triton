@@ -274,10 +274,15 @@ BENCH_CONFIGS = [
 def test_retrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
-      - triton:     Triton scan kernel  (CUDA events)
-      - pt.compile: torch.compile on reference_retrace  (wall-clock)
 
-    Assertion: Triton must be >=1.5x faster than torch.compile.
+      triton         — Triton scan kernel  (CUDA events)
+      pt.compile     — torch.compile on reference_retrace  (wall-clock)
+      numpy(cpu)     — reference_retrace on CPU tensors  (wall-clock)
+
+    pt.compile dispatches one CUDA op per timestep from Python — wall-clock
+    captures that CPU stall; CUDA events would not.
+
+    Assertion: Triton must be >=1.5x faster than pt.compile.
     """
     compiled_retrace = torch.compile(reference_retrace)
 
@@ -287,8 +292,8 @@ def test_retrace_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'pt.compile':>12} "
-        f"{'speedup':>10}"
+        f"{'triton':>10} {'pt.compile':>12} {'numpy(cpu)':>12} "
+        f"{'vs compile':>12} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -297,26 +302,30 @@ def test_retrace_performance():
 
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
+        args_cpu = _make_inputs(num_envs, seq_len, device="cpu")
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         compiled_ms = _bench_cpu(compiled_retrace,       *args_gpu, gamma=0.99)
+        numpy_ms    = _bench_cpu(reference_retrace,      *args_cpu, gamma=0.99)
 
-        speedup = compiled_ms / triton_ms
-        all_speedups.append(speedup)
+        su_compile = compiled_ms / triton_ms
+        su_numpy   = numpy_ms   / triton_ms
+        all_speedups.append(su_compile)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms "
-            f"{speedup:>8.1f}x"
+            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_compile:>10.1f}x {su_numpy:>9.1f}x"
         )
 
     print(
-        "\ntriton:     CUDA events — pure kernel time."
-        "\npt.compile: wall-clock — dispatches one CUDA op per timestep from Python."
-        "\nspeedups are relative to the Triton kernel."
+        "\ntriton     : CUDA events — pure kernel time, no CPU overhead."
+        "\npt.compile : wall-clock — one CUDA op per timestep from Python;"
+        "\n             CUDA events would miss the CPU stall."
+        "\nnumpy(cpu) : wall-clock — reference loop on CPU tensors."
     )
 
     assert min(all_speedups) >= 1.5, (
-        f"Expected >=1.5x speedup over torch.compile, worst was {min(all_speedups):.2f}x"
+        f"Expected >=1.5x speedup over pt.compile, worst was {min(all_speedups):.2f}x"
     )

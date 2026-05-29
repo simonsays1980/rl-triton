@@ -237,25 +237,25 @@ BENCH_CONFIGS = [
 @pytest.mark.slow
 def test_gae_performance():
     """
-    Sweep over (num_envs, seq_len) configs comparing four implementations:
+    Sweep over (num_envs, seq_len) configs comparing:
 
-      triton(gpu)  — tensors already on GPU, no transfer cost (best case).
-      compiled     — torch.compile on the GPU loop (strongest PyTorch baseline).
-      np→triton→np — NumPy in, Triton kernel, NumPy out; realistic adoption path
-                     when episode data lives in NumPy.
-      numpy(cpu)   — pure NumPy backward loop on CPU.
+      triton(gpu)      — Triton kernel, tensors already on GPU  (CUDA events)
+      pt.compile(loop) — torch.compile on reference backward loop  (wall-clock)
+      np→triton→np     — NumPy in, Triton kernel, NumPy out  (wall-clock)
+      numpy(cpu)       — pure NumPy backward loop on CPU  (wall-clock)
+
+    triton and pt.compile(loop) are both GPU; the timing method differs because
+    torch.compile dispatches one op per timestep from Python — wall-clock captures
+    that CPU stall, CUDA events would not.
 
     Assertions:
-      - Triton must be >=1.5x faster than torch.compile (GPU vs GPU).
+      - Triton must be >=1.5x faster than pt.compile(loop).
       - np→triton→np must be >=1.5x faster than numpy(cpu) — below this the
         kernel gain would likely be lost to inter-worker communication overhead
         in a distributed setup.
     """
-    # Defined here (not module-level) to avoid triggering JIT compilation on
-    # every test session, even when this test is not selected.
     compiled_gae = torch.compile(reference_gae)
 
-    # Trigger torch.compile tracing once outside the timed region.
     _d = torch.randn(64, 512, device="cuda")
     _c = torch.rand(64, 512, device="cuda") * 0.99
     compiled_gae(_d, _c)
@@ -263,7 +263,7 @@ def test_gae_performance():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton(gpu)':>12} {'compiled':>10} {'np->triton->np':>16} {'numpy(cpu)':>12} "
+        f"{'triton':>10} {'pt.compile':>12} {'np->tri->np':>13} {'numpy(cpu)':>12} "
         f"{'vs compile':>12} {'np->tri->np vs numpy':>22} {'vs numpy':>10}"
     )
     print(header)
@@ -280,10 +280,10 @@ def test_gae_performance():
 
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_gae_triton,  deltas_gpu, decays_gpu, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms = _bench_cpu(compiled_gae,        deltas_gpu, decays_gpu)
+        triton_ms   = _bench_gpu(compute_gae_triton,       deltas_gpu, decays_gpu, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        compiled_ms = _bench_cpu(compiled_gae,             deltas_gpu, decays_gpu)
         e2e_ms      = _bench_cpu(numpy_to_triton_to_numpy, deltas_np,  decays_np)
-        numpy_ms    = _bench_cpu(numpy_gae,               deltas_np,  decays_np)
+        numpy_ms    = _bench_cpu(numpy_gae,                deltas_np,  decays_np)
 
         speedup_vs_compile   = compiled_ms / triton_ms
         speedup_e2e_vs_numpy = numpy_ms / e2e_ms
@@ -293,22 +293,22 @@ def test_gae_performance():
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>11.3f}ms {compiled_ms:>9.3f}ms "
-            f"{e2e_ms:>15.3f}ms {numpy_ms:>11.3f}ms "
+            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms "
+            f"{e2e_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
             f"{speedup_vs_compile:>10.1f}x  {speedup_e2e_vs_numpy:>20.1f}x  {speedup_vs_numpy:>8.1f}x"
         )
 
     print(
-        "\ntriton(gpu)   : CUDA events — pure kernel time, no CPU overhead."
-        "\ncompiled      : wall-clock — torch.compile dispatches one CUDA op per timestep from Python;"
-        "\n                CUDA events would miss that CPU stall and make it look unrealistically fast."
-        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy, realistic adoption path when episode data lives in NumPy."
-        "\nnumpy(cpu)    : wall-clock — pure NumPy backward loop on CPU."
+        "\ntriton         : CUDA events — pure kernel time, no CPU overhead."
+        "\npt.compile(loop): wall-clock — one CUDA op per timestep from Python; "
+        "\n                  CUDA events would miss the CPU stall."
+        "\nnp->tri->np    : wall-clock — NumPy->GPU->NumPy, realistic adoption path."
+        "\nnumpy(cpu)     : wall-clock — pure NumPy backward loop on CPU."
     )
 
     min_speedup = min(all_speedups_compile)
     assert min_speedup >= 1.5, (
-        f"Expected >=1.5x speedup over torch.compile across all configs, "
+        f"Expected >=1.5x speedup over pt.compile(loop) across all configs, "
         f"worst was {min_speedup:.2f}x"
     )
 

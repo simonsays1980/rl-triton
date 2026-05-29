@@ -150,6 +150,52 @@ boundaries in exactly the same way.
 
 ---
 
+## `done` flag convention: end-of-episode vs. start-of-episode
+
+All kernels in this package use the **start-of-episode** convention for `done`
+flags:
+
+> `done[t] = 1` means step `t` is the **first step of a new episode**.  The
+> carry from the previous step is zeroed *before* accumulating step `t`.
+
+This is expressed directly in the recurrence as `v[t] = f(1 - done[t])`, so
+`done[t] = 1` → `v[t] = 0` → the carry is dropped at `t` itself.
+
+### Gymnasium uses the opposite convention
+
+Gymnasium (and most gym-compatible environments) use the **end-of-episode**
+convention:
+
+> `done[t] = 1` means step `t` is the **last step of the current episode**.
+> Step `t` still belongs to the ending episode; the new episode begins at
+> `t+1`.
+
+Passing Gymnasium `dones` directly to any kernel in this package is **silently
+wrong**: the episode boundary will be applied one step too early.
+
+### Adapting Gymnasium dones
+
+Shift the `done` signal forward by one position before passing it to the
+kernel:
+
+```python
+# gym_dones[t] = 1 means t is the last step of an episode (Gymnasium convention)
+# kernel_dones[t] = 1 means t is the first step of a new episode (this package)
+kernel_dones = torch.roll(gym_dones, shifts=1, dims=1)
+kernel_dones[:, 0] = 0  # first step is never a boundary carry-reset
+```
+
+After this shift, `done` at the original terminal step `t` now sits at `t+1`,
+correctly zeroing the carry at the first step of the next episode.
+
+### Which convention to use
+
+If you build `dones` yourself (e.g. from `truncated | terminated` in a rollout
+buffer), use the start-of-episode convention directly — place `done=1` at the
+first timestep of each new episode — and no shift is needed.
+
+---
+
 ## Why there is no chunked forward scan kernel
 
 `compute_eligibility_traces` uses a forward scan (`e[t] = u[t] + v[t] * e[t-1]`)

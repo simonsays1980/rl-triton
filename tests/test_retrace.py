@@ -43,7 +43,8 @@ def reference_retrace(
         carry = bootstrap_values.clone()
 
     for t in reversed(range(T)):
-        # decay at t uses c[t+1]; at the last step c[T]=0.
+        # decay at t uses c[t+1]; at the last step t=T-1, c[T]=0 by convention
+        # (no lookahead beyond the trajectory end), so bootstrap never propagates.
         c_next = c[:, t + 1] if t + 1 < T else torch.zeros(num_envs, device=rewards.device)
         decay  = gamma * c_next * (1.0 - dones[:, t])
         carry          = deltas[:, t] + decay * carry
@@ -70,10 +71,10 @@ def _make_inputs(num_envs, seq_len, num_actions=4, device="cuda", seed=0):
 # Ground-truth value tests
 # ---------------------------------------------------------------------------
 #
-# Hand-computed with num_actions=1, on-policy (π=μ), no dones, gamma=1, lambda=1,
-# so c=1 everywhere and the recurrence reduces to:
-#   Δ[t] = δ[t] + Δ[t+1],  δ[t] = r[t] + Q'[t] - Q[t]
-# where Q'[t] = E_π[Q(s_{t+1},a)] = Q_next[t] (single action).
+# Hand-computed with num_actions=1, on-policy (π=μ so c=1), no dones, gamma=1,
+# lambda=1.  With a single action, E_π[Q(s_{t+1},·)] = Q_next[t] exactly.
+# The recurrence reduces to:
+#   Δ[t] = δ[t] + Δ[t+1],  δ[t] = r[t] + Q_next[t] - Q[t]
 
 @cuda_only
 def test_retrace_known_values_single_env():

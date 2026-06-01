@@ -72,7 +72,7 @@ def _make_inputs(num_envs, seq_len, device="cuda", seed=0):
 def test_lambda_returns_known_values_lambda0():
     # lambda=0: G[t] = r[t] + gamma*(1-d[t])*V(s_{t+1})  (one-step TD target).
     # No carry from the future at all.
-    # r=[1,2], V'=[3,4], gamma=1, no dones.
+    # rewards=[1,2], next_values=[3,4], gamma=1, no dones.
     # G[0] = 1 + 1*3 = 4,  G[1] = 2 + 1*4 = 6
     rewards     = torch.tensor([[1.0, 2.0]], device="cuda")
     next_values = torch.tensor([[3.0, 4.0]], device="cuda")
@@ -96,8 +96,11 @@ def test_lambda_returns_known_values_lambda1():
 @cuda_only
 def test_lambda_returns_known_values_intermediate():
     # lambda=0.5, gamma=1, seq_len=2, no dones, bootstrap=0.
-    # u[t] = r[t] + 1*0.5*(1)*V'[t],  v[t] = 1*0.5*1 = 0.5
-    # r=[1,2], V'=[3,4]
+    # The recurrence G[t] = r[t] + gamma*(1-lambda)*next_values[t] + gamma*lambda*G[t+1]
+    # maps to G[t] = u[t] + decay*G[t+1] with:
+    #   u[t] = r[t] + (1-lambda)*next_values[t] = r[t] + 0.5*next_values[t]
+    #   decay = lambda = 0.5
+    # rewards=[1,2], next_values=[3,4]
     # u[0] = 1 + 0.5*3 = 2.5,  u[1] = 2 + 0.5*4 = 4.0
     # G[1] = u[1] + 0.5*0 = 4.0
     # G[0] = u[0] + 0.5*4.0 = 2.5 + 2.0 = 4.5
@@ -111,7 +114,7 @@ def test_lambda_returns_known_values_intermediate():
 @cuda_only
 def test_lambda_returns_known_values_done():
     # done[0]=1 cuts the trace: not_done[0]=0 -> u[0]=r[0], v[0]=0.
-    # r=[1,2], V'=[3,4], lambda=0.5, gamma=1.
+    # rewards=[1,2], next_values=[3,4], lambda=0.5, gamma=1.
     # u[1]=2+0.5*4=4, v[1]=0.5;  u[0]=1+0=1, v[0]=0
     # G[1] = 4 + 0.5*0 = 4
     # G[0] = 1 + 0*4   = 1
@@ -207,7 +210,7 @@ def test_eligibility_traces_known_values_decay():
 
 @cuda_only
 def test_eligibility_traces_known_values_done():
-    # done[1]=1 resets the trace: e[1] = x[1] + gamma*lambda*(1-1)*e[0] = x[1].
+    # done[1]=1 resets the trace: e[1] = features[1] + gamma*lambda*(1-done[1])*e[0] = features[1] + 0.
     # e[0] = 1,  e[1] = 2 + 0.9*0 = 2,  e[2] = 3 + 0.9*2 = 4.8
     features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")

@@ -3,7 +3,7 @@ Release benchmark — full sweep across all algorithms and configurations.
 
 Compares rl-triton Triton kernels against:
   - torch.compile on equivalent PyTorch reference loops (all algorithms)
-  - RLlib-style CPU NumPy loop (GAE and V-Trace)
+  - Pure NumPy CPU loop (GAE and V-Trace)
   - NumPy→GPU→NumPy adoption path (GAE and V-Trace)
 
 After running, updates the <!-- BENCH_START --> ... <!-- BENCH_END --> section
@@ -133,11 +133,11 @@ def _ref_traces(features, dones, gamma, lambda_, seed=None):
 
 
 # ---------------------------------------------------------------------------
-# RLlib CPU references (GAE and V-Trace only — RLlib does not implement the rest)
+# NumPy CPU baselines and NumPy→GPU→NumPy adoption paths (GAE and V-Trace)
 # ---------------------------------------------------------------------------
 
-def rllib_gae_cpu(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
-    """Pure NumPy backward scan matching RLlib compute_value_targets."""
+def numpy_gae_cpu(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
+    """Pure NumPy backward scan on CPU."""
     num_envs, seq_len = deltas_np.shape
     out = np.empty_like(deltas_np)
     for i in range(num_envs):
@@ -145,13 +145,13 @@ def rllib_gae_cpu(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
         c = decays_np[i]
         last = 0.0
         for t in reversed(range(seq_len)):
-            last   = d[t] + c[t] * last
+            last      = d[t] + c[t] * last
             out[i, t] = last
     return out
 
 
-def rllib_gae_np_to_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
-    """NumPy → GPU Triton → NumPy adoption path (realistic RLlib swap-in cost)."""
+def numpy_gae_np_to_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for GAE."""
     deltas = torch.from_numpy(deltas_np).to("cuda", torch.float32)
     decays = torch.from_numpy(decays_np).to("cuda", torch.float32)
     out = compute_gae_triton(deltas, decays)
@@ -159,9 +159,9 @@ def rllib_gae_np_to_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.n
     return out.cpu().numpy()
 
 
-def rllib_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
+def numpy_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
                      gamma, rho_bar=1.0, c_bar=1.0):
-    """CPU V-Trace matching RLlib from_importance_weights logic."""
+    """CPU V-Trace backward loop on CPU tensors."""
     cpu     = lambda t: t.cpu().float()
     lpt, lpb, v, nv, r, d = map(cpu, [log_pi_t, log_pi_b, values, next_values, rewards, dones])
     num_envs, T = r.shape
@@ -182,9 +182,9 @@ def rllib_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
     return targets, advantages
 
 
-def rllib_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np, next_values_np,
+def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np, next_values_np,
                                rewards_np, dones_np, gamma, rho_bar=1.0, c_bar=1.0):
-    """NumPy → GPU Triton → NumPy adoption path for V-Trace."""
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for V-Trace."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
     args = map(to_gpu, [log_pi_t_np, log_pi_b_np, values_np, next_values_np,
                         rewards_np, dones_np])
@@ -269,18 +269,18 @@ def bench_gae():
         decays_np = decays_gpu.cpu().numpy()
         nw, ni = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_gae_triton, deltas_gpu, decays_gpu, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled, deltas_gpu, decays_gpu)
-        e2e_ms      = _bench_cpu(rllib_gae_np_to_triton, deltas_np, decays_np)
-        rllib_ms    = _bench_cpu(rllib_gae_cpu, deltas_np, decays_np)
+        triton_ms   = _bench_gpu(compute_gae_triton,        deltas_gpu, decays_gpu, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled,                  deltas_gpu, decays_gpu)
+        e2e_ms      = _bench_cpu(numpy_gae_np_to_triton,    deltas_np,  decays_np)
+        numpy_ms    = _bench_cpu(numpy_gae_cpu,             deltas_np,  decays_np)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
-            "e2e_ms": e2e_ms, "rllib_ms": rllib_ms,
+            "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
-            "su_e2e":     e2e_ms / triton_ms,
-            "su_rllib":   rllib_ms / triton_ms,
+            "su_e2e":     numpy_ms    / e2e_ms,
+            "su_numpy":   numpy_ms    / triton_ms,
         })
     return rows
 
@@ -296,18 +296,18 @@ def bench_vtrace():
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
         nw, ni   = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_vtrace_fused, *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled, *args_gpu, gamma=0.99)
-        e2e_ms      = _bench_cpu(rllib_vtrace_np_to_triton, *args_np, gamma=0.99)
-        rllib_ms    = _bench_cpu(rllib_vtrace_cpu, *args_gpu, gamma=0.99)
+        triton_ms   = _bench_gpu(compute_vtrace_fused,          *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled,                      *args_gpu, gamma=0.99)
+        e2e_ms      = _bench_cpu(numpy_vtrace_np_to_triton,     *args_np,  gamma=0.99)
+        numpy_ms    = _bench_cpu(numpy_vtrace_cpu,              *args_gpu, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
-            "e2e_ms": e2e_ms, "rllib_ms": rllib_ms,
+            "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
-            "su_e2e":     e2e_ms / triton_ms,
-            "su_rllib":   rllib_ms / triton_ms,
+            "su_e2e":     numpy_ms    / e2e_ms,
+            "su_numpy":   numpy_ms    / triton_ms,
         })
     return rows
 
@@ -323,7 +323,7 @@ def bench_retrace():
         nw, ni   = _n_iter_gpu(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled, *args_gpu, gamma=0.99)
+        compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
@@ -368,25 +368,25 @@ def bench_returns():
 # Table formatters
 # ---------------------------------------------------------------------------
 
-def _fmt_row(r, include_rllib=False):
+def _fmt_row(r, include_numpy=False):
     base = (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['compiled_ms']:>11.3f} "
             f"| {r['su_compile']:>8.1f}x |")
-    if include_rllib:
-        base += (f" {r['e2e_ms']:>14.3f} | {r['rllib_ms']:>10.3f} "
-                 f"| {r['su_rllib']:>7.1f}x |")
+    if include_numpy:
+        base += (f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
+                 f"| {r['su_e2e']:>7.1f}x |")
     return base
 
 
-def _table_rllib(title, rows):
+def _table_numpy(title, rows):
     header = (
         f"#### {title}\n\n"
         "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
-        " np→triton→np (ms) | rllib cpu (ms) | vs rllib |\n"
+        " np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy |\n"
         "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
-        ":------------------:|:--------------:|:--------:|"
+        ":------------------:|:--------------:|:------------------:|"
     )
-    body = "\n".join(_fmt_row(r, include_rllib=True) for r in rows)
+    body = "\n".join(_fmt_row(r, include_numpy=True) for r in rows)
     return header + "\n" + body
 
 
@@ -396,7 +396,7 @@ def _table_simple(title, rows):
         "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |\n"
         "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
     )
-    body = "\n".join(_fmt_row(r, include_rllib=False) for r in rows)
+    body = "\n".join(_fmt_row(r, include_numpy=False) for r in rows)
     return header + "\n" + body
 
 
@@ -407,11 +407,11 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"<!-- BENCH_START -->\n"
         f"## Performance\n\n"
         f"*Measured on {gpu} · {date} · "
-        f"[`triton`](https://github.com/openai/triton) kernels vs `torch.compile` and RLlib CPU.*\n\n"
+        f"[`triton`](https://github.com/openai/triton) kernels vs `torch.compile` and NumPy CPU.*\n\n"
         f"**triton**: CUDA events — pure kernel time.  "
         f"**pt.compile**: wall-clock (dispatches one CUDA op per timestep from Python).  "
         f"**np→triton→np**: NumPy → GPU → NumPy adoption path.  "
-        f"**rllib cpu**: CPU Python loop (what RLlib ships today).\n"
+        f"**numpy cpu**: pure NumPy backward loop on CPU.\n"
     )
     return header + "\n\n".join(tables) + "\n<!-- BENCH_END -->"
 
@@ -471,8 +471,8 @@ def main():
     lambda_rows, disc_rows, traces_rows = bench_returns()
 
     tables = [
-        _table_rllib("GAE (`compute_gae_triton`)", gae_rows),
-        _table_rllib("V-Trace (`compute_vtrace_triton`)", vtrace_rows),
+        _table_numpy("GAE (`compute_gae_triton`)", gae_rows),
+        _table_numpy("V-Trace (`compute_vtrace_triton`)", vtrace_rows),
         _table_simple("Retrace(λ) (`compute_retrace_triton`)", retrace_rows),
         _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows),
         _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows),

@@ -107,7 +107,7 @@ def numpy_vtrace(
     Accepts and returns [num_envs, seq_len] tensors (CPU) to match our public
     API.  Runs entirely on CPU — no GPU involved.
     """
-    # Move to CPU for an apples-to-apples comparison with the RLlib baseline.
+    # Move inputs to CPU — this function runs entirely on CPU with no GPU involvement.
     cpu = lambda t: t.cpu().float()
     log_pi_target   = cpu(log_pi_target)
     log_pi_behavior = cpu(log_pi_behavior)
@@ -121,11 +121,12 @@ def numpy_vtrace(
     is_ratios  = torch.exp(log_pi_target - log_pi_behavior)
     rho        = torch.clamp(is_ratios, max=rho_bar)
     c          = torch.clamp(is_ratios, max=c_bar)
-    discounts  = gamma * (1.0 - dones)           # [num_envs, T], matches RLlib's discounts
+    discounts  = gamma * (1.0 - dones)            # [num_envs, T]
 
     deltas     = rho * (rewards + discounts * next_values - values)
 
-    # Backward scan — identical to RLlib's Python loop (transposed to [B, T]).
+    # Backward scan: same recurrence as reference_vtrace, factorized as
+    # decay[t] = discounts[t]*c[t] to avoid recomputing gamma*(1-done) twice.
     value_deltas = torch.zeros_like(rewards)
     carry        = torch.zeros(num_envs)
     for t in reversed(range(T)):
@@ -185,18 +186,18 @@ def numpy_to_triton_to_numpy(
 @cuda_only
 def test_vtrace_known_values_single_env():
     # No clipping (rho_bar=c_bar=100), no dones, gamma=1.
-    # is_ratio = exp(log_target - log_behavior) = exp(0) = 1  for all t.
-    # delta[t] = 1 * (r[t] + 1 * V'[t] - V[t])
-    # decay[t] = 1 * 1 * 1 = 1
-    #
-    # r=[1,1], V=[0,0], V'=[0,0]  => delta=[1,1], decay=[1,1]
+    # log_pi_target=log_pi_behavior=0 -> is_ratio=exp(0)=1, rho=c=1.
+    # rewards=[1,1], values=[0,0], next_values=[0,0].
+    # delta[t] = rho*(r[t] + gamma*next_values[t]*(1-done[t]) - values[t])
+    #          = 1*(1 + 1*0 - 0) = 1
+    # decay[t] = gamma*c*(1-done[t]) = 1
     # Δ[1] = 1 + 1*0 = 1
     # Δ[0] = 1 + 1*1 = 2
-    # targets = Δ + V = [2, 1]
-    # next_vtrace = [targets[1], V'[-1]] = [1, 0]
-    # adv[t] = rho*(r + gamma*next_vtrace*(1-done) - V)
+    # targets = Δ + values = [2, 1]
+    # next_vtrace = [targets[1], next_values[:,-1]] = [1, 0]
+    # adv[t] = rho*(r[t] + gamma*next_vtrace[t]*(1-done[t]) - values[t])
     # adv[0] = 1*(1 + 1*1 - 0) = 2
-    # adv[1] = 1*(1 + 1*0 - 0) = 1
+    # adv[1] = 1*(1 + 1*0 - 0) = 1  <- next_vtrace[1]=next_values[:,-1]=0
     log_pi  = torch.zeros(1, 2, device="cuda")
     values  = torch.zeros(1, 2, device="cuda")
     nvalues = torch.zeros(1, 2, device="cuda")
@@ -214,13 +215,17 @@ def test_vtrace_known_values_single_env():
 @cuda_only
 def test_vtrace_known_values_truncated():
     # Same setup but bootstrap=0.5 — Δ[T]=0.5 propagates back.
+    # V=0, V'=0 (next_values=zeros), r=1, log_pi equal so rho=c=1, gamma=1, no dones.
     # delta=[1,1], decay=[1,1], bootstrap=0.5
     # Δ[1] = 1 + 1*0.5 = 1.5
     # Δ[0] = 1 + 1*1.5 = 2.5
     # targets = [2.5, 1.5]
-    # next_vtrace = [1.5, 0]  (next_values[:,-1]=0)
-    # adv[0] = 1*(1+1*1.5-0) = 2.5
-    # adv[1] = 1*(1+1*0-0)   = 1.0
+    # next_vtrace = [targets[1], next_values[:,-1]] = [1.5, 0]
+    #   next_vtrace[t] = targets[t+1] for t<T; falls back to next_values[:,-1]=0 at t=T-1
+    #   (no corrected target exists beyond the end of the sequence)
+    # adv[t] = rho*(r + gamma*next_vtrace[t] - V)
+    # adv[0] = 1*(1 + 1*1.5 - 0) = 2.5
+    # adv[1] = 1*(1 + 1*0.0 - 0) = 1.0  <- next_vtrace[1]=0 because next_values[:,-1]=0
     log_pi     = torch.zeros(1, 2, device="cuda")
     values     = torch.zeros(1, 2, device="cuda")
     nvalues    = torch.zeros(1, 2, device="cuda")
@@ -239,15 +244,17 @@ def test_vtrace_known_values_truncated():
 
 @cuda_only
 def test_vtrace_known_values_done():
-    # Episode ends at t=0 (done[0]=1): V(s_1) is cut off for delta[0].
-    # is_ratio=1, gamma=1, V=0, V'=2.
+    # done[0]=1: episode ends at t=0, so next_values is cut off in delta[0].
+    # log_pi equal -> is_ratio=1, rho=c=1. gamma=1, values=[0,0], next_values=[2,2], rewards=[1,1].
+    # delta[t] = rho*(r[t] + gamma*next_values[t]*(1-done[t]) - values[t])
     # delta[0] = 1*(1 + 1*2*(1-1) - 0) = 1*(1+0-0) = 1
     # delta[1] = 1*(1 + 1*2*(1-0) - 0) = 3
+    # decay[t] = gamma*c*(1-done[t])
     # decay[0] = 1*1*(1-1) = 0
     # decay[1] = 1*1*(1-0) = 1
     # Δ[1] = 3 + 1*0 = 3
-    # Δ[0] = 1 + 0*3 = 1   <- done cuts the carry
-    # targets = [1, 3]
+    # Δ[0] = 1 + 0*3 = 1   <- decay=0 cuts the carry at the episode boundary
+    # targets = Δ + values = [1, 3]
     log_pi  = torch.zeros(1, 2, device="cuda")
     values  = torch.zeros(1, 2, device="cuda")
     nvalues = torch.full((1, 2), 2.0, device="cuda")
@@ -264,7 +271,7 @@ def test_vtrace_known_values_done():
 @cuda_only
 def test_vtrace_known_values_clipping():
     # IS ratio = exp(0 - log(2)) = 0.5, rho_bar=c_bar=1 -> rho=c=0.5.
-    # gamma=1, V=0, V'=0, r=1, done=0.
+    # gamma=1, values=[0,0], next_values=[0,0], rewards=[1,1], dones=[0,0].
     # delta[t] = 0.5*(1+0-0) = 0.5
     # decay[t] = 1*0.5*1 = 0.5
     # Δ[1] = 0.5
@@ -394,7 +401,7 @@ def test_vtrace_fused_bootstrap():
 
 
 # ---------------------------------------------------------------------------
-# RLlib adapter correctness
+# numpy baseline correctness
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -422,6 +429,60 @@ def test_numpy_to_triton_to_numpy_matches_reference():
 
 
 # ---------------------------------------------------------------------------
+# Vectorized PyTorch baseline (benchmark only)
+# ---------------------------------------------------------------------------
+
+def vectorized_vtrace(
+    log_pi_target: torch.Tensor,
+    log_pi_behavior: torch.Tensor,
+    values: torch.Tensor,
+    next_values: torch.Tensor,
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    rho_bar: float = 1.0,
+    c_bar: float = 1.0,
+    bootstrap_values: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Fully vectorized V-Trace via log-space suffix cumsum — strong compiled baseline.
+
+    Replaces the Python backward loop in reference_vtrace with a vectorized
+    equivalent.  The backward scan Δ[t] = δ[t] + decay[t]*Δ[t+1] is a weighted
+    sum where each weight is the suffix product of decays from t to T-1.  These
+    suffix products are computed in log-space to avoid underflow over long sequences.
+
+    Not production-hardened (log of zero decay requires clamping); only used
+    for benchmarking as the strongest fully-vectorized PyTorch baseline.
+    Timed with CUDA events (no Python loop, so wall-clock is not needed).
+    """
+    is_ratios = torch.exp(log_pi_target - log_pi_behavior)
+    rho    = torch.clamp(is_ratios, max=rho_bar)
+    c      = torch.clamp(is_ratios, max=c_bar)
+    deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
+    decays = gamma * c * (1.0 - dones)
+
+    # Suffix product of decays via log-space cumsum, then exponentiate.
+    # log_suffix[t] = log(decay[t]) + log(decay[t+1]) + ... + log(decay[T-1])
+    log_suffix = torch.flip(
+        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
+    )
+    weights      = torch.exp(log_suffix)
+    value_deltas = torch.flip(
+        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
+    ) / weights
+
+    if bootstrap_values is not None:
+        value_deltas = value_deltas + weights * bootstrap_values.unsqueeze(1)
+
+    vtrace_targets               = value_deltas + values
+    next_vtrace_targets          = torch.empty_like(vtrace_targets)
+    next_vtrace_targets[:, :-1]  = vtrace_targets[:, 1:]
+    next_vtrace_targets[:, -1]   = next_values[:, -1]
+    vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * (1.0 - dones) - values)
+    return vtrace_targets, vtrace_advantages
+
+
 # ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------
@@ -440,71 +501,79 @@ BENCH_CONFIGS = [
 def test_vtrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
-      - fused:          single Triton kernel — IS ratios, scan, targets, advantages in one pass  (CUDA events)
-      - pt.compile:     torch.compile on the reference loop  (wall-clock)
-      - np->triton->np: NumPy->GPU->NumPy adoption path  (wall-clock, includes transfer overhead)
-      - numpy(cpu):     CPU Python loop  (wall-clock)
 
-    fused uses CUDA events (pure kernel time). All others use wall-clock because
-    torch.compile dispatches one CUDA op per timestep from Python — CUDA events would
-    miss that CPU stall and make it look unrealistically fast.
+      fused              — single Triton kernel  (CUDA events)
+      pt.compile(vec)    — torch.compile on vectorized_vtrace  (CUDA events)
+      pt.compile(loop)   — torch.compile on reference_vtrace loop  (wall-clock)
+      np->triton->np     — NumPy->GPU->NumPy adoption path  (wall-clock)
+      numpy(cpu)         — CPU Python loop  (wall-clock)
+
+    fused and pt.compile(vec) are fully vectorized — no Python loop — so CUDA
+    events are appropriate for both.  pt.compile(loop) dispatches one CUDA op
+    per timestep from Python; wall-clock captures that CPU stall.
 
     Assertions:
-      - fused must be >=1.5x faster than torch.compile (GPU vs GPU).
-      - np->triton->np must be >=1.5x faster than numpy(cpu) — below this the
-        kernel gain would likely be lost to inter-worker communication overhead
-        in a distributed setup.
+      - fused must be >=1.5x faster than pt.compile(vec) — the strongest
+        fully-vectorized PyTorch baseline.
+      - np->triton->np must be >=1.5x faster than numpy(cpu).
     """
-    compiled_vtrace = torch.compile(reference_vtrace)
+    compiled_vec  = torch.compile(vectorized_vtrace)
+    compiled_loop = torch.compile(reference_vtrace)
 
     _args = _make_inputs(64, 512)
-    compiled_vtrace(*_args, gamma=0.99)
+    compiled_vec(*_args, gamma=0.99)
+    compiled_loop(*_args, gamma=0.99)
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'fused':>8} {'pt.compile':>12} {'np->triton->np':>16} {'numpy(cpu)':>12} "
-        f"{'vs compile':>12} {'np->tri->np vs numpy':>22} {'vs numpy':>10}"
+        f"{'fused':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups_compile = []
-    all_speedups_e2e     = []
+    all_speedups_vec  = []
+    all_speedups_e2e  = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        fused_ms     = _bench_gpu(compute_vtrace_fused,      *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms  = _bench_cpu(compiled_vtrace,           *args_gpu, gamma=0.99)
-        np_triton_ms = _bench_cpu(numpy_to_triton_to_numpy,  *args_np,  gamma=0.99)
-        numpy_ms     = _bench_cpu(numpy_vtrace,              *args_gpu, gamma=0.99)
+        fused_ms    = _bench_gpu(compute_vtrace_fused,     *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        vec_ms      = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        loop_ms     = _bench_cpu(compiled_loop,            *args_gpu, gamma=0.99)
+        np_tri_ms   = _bench_cpu(numpy_to_triton_to_numpy, *args_np,  gamma=0.99)
+        numpy_ms    = _bench_cpu(numpy_vtrace,             *args_gpu, gamma=0.99)
 
-        speedup_vs_compile   = compiled_ms / fused_ms
-        speedup_e2e_vs_numpy = numpy_ms    / np_triton_ms
-        speedup_vs_numpy     = numpy_ms    / fused_ms
-        all_speedups_compile.append(speedup_vs_compile)
-        all_speedups_e2e.append(speedup_e2e_vs_numpy)
+        su_vec   = vec_ms  / fused_ms
+        su_loop  = loop_ms / fused_ms
+        su_e2e   = numpy_ms / np_tri_ms
+        all_speedups_vec.append(su_vec)
+        all_speedups_e2e.append(su_e2e)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{fused_ms:>7.3f}ms {compiled_ms:>11.3f}ms "
-            f"{np_triton_ms:>15.3f}ms {numpy_ms:>11.3f}ms "
-            f"{speedup_vs_compile:>10.1f}x  {speedup_e2e_vs_numpy:>20.1f}x  {speedup_vs_numpy:>8.1f}x"
+            f"{fused_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{np_tri_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
         )
 
     print(
-        "\nfused:          CUDA events — single kernel, pure GPU time, no Python overhead."
-        "\npt.compile:     wall-clock — dispatches one CUDA op per timestep from Python."
-        "\nnp->triton->np: wall-clock — NumPy->GPU->NumPy, realistic adoption path."
-        "\nnumpy(cpu)    : wall-clock — pure CPU Python loop."
-        "\nspeedups are relative to the fused kernel."
+        "\nfused            : CUDA events — single kernel, IS ratios + scan + targets fused."
+        "\ncompile(vec)     : CUDA events — vectorized log-space cumsum, no Python loop."
+        "\ncompile(loop)    : wall-clock  — one CUDA op per timestep from Python;"
+        "\n                   CUDA events would miss the CPU stall."
+        "\nnp->tri->np      : wall-clock  — NumPy->GPU->NumPy, realistic adoption path."
+        "\nnumpy(cpu)       : wall-clock  — pure CPU Python loop."
+        "\nspeedups vs fused kernel."
     )
 
-    assert min(all_speedups_compile) >= 1.5, (
-        f"Expected >=1.5x speedup over torch.compile, worst was {min(all_speedups_compile):.2f}x"
+    assert min(all_speedups_vec) >= 1.5, (
+        f"Expected >=1.5x speedup over pt.compile(vec) across all configs, "
+        f"worst was {min(all_speedups_vec):.2f}x"
     )
 
     min_e2e_speedup = min(all_speedups_e2e)

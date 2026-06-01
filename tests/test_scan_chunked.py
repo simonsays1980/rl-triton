@@ -87,9 +87,10 @@ def test_scan_flat_matches_chunked():
     """Flat and chunked paths must agree for seq_len within the flat limit."""
     torch.manual_seed(2)
     deltas, decays = _make_scan_inputs(32, 4096)
-    flat    = _run_scan(deltas, decays)                                    # flat path
-    # Force chunked path by patching seq_len above the threshold is not
-    # straightforward, so we verify via compute_gae_triton which auto-dispatches.
+    flat    = _run_scan(deltas, decays)       # flat path (seq_len=4096 < 131072)
+    # compute_gae_triton also takes the flat path here; this verifies that the
+    # public API and internal _run_scan agree on the same inputs.
+    # The chunked path is exercised separately in test_gae_autodispatch_above_threshold.
     gae_out = compute_gae_triton(deltas, decays)
     torch.testing.assert_close(gae_out, flat, atol=1e-4, rtol=1e-4)
 
@@ -122,8 +123,10 @@ def test_gae_autodispatch_above_threshold():
 
 @cuda_only
 def test_vtrace_autodispatch_below_threshold():
-    # Use a small seq_len — the point is that the fused path is taken, not that
-    # reference_vtrace runs over 131072 steps (which would take minutes in Python).
+    # Use a small seq_len — the point is that the fused path is taken and produces
+    # correct output. Running reference_vtrace with seq_len=131072 would dispatch
+    # 131k sequential Python→GPU ops and take minutes; correctness at that scale
+    # is covered by test_vtrace_autodispatch_above_threshold.
     from test_vtrace import reference_vtrace, _make_inputs
     torch.manual_seed(3)
     args = _make_inputs(2, 512)

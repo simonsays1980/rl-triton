@@ -64,9 +64,9 @@ def test_prefix_sum_known_values_reset_at_start():
 
 @cuda_only
 def test_prefix_sum_known_values_mid_reset():
-    # done=1 at t=2 resets accumulation for step 2.
+    # done=1 at t=2 drops the carry: C[2] = inputs[2] + (1-done[2])*C[1] = 3 + 0*3 = 3.
     # inputs=[1,2,3,4], dones=[0,0,1,0]
-    # C[0]=1, C[1]=3, C[2]=3 (reset), C[3]=3+4=7
+    # C[0]=1, C[1]=1+2=3, C[2]=3 (carry zeroed), C[3]=3+4=7
     inputs = torch.tensor([[1.0, 2.0, 3.0, 4.0]], device="cuda")
     dones  = torch.tensor([[0.0, 0.0, 1.0, 0.0]], device="cuda")
     expected = torch.tensor([[1.0, 3.0, 3.0, 7.0]], device="cuda")

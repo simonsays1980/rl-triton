@@ -1,5 +1,6 @@
-# numpy is used intentionally: the CPU baseline mirrors how frameworks like RLlib
-# compute GAE — a plain backward loop over NumPy arrays on CPU.
+# numpy is used intentionally: the CPU baseline (numpy_gae) mirrors how RL frameworks
+# compute GAE on CPU — a plain backward loop over NumPy arrays. The end-to-end
+# adoption path (numpy->GPU->numpy) is benchmarked in test_gae_performance.
 import numpy as np
 import pytest
 import torch
@@ -25,7 +26,8 @@ def reference_gae(
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pure-PyTorch backward scan — ground truth for correctness tests only.
-    Not used as a benchmark: Python loop overhead dominates GPU compute time."""
+    The raw loop is not benchmarked directly; torch.compile(reference_gae) is
+    used as the performance baseline in test_gae_performance."""
     T = deltas.shape[1]
     adv = torch.zeros_like(deltas)
     gae = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)

@@ -140,7 +140,7 @@ at that boundary.  Pad the remaining columns with zeros for both `deltas` and
 The same convention allows multiple episodes to be packed into a single row.
 Place `decay=0` at each episode boundary and the scan resets there, treating
 the segment to the right as a separate episode.  This is what frameworks like
-RLlib do when concatenating episodes into fixed-length trajectory windows.
+numpy do when concatenating episodes into fixed-length trajectory windows.
 
 ### Eligibility traces (forward scan)
 

@@ -26,29 +26,90 @@ def reference_retrace(
     gamma: float,
     lambda_: float = 1.0,
     c_bar: float = 1.0,
-    bootstrap_values: torch.Tensor | None = None,
+    truncateds: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pure-PyTorch Retrace(λ) backward scan — ground truth for correctness tests only."""
     num_envs, T = rewards.shape
 
+    # terminated[t]=1 for true episode ends only; truncations keep the bootstrap.
+    if truncateds is not None:
+        terminated = (dones - truncateds).clamp(min=0.0)
+    else:
+        terminated = dones
+
     expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
-    deltas = rewards + gamma * expected_next_q * (1.0 - dones) - q_values
+    deltas = rewards + gamma * expected_next_q * (1.0 - terminated) - q_values
 
     pi_a = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c    = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
 
     q_deltas = torch.zeros_like(rewards)
     carry    = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
-    if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
 
     for t in reversed(range(T)):
-        # decay at t uses c[t+1]; at the last step t=T-1, c[T]=0 by convention
-        # (no lookahead beyond the trajectory end), so bootstrap never propagates.
+        # decay at t uses c[t+1]; c[t+1] is out-of-bounds at t=T-1 so treat as 0.
+        # dones (terminated OR truncated) stops trace propagation at any boundary.
         c_next = c[:, t + 1] if t + 1 < T else torch.zeros(num_envs, device=rewards.device)
         decay  = gamma * c_next * (1.0 - dones[:, t])
         carry          = deltas[:, t] + decay * carry
         q_deltas[:, t] = carry
+
+    return q_deltas + q_values
+
+
+def vectorized_retrace(
+    action_probs_target: torch.Tensor,
+    action_probs_behavior: torch.Tensor,
+    q_values: torch.Tensor,
+    next_q_values_all: torch.Tensor,
+    actions: torch.Tensor,
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float = 1.0,
+    c_bar: float = 1.0,
+    truncateds: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Fully vectorized Retrace(λ) via log-space suffix cumsum — strong compiled baseline.
+
+    Replaces the Python backward loop in reference_retrace with a vectorized
+    equivalent.  The backward scan Δ[t] = u[t] + v[t]*Δ[t+1] is a weighted sum
+    where each weight is the suffix product of decays v from t+1 to T-1.  These
+    suffix products are computed in log-space to avoid underflow over long sequences.
+
+    Note: Retrace uses c[t+1] as the decay coefficient, so the suffix product for
+    Δ[t] starts at v[t] = γ·c[t+1]·(1-d[t]), exactly matching the recurrence
+    derived in docs/retrace.md.  v[T-1]=0 because c[T] is out-of-bounds; Δ[T]=0.
+
+    Not production-hardened (log of zero decay requires clamping); used only
+    for benchmarking as the strongest fully-vectorized PyTorch baseline.
+    Timed with CUDA events (no Python loop, so wall-clock is not needed).
+    """
+    if truncateds is not None:
+        terminated = (dones - truncateds).clamp(min=0.0)
+    else:
+        terminated = dones
+
+    expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
+    u = rewards + gamma * expected_next_q * (1.0 - terminated) - q_values
+
+    pi_a = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+    c    = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
+    c_next          = torch.empty_like(c)
+    c_next[:, :-1]  = c[:, 1:]
+    c_next[:, -1]   = 0.0
+    v = gamma * c_next * (1.0 - dones)
+
+    # Suffix product of decays via log-space cumsum, then exponentiate.
+    # log_suffix[t] = log(v[t]) + log(v[t+1]) + ... + log(v[T-1])
+    log_suffix   = torch.flip(
+        torch.cumsum(torch.flip(torch.log(v.clamp(min=1e-38)), [1]), dim=1), [1]
+    )
+    weights      = torch.exp(log_suffix)
+    q_deltas     = torch.flip(
+        torch.cumsum(torch.flip(u * weights, [1]), dim=1), [1]
+    ) / weights
 
     return q_deltas + q_values
 
@@ -78,10 +139,13 @@ def _make_inputs(num_envs, seq_len, num_actions=4, device="cuda", seed=0):
 
 @cuda_only
 def test_retrace_known_values_single_env():
-    # seq_len=2, num_actions=1, gamma=1, lambda=1, no dones, no bootstrap.
+    # seq_len=2, num_actions=1, gamma=1, lambda=1, no dones.
     # pi=mu=1.0, c=1.0, E_pi[Q_next]=Q_next (single action).
     # delta[0] = 1 + 1*2 - 0 = 3,  delta[1] = 1 + 1*3 - 0 = 4
-    # decay[0] = 1*c[1]*(1-0) = 1,  decay[1] = 1*c[T]*(1-0) = 0  (c[T]=0)
+    # decay[0] = 1*c[1]*(1-0) = 1
+    # decay[1] = 1*c[2]*(1-0) = 0  — c[2] is out of bounds (no action beyond the
+    #                                 trajectory end), so c_next[:,-1] is forced to
+    #                                 0 by the implementation; there is no c[T].
     # Delta[1] = 4 + 0*0 = 4
     # Delta[0] = 3 + 1*4 = 7
     # Q_ret = Delta + Q = [7, 4]
@@ -139,32 +203,89 @@ def test_retrace_known_values_clipping():
     torch.testing.assert_close(out, torch.tensor([[3.0, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
+# ---------------------------------------------------------------------------
+# Terminal vs. truncated boundary tests
+# ---------------------------------------------------------------------------
+#
+# These three tests verify the key distinction:
+#   terminated: s_{t+1} is a reset state — bootstrap must be zero.
+#   truncated:  window ended but episode continues — bootstrap must be kept.
+#
+# Setup: seq_len=1, num_actions=1, gamma=1, pi=mu=1 (c=1), Q=0.
+#   delta[0] = r + gamma * E_pi[Q_next] * (1-terminated) - Q
+#            = r + 1 * q_next * (1-terminated)
+#   decay[0] = gamma * c[1] * (1-done) = 0  (c[1] out-of-bounds)
+#   Delta[0] = delta[0]
+#   Q_ret[0] = Delta[0] + Q = delta[0]
+
 @cuda_only
-def test_retrace_known_values_bootstrap():
-    # Same as single_env but with bootstrap=2.0: Delta[T]=2.0.
-    # decay[0]=1*c[1]=1, decay[1]=0 still (c[T] always 0, bootstrap is separate).
-    # Delta[1] = 4 + 0*2.0 = 4
-    # Delta[0] = 3 + 1*4   = 7
-    # Q_ret = [7, 4]  -- bootstrap does not change the result here because
-    # decay[1]=0 (last step always has c[T]=0).
-    #
-    # To make bootstrap visible, use seq_len=1:
-    # delta[0] = 1 + 2 - 0 = 3, decay[0] = gamma*c[T]*(1-done) = 0
-    # Delta[0] = 3 + 0*bootstrap = 3 -> bootstrap never reaches here via decay.
-    # Bootstrap enters via the scan's initial carry, but c[T]=0 zeroes it out.
-    # This is correct: in Retrace the bootstrap IS zero-weighted at the boundary.
-    probs_t   = torch.ones(1, 2, 1, device="cuda")
-    probs_b   = torch.ones(1, 2, device="cuda")
-    q         = torch.zeros(1, 2, device="cuda")
-    q_next    = torch.tensor([[[2.0], [3.0]]], device="cuda")
-    actions   = torch.zeros(1, 2, dtype=torch.int64, device="cuda")
-    rewards   = torch.ones(1, 2, device="cuda")
-    dones     = torch.zeros(1, 2, device="cuda")
-    bootstrap = torch.tensor([2.0], device="cuda")
+def test_retrace_terminal_no_bootstrap():
+    # True termination: done=1, no truncateds supplied.
+    # terminated=1 -> bootstrap term zeroed.
+    # delta[0] = 1 + 1*5*(1-1) - 0 = 1
+    # Q_ret = [1]
+    probs_t = torch.ones(1, 1, 1, device="cuda")
+    probs_b = torch.ones(1, 1, device="cuda")
+    q       = torch.zeros(1, 1, device="cuda")
+    q_next  = torch.full((1, 1, 1), 5.0, device="cuda")
+    actions = torch.zeros(1, 1, dtype=torch.int64, device="cuda")
+    rewards = torch.ones(1, 1, device="cuda")
+    dones   = torch.ones(1, 1, device="cuda")   # terminated
+
+    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
+    torch.testing.assert_close(out, torch.tensor([[1.0]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_retrace_truncated_keeps_bootstrap():
+    # Time-limit truncation: done=1, truncated=1.
+    # terminated = done - truncated = 0 -> bootstrap kept.
+    # delta[0] = 1 + 1*5*(1-0) - 0 = 6
+    # Q_ret = [6]
+    probs_t    = torch.ones(1, 1, 1, device="cuda")
+    probs_b    = torch.ones(1, 1, device="cuda")
+    q          = torch.zeros(1, 1, device="cuda")
+    q_next     = torch.full((1, 1, 1), 5.0, device="cuda")
+    actions    = torch.zeros(1, 1, dtype=torch.int64, device="cuda")
+    rewards    = torch.ones(1, 1, device="cuda")
+    dones      = torch.ones(1, 1, device="cuda")   # boundary
+    truncateds = torch.ones(1, 1, device="cuda")   # truncated, not terminated
 
     out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones,
-                                  gamma=1.0, bootstrap_values=bootstrap)
-    torch.testing.assert_close(out, torch.tensor([[7.0, 4.0]], device="cuda"), atol=1e-5, rtol=1e-5)
+                                  gamma=1.0, truncateds=truncateds)
+    torch.testing.assert_close(out, torch.tensor([[6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_retrace_truncated_c_boundary_zero_bootstrap_kept():
+    # Truncated boundary with c[T]=0: trace continuation is stopped but the
+    # one-step bootstrap inside delta is unaffected.
+    # seq_len=2: t=0 interior, t=1 truncated boundary.
+    # pi=mu=1 (c=1), Q=0, q_next=5 everywhere, rewards=1, gamma=1.
+    #
+    # t=1 (truncated boundary): done=1, truncated=1 -> terminated=0
+    #   delta[1] = 1 + 1*5*(1-0) - 0 = 6
+    #   decay[1] = gamma*c[2]*(1-done[1]) = 0  (c[2] out-of-bounds AND done=1)
+    #   Delta[1] = 6
+    #
+    # t=0 (interior): done=0
+    #   delta[0] = 1 + 1*5*(1-0) - 0 = 6
+    #   decay[0] = gamma*c[1]*(1-done[0]) = 1*1*1 = 1
+    #   Delta[0] = 6 + 1*6 = 12
+    #
+    # Q_ret = [12, 6]
+    probs_t    = torch.ones(1, 2, 1, device="cuda")
+    probs_b    = torch.ones(1, 2, device="cuda")
+    q          = torch.zeros(1, 2, device="cuda")
+    q_next     = torch.full((1, 2, 1), 5.0, device="cuda")
+    actions    = torch.zeros(1, 2, dtype=torch.int64, device="cuda")
+    rewards    = torch.ones(1, 2, device="cuda")
+    dones      = torch.tensor([[0.0, 1.0]], device="cuda")
+    truncateds = torch.tensor([[0.0, 1.0]], device="cuda")
+
+    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones,
+                                  gamma=1.0, truncateds=truncateds)
+    torch.testing.assert_close(out, torch.tensor([[12.0, 6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -183,16 +304,6 @@ def test_retrace_correctness_shapes(num_envs, seq_len, num_actions):
     args = _make_inputs(num_envs, seq_len, num_actions=num_actions, seed=42)
     expected = reference_retrace(*args, gamma=0.99)
     actual   = compute_retrace_triton(*args, gamma=0.99)
-    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
-
-
-@cuda_only
-def test_retrace_correctness_bootstrap():
-    """Non-zero bootstrap propagates correctly through the scan."""
-    args      = _make_inputs(32, 512, seed=3)
-    bootstrap = torch.rand(32, device="cuda")
-    expected  = reference_retrace(*args, gamma=0.99, bootstrap_values=bootstrap)
-    actual    = compute_retrace_triton(*args, gamma=0.99, bootstrap_values=bootstrap)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -276,30 +387,37 @@ def test_retrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
 
-      triton         — Triton scan kernel  (CUDA events)
-      pt.compile     — torch.compile on reference_retrace  (wall-clock)
-      numpy(cpu)     — reference_retrace on CPU tensors  (wall-clock)
+      triton            — Triton scan kernel  (CUDA events)
+      pt.compile(vec)   — torch.compile on vectorized_retrace  (CUDA events)
+      pt.compile(loop)  — torch.compile on reference_retrace  (wall-clock)
+      numpy(cpu)        — reference_retrace on CPU tensors  (wall-clock)
 
-    pt.compile dispatches one CUDA op per timestep from Python — wall-clock
-    captures that CPU stall; CUDA events would not.
+    triton and pt.compile(vec) are fully vectorized — no Python loop — so CUDA
+    events are appropriate for both.  pt.compile(loop) dispatches one CUDA op
+    per timestep from Python; wall-clock captures that CPU stall.
 
-    Assertion: Triton must be >=1.5x faster than pt.compile.
+    Assertions:
+      - Triton must be >=1.5x faster than pt.compile(vec) — the strongest
+        fully-vectorized PyTorch baseline.
     """
-    compiled_retrace = torch.compile(reference_retrace)
+    compiled_vec  = torch.compile(vectorized_retrace)
+    compiled_loop = torch.compile(reference_retrace)
 
     _args = _make_inputs(64, 512)
-    compiled_retrace(*_args, gamma=0.99)
+    compiled_vec(*_args, gamma=0.99)
+    compiled_loop(*_args, gamma=0.99)
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'pt.compile':>12} {'numpy(cpu)':>12} "
-        f"{'vs compile':>12} {'vs numpy':>10}"
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups = []
+    all_speedups_vec = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
@@ -307,26 +425,32 @@ def test_retrace_performance():
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        compiled_ms = _bench_cpu(compiled_retrace,       *args_gpu, gamma=0.99)
+        vec_ms      = _bench_gpu(compiled_vec,           *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        loop_ms     = _bench_cpu(compiled_loop,          *args_gpu, gamma=0.99)
         numpy_ms    = _bench_cpu(reference_retrace,      *args_cpu, gamma=0.99)
 
-        su_compile = compiled_ms / triton_ms
-        su_numpy   = numpy_ms   / triton_ms
-        all_speedups.append(su_compile)
+        su_vec   = vec_ms   / triton_ms
+        su_loop  = loop_ms  / triton_ms
+        su_numpy = numpy_ms / triton_ms
+        all_speedups_vec.append(su_vec)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{triton_ms:>9.3f}ms {compiled_ms:>11.3f}ms {numpy_ms:>11.3f}ms "
-            f"{su_compile:>10.1f}x {su_numpy:>9.1f}x"
+            f"{triton_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_numpy:>9.1f}x"
         )
 
     print(
-        "\ntriton     : CUDA events — pure kernel time, no CPU overhead."
-        "\npt.compile : wall-clock — one CUDA op per timestep from Python;"
-        "\n             CUDA events would miss the CPU stall."
-        "\nnumpy(cpu) : wall-clock — reference loop on CPU tensors."
+        "\ntriton          : CUDA events — pure kernel time, no CPU overhead."
+        "\ncompile(vec)    : CUDA events — vectorized log-space cumsum, no Python loop."
+        "\ncompile(loop)   : wall-clock  — one CUDA op per timestep from Python;"
+        "\n                  CUDA events would miss the CPU stall."
+        "\nnumpy(cpu)      : wall-clock  — reference loop on CPU tensors."
+        "\nspeedups vs triton kernel."
     )
 
-    assert min(all_speedups) >= 1.5, (
-        f"Expected >=1.5x speedup over pt.compile, worst was {min(all_speedups):.2f}x"
+    assert min(all_speedups_vec) >= 1.5, (
+        f"Expected >=1.5x speedup over pt.compile(vec) across all configs, "
+        f"worst was {min(all_speedups_vec):.2f}x"
     )

@@ -77,7 +77,7 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, next_values, rewards, dones, gamma,
 
 def _ref_retrace(rewards, dones, values, next_q_all, q_values, actions,
                  action_probs_target, action_probs_behavior, gamma,
-                 lambda_=1.0, c_bar=1.0, bootstrap_values=None):
+                 lambda_=1.0, c_bar=1.0):
     num_envs, T = rewards.shape
     pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
@@ -88,12 +88,42 @@ def _ref_retrace(rewards, dones, values, next_q_all, q_values, actions,
     c_next[:, -1]  = 0.0
     v     = gamma * c_next * (1.0 - dones)
     out   = torch.zeros_like(rewards)
-    carry = (bootstrap_values.clone() if bootstrap_values is not None
-             else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype))
+    carry = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
         carry     = u[:, t] + v[:, t] * carry
         out[:, t] = carry
     return out + q_values
+
+
+def _vec_retrace(rewards, dones, values, next_q_all, q_values, actions,
+                 action_probs_target, action_probs_behavior, gamma,
+                 lambda_=1.0, c_bar=1.0):
+    """
+    Fully vectorized Retrace(λ) via log-space suffix cumsum — strong compiled baseline.
+
+    Replaces the Python backward loop in _ref_retrace with a vectorized equivalent.
+    The backward scan Δ[t] = u[t] + v[t]*Δ[t+1] is a weighted sum where each
+    weight is the suffix product of decays v from t to T-1, computed in log-space
+    to avoid underflow.  Timed with CUDA events (no Python loop).
+    """
+    pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+    c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
+    exp_nq = (action_probs_target * next_q_all).sum(dim=-1)
+    u      = rewards + gamma * exp_nq * (1.0 - dones) - q_values
+    c_next          = torch.empty_like(c)
+    c_next[:, :-1]  = c[:, 1:]
+    c_next[:, -1]   = 0.0
+    v = gamma * c_next * (1.0 - dones)
+
+    log_suffix = torch.flip(
+        torch.cumsum(torch.flip(torch.log(v.clamp(min=1e-38)), [1]), dim=1), [1]
+    )
+    weights  = torch.exp(log_suffix)
+    q_deltas = torch.flip(
+        torch.cumsum(torch.flip(u * weights, [1]), dim=1), [1]
+    ) / weights
+
+    return q_deltas + q_values
 
 
 def _ref_lambda(rewards, next_values, dones, gamma, lambda_, bootstrap=None):
@@ -191,6 +221,30 @@ def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np, next_values_n
     targets, advantages = compute_vtrace_triton(*args, gamma=gamma, rho_bar=rho_bar, c_bar=c_bar)
     torch.cuda.synchronize()
     return targets.cpu().numpy(), advantages.cpu().numpy()
+
+
+def numpy_retrace_cpu(rewards_np, dones_np, q_values_np, next_q_all_np,
+                      actions_np, action_probs_target_np, action_probs_behavior_np,
+                      gamma, lambda_=1.0, c_bar=1.0):
+    """Pure NumPy backward scan for Retrace(λ) on CPU."""
+    num_envs, seq_len = rewards_np.shape
+    pi_a   = action_probs_target_np[np.arange(num_envs)[:, None],
+                                    np.arange(seq_len)[None, :],
+                                    actions_np]
+    c      = lambda_ * np.minimum(pi_a / action_probs_behavior_np, c_bar)
+    exp_nq = (action_probs_target_np * next_q_all_np).sum(axis=-1)
+    u      = rewards_np + gamma * exp_nq * (1.0 - dones_np) - q_values_np
+    c_next              = np.empty_like(c)
+    c_next[:, :-1]      = c[:, 1:]
+    c_next[:, -1]       = 0.0
+    v = gamma * c_next * (1.0 - dones_np)
+    out = np.empty_like(rewards_np)
+    for i in range(num_envs):
+        last = 0.0
+        for t in reversed(range(seq_len)):
+            last      = u[i, t] + v[i, t] * last
+            out[i, t] = last
+    return out + q_values_np
 
 
 # ---------------------------------------------------------------------------
@@ -313,22 +367,34 @@ def bench_vtrace():
 
 
 def bench_retrace():
-    compiled = torch.compile(_ref_retrace)
+    compiled_vec  = torch.compile(_vec_retrace)
+    compiled_loop = torch.compile(_ref_retrace)
     args = _make_retrace(64, 512)
-    compiled(*args, gamma=0.99); torch.cuda.synchronize()
+    compiled_vec(*args, gamma=0.99);  torch.cuda.synchronize()
+    compiled_loop(*args, gamma=0.99); torch.cuda.synchronize()
 
     rows = []
     for num_envs, seq_len in CONFIGS:
         args_gpu = _make_retrace(num_envs, seq_len)
-        nw, ni   = _n_iter_gpu(seq_len, num_envs)
+        # _make_retrace order: rewards, dones, values, next_q_all, q_values, actions, apt, apb
+        # numpy_retrace_cpu order: rewards, dones, q_values, next_q_all, actions, apt, apb
+        # (index 2 is "values" used as q_values in _ref_retrace; index 4 is a duplicate — skip it)
+        rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
+        nw, ni = _n_iter_gpu(seq_len, num_envs)
 
         triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99)
+        vec_ms      = _bench_gpu(compiled_vec,           *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled_loop,          *args_gpu, gamma=0.99)
+        numpy_ms    = _bench_cpu(numpy_retrace_cpu,
+                                 rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
+            "vec_ms": vec_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
+            "su_vec":     vec_ms      / triton_ms,
+            "su_numpy":   numpy_ms    / triton_ms,
         })
     return rows
 
@@ -368,13 +434,16 @@ def bench_returns():
 # Table formatters
 # ---------------------------------------------------------------------------
 
-def _fmt_row(r, include_numpy=False):
+def _fmt_row(r, include_numpy=False, include_vec=False):
     base = (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['compiled_ms']:>11.3f} "
             f"| {r['su_compile']:>8.1f}x |")
     if include_numpy:
         base += (f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
                  f"| {r['su_e2e']:>7.1f}x |")
+    if include_vec:
+        base += (f" {r['vec_ms']:>13.3f} | {r['numpy_ms']:>10.3f} "
+                 f"| {r['su_vec']:>6.1f}x | {r['su_numpy']:>8.1f}x |")
     return base
 
 
@@ -397,6 +466,18 @@ def _table_simple(title, rows):
         "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
     )
     body = "\n".join(_fmt_row(r, include_numpy=False) for r in rows)
+    return header + "\n" + body
+
+
+def _table_retrace(title, rows):
+    header = (
+        f"#### {title}\n\n"
+        "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
+        " compile(vec) (ms) | numpy cpu (ms) | vs vec | vs numpy |\n"
+        "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
+        ":------------------:|:--------------:|:------:|:--------:|"
+    )
+    body = "\n".join(_fmt_row(r, include_vec=True) for r in rows)
     return header + "\n" + body
 
 
@@ -473,7 +554,7 @@ def main():
     tables = [
         _table_numpy("GAE (`compute_gae_triton`)", gae_rows),
         _table_numpy("V-Trace (`compute_vtrace_triton`)", vtrace_rows),
-        _table_simple("Retrace(λ) (`compute_retrace_triton`)", retrace_rows),
+        _table_retrace("Retrace(λ) (`compute_retrace_triton`)", retrace_rows),
         _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows),
         _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows),
         _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows),

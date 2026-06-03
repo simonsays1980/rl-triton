@@ -1,6 +1,16 @@
+import os
+import warnings
+
 import torch
 
 from rl_triton.ops._scan import _run_scan
+
+_RETRACE_WARNINGS = os.environ.get("RL_TRITON_RETRACE_WARNINGS", "0") == "1"
+
+
+def _retrace_warn(msg: str) -> None:
+    if _RETRACE_WARNINGS:
+        warnings.warn(msg, stacklevel=3)
 
 
 def compute_retrace_triton(
@@ -14,7 +24,7 @@ def compute_retrace_triton(
     gamma: float,
     lambda_: float = 1.0,
     c_bar: float = 1.0,
-    bootstrap_values: torch.Tensor | None = None,
+    truncateds: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Compute Retrace(λ) Q-value targets via a backward associative scan.
@@ -29,14 +39,49 @@ def compute_retrace_triton(
     use V-Trace (compute_vtrace_triton) instead, which only needs log-density
     ratios at the taken action.
 
-    Recurrence:
-      Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = bootstrap
-      δ[t]     = r[t] + γ * E_π[Q(s_{t+1},a)] * (1-done[t]) - Q(s_t, a_t)
-      decay[t] = γ * c[t+1] * (1-done[t])
-      c[t]     = λ * min(c_bar, π(a_t|s_t) / μ(a_t|s_t))
+    Bootstrap and terminal vs. truncated boundaries
+    ------------------------------------------------
+    Unlike GAE and V-Trace, Retrace never requires a separately supplied
+    bootstrap value.  The one-step Q-bootstrap
 
-    Note: decay at time t uses c[t+1] (one step ahead).  The last step uses
-    c=0 (no lookahead beyond the trajectory end).
+        γ · E_π[Q(s_{t+1}, a)]
+
+    is already folded into every TD error δ[t] via `next_q_values_all`.  All
+    the caller needs to supply is the right boundary mask.
+
+    Two distinct reasons a trajectory can end mid-sequence must be handled
+    differently:
+
+      terminated[t] = 1  — the environment signalled a true episode end.
+                           s_{t+1} is a reset state with no meaningful value.
+                           The bootstrap γ·E_π[Q(s_{t+1},·)] must be zeroed.
+
+      truncated[t]  = 1  — the sequence window ended but the episode continues
+                           (time-limit cutoff or replay-buffer window boundary).
+                           s_{t+1} is a real state; the bootstrap must be kept.
+
+    The `dones` flag (= terminated OR truncated) is used only to stop trace
+    propagation across any boundary (v[t]=0 when done[t]=1).  The one-step TD
+    bootstrap inside u[t] is gated by `terminated` alone.
+
+    Gymnasium users: pass `terminated` as `dones` and `truncated` as
+    `truncateds`.  Older single-done-flag APIs: pass the done flag as `dones`
+    and leave `truncateds=None`; the bootstrap is then zeroed on every boundary
+    (conservative, correct for purely episodic data).
+
+    Set RL_TRITON_RETRACE_WARNINGS=1 to enable a runtime warning when
+    `truncateds` contains 1s that are not covered by `dones`, which is always
+    a caller error.
+
+    Recurrence:
+      Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = 0
+      δ[t]     = r[t] + γ · E_π[Q(s_{t+1},a)] · (1-terminated[t]) - Q(s_t,a_t)
+      decay[t] = γ · c[t+1] · (1-done[t])
+      c[t]     = λ · min(c_bar, π(a_t|s_t) / μ(a_t|s_t))
+
+    Note: decay[T-1] is always zero because c[T] is out-of-bounds (no action
+    was taken beyond the trajectory end).  This stops trace continuation but
+    does not affect the one-step bootstrap already folded into δ[T-1].
 
     Q-value targets:
       Q_ret[t] = Q(s_t, a_t) + Δ[t]
@@ -56,14 +101,18 @@ def compute_retrace_triton(
         actions:               Indices of the taken action,
                                [num_envs, seq_len], int64, CUDA.
         rewards:               Per-step rewards, [num_envs, seq_len], float32, CUDA.
-        dones:                 Episode termination flags (1.0=done),
+        dones:                 Episode boundary flags (1.0 = terminated OR truncated).
+                               Gates trace decay: v[t]=0 when done[t]=1.
                                [num_envs, seq_len], float32, CUDA.
         gamma:                 Discount factor.
         lambda_:               Trace decay parameter (default 1.0).
         c_bar:                 IS ratio clip for trace weights (default 1.0).
-        bootstrap_values:      Per-environment boundary Δ[T], shape [num_envs].
-                               Use Q_ret[T] - Q(s_T, a_T) for truncated episodes,
-                               0 for terminated ones.  Defaults to zeros.
+        truncateds:            Optional time-limit truncation flags (1.0 = truncated,
+                               not truly terminal).  When provided, the one-step
+                               bootstrap γ·E_π[Q(s_{t+1},·)] is kept for truncated
+                               steps and zeroed only for true terminations.
+                               Shape [num_envs, seq_len], float32, CUDA.
+                               If None, dones is treated as pure termination.
 
     Returns:
         retrace_targets: Q_ret[t], shape [num_envs, seq_len], float32.
@@ -93,6 +142,18 @@ def compute_retrace_triton(
     assert actions.shape == rewards.shape, \
         f"actions shape {actions.shape} != rewards shape {rewards.shape}"
 
+    if truncateds is not None:
+        assert truncateds.is_cuda,                "truncateds must be on CUDA"
+        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+        assert truncateds.shape == rewards.shape, \
+            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+        if (truncateds > dones).any():
+            _retrace_warn(
+                "truncateds has entries where truncateds=1 but dones=0. "
+                "A step can only be truncated if it is also marked done; "
+                "the trace decay will not be stopped at those steps."
+            )
+
     action_probs_target   = action_probs_target.contiguous()
     action_probs_behavior = action_probs_behavior.contiguous()
     q_values              = q_values.contiguous()
@@ -101,11 +162,23 @@ def compute_retrace_triton(
     rewards               = rewards.contiguous()
     dones                 = dones.contiguous()
 
-    # u[t] = r[t] + γ * E_π[Q(s_{t+1},a)] * (1-d[t]) - Q(s_t,a_t)
-    expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
-    u = rewards + gamma * expected_next_q * (1.0 - dones) - q_values
+    # terminated[t]=1 only for true episode ends; bootstrap is zeroed there.
+    # For truncations the episode continues so the bootstrap is kept.
+    # When truncateds is not supplied dones is treated as pure termination.
+    if truncateds is not None:
+        terminated = (dones - truncateds.contiguous()).clamp(min=0.0)
+    else:
+        terminated = dones
 
-    # v[t] = γ * c[t+1] * (1-d[t]),  c[t] = λ * min(c_bar, π(a_t) / μ(a_t))
+    # u[t] = r[t] + γ * E_π[Q(s_{t+1},a)] * (1-terminated[t]) - Q(s_t,a_t)
+    # The bootstrap γ·E_π[Q(s_{t+1},·)] is kept for truncated boundaries and
+    # zeroed only for true terminations.
+    expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
+    u = rewards + gamma * expected_next_q * (1.0 - terminated) - q_values
+
+    # v[t] = γ * c[t+1] * (1-done[t])
+    # dones (terminated OR truncated) stops trace propagation across any boundary.
+    # c[t] = λ * min(c_bar, π(a_t) / μ(a_t)); c_next[:,-1]=0 (out-of-bounds).
     pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
     c_next = torch.empty_like(c)
@@ -113,4 +186,4 @@ def compute_retrace_triton(
     c_next[:, -1]  = 0.0
     v = gamma * c_next * (1.0 - dones)
 
-    return _run_scan(u, v, bootstrap_values) + q_values
+    return _run_scan(u, v) + q_values

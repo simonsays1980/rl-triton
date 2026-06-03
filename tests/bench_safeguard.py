@@ -74,8 +74,7 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, next_values, rewards, dones, gamma,
 
 
 def _ref_retrace(action_probs_target, action_probs_behavior, q_values, next_q_all,
-                 actions, rewards, dones, gamma, lambda_=1.0,
-                 c_bar=1.0, bootstrap_values=None):
+                 actions, rewards, dones, gamma, lambda_=1.0, c_bar=1.0):
     num_envs, T = rewards.shape
     pi_a    = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c       = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
@@ -87,8 +86,6 @@ def _ref_retrace(action_probs_target, action_probs_behavior, q_values, next_q_al
     v = gamma * c_next * (1.0 - dones)
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
-    if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
     for t in reversed(range(T)):
         carry     = u[:, t] + v[:, t] * carry
         out[:, t] = carry

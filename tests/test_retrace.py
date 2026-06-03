@@ -1,5 +1,6 @@
 import pytest
 import torch
+import numpy as np
 
 triton = pytest.importorskip("triton")
 
@@ -189,7 +190,7 @@ def test_retrace_known_values_clipping():
     # delta[0] = 1 + 1*0.5 - 0 = 1.5,  delta[1] = 1 + 1*0.5 - 0 = 1.5
     # c=min(1.0, 2.0)=1.0 everywhere; decay[0]=1*c[1]=1.0, decay[1]=0 (c[T]=0)
     # Delta[1] = 1.5
-    # Delta[0] = 1.5 + 1.0*1.5 = 3.0
+    # Delta[0] = 1.5 + 1.0*1.5 = 3.0 (delta[0] + decay[0]*Delta[1])
     # Q_ret = [3.0, 1.5]
     probs_t   = torch.ones(1, 2, 1, device="cuda")           # pi_a = 1.0
     probs_b   = torch.full((1, 2), 0.5, device="cuda")       # mu = 0.5 -> IS ratio=2, clipped to 1
@@ -216,7 +217,7 @@ def test_retrace_known_values_clipping():
 #            = r + 1 * q_next * (1-terminated)
 #   decay[0] = gamma * c[1] * (1-done) = 0  (c[1] out-of-bounds)
 #   Delta[0] = delta[0]
-#   Q_ret[0] = Delta[0] + Q = delta[0]
+#   Q_ret[0] = Delta[0] + Q = delta[0] (Q=0 )
 
 @cuda_only
 def test_retrace_terminal_no_bootstrap():
@@ -373,6 +374,23 @@ def test_retrace_non_contiguous_input():
 # Performance benchmark
 # ---------------------------------------------------------------------------
 
+def _np_to_triton_retrace(*args_gpu, gamma, lambda_=1.0, c_bar=1.0):
+    """NumPy → GPU Triton → NumPy round-trip: measures full adoption-path latency."""
+    args_np = tuple(
+        a.cpu().numpy() if isinstance(a, torch.Tensor) else a for a in args_gpu
+    )
+    apt_np, apb_np, q_np, nqa_np, act_np, r_np, d_np = args_np
+    to_f = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    to_i = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.int64)
+    out = compute_retrace_triton(
+        to_f(apt_np), to_f(apb_np), to_f(q_np), to_f(nqa_np),
+        to_i(act_np), to_f(r_np), to_f(d_np),
+        gamma=gamma, lambda_=lambda_, c_bar=c_bar,
+    )
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
+
+
 BENCH_CONFIGS = [
     (64,  512),
     (128, 1024),
@@ -390,11 +408,12 @@ def test_retrace_performance():
       triton            — Triton scan kernel  (CUDA events)
       pt.compile(vec)   — torch.compile on vectorized_retrace  (CUDA events)
       pt.compile(loop)  — torch.compile on reference_retrace  (wall-clock)
+      np→triton→np      — NumPy → GPU → NumPy adoption path  (wall-clock)
       numpy(cpu)        — reference_retrace on CPU tensors  (wall-clock)
 
     triton and pt.compile(vec) are fully vectorized — no Python loop — so CUDA
-    events are appropriate for both.  pt.compile(loop) dispatches one CUDA op
-    per timestep from Python; wall-clock captures that CPU stall.
+    events are appropriate for both.  pt.compile(loop) and np→triton→np include
+    CPU stalls; wall-clock captures those correctly.
 
     Assertions:
       - Triton must be >=1.5x faster than pt.compile(vec) — the strongest
@@ -411,8 +430,8 @@ def test_retrace_performance():
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
         f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
-        f"{'numpy(cpu)':>12} "
-        f"{'vs vec':>8} {'vs loop':>9} {'vs numpy':>10}"
+        f"{'np→tri→np':>12} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'e2e vs np':>11} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -424,21 +443,23 @@ def test_retrace_performance():
         args_cpu = _make_inputs(num_envs, seq_len, device="cpu")
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        vec_ms      = _bench_gpu(compiled_vec,           *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        loop_ms     = _bench_cpu(compiled_loop,          *args_gpu, gamma=0.99)
-        numpy_ms    = _bench_cpu(reference_retrace,      *args_cpu, gamma=0.99)
+        triton_ms   = _bench_gpu(compute_retrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        vec_ms      = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        loop_ms     = _bench_cpu(compiled_loop,            *args_gpu, gamma=0.99)
+        e2e_ms      = _bench_cpu(_np_to_triton_retrace,   *args_gpu, gamma=0.99)
+        numpy_ms    = _bench_cpu(reference_retrace,        *args_cpu, gamma=0.99)
 
         su_vec   = vec_ms   / triton_ms
         su_loop  = loop_ms  / triton_ms
+        su_e2e   = numpy_ms / e2e_ms
         su_numpy = numpy_ms / triton_ms
         all_speedups_vec.append(su_vec)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{triton_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
-            f"{numpy_ms:>11.3f}ms "
-            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_numpy:>9.1f}x"
+            f"{e2e_ms:>11.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>9.1f}x {su_numpy:>9.1f}x"
         )
 
     print(
@@ -446,8 +467,9 @@ def test_retrace_performance():
         "\ncompile(vec)    : CUDA events — vectorized log-space cumsum, no Python loop."
         "\ncompile(loop)   : wall-clock  — one CUDA op per timestep from Python;"
         "\n                  CUDA events would miss the CPU stall."
+        "\nnp→triton→np    : wall-clock  — NumPy → GPU → NumPy adoption path."
         "\nnumpy(cpu)      : wall-clock  — reference loop on CPU tensors."
-        "\nspeedups vs triton kernel."
+        "\nspeedups vs triton kernel; e2e vs np = numpy_cpu / np→triton→np."
     )
 
     assert min(all_speedups_vec) >= 1.5, (

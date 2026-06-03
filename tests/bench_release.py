@@ -3,8 +3,8 @@ Release benchmark — full sweep across all algorithms and configurations.
 
 Compares rl-triton Triton kernels against:
   - torch.compile on equivalent PyTorch reference loops (all algorithms)
-  - Pure NumPy CPU loop (GAE and V-Trace)
-  - NumPy→GPU→NumPy adoption path (GAE and V-Trace)
+  - Pure NumPy CPU loop (GAE, V-Trace, Retrace)
+  - NumPy→GPU→NumPy adoption path (GAE, V-Trace, Retrace)
 
 After running, updates the <!-- BENCH_START --> ... <!-- BENCH_END --> section
 in README.md with the latest results.
@@ -223,6 +223,25 @@ def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np, next_values_n
     return targets.cpu().numpy(), advantages.cpu().numpy()
 
 
+def numpy_retrace_np_to_triton(rewards_np, dones_np, q_values_np, next_q_all_np,
+                               actions_np, action_probs_target_np, action_probs_behavior_np,
+                               gamma, lambda_=1.0, c_bar=1.0):
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for Retrace(λ)."""
+    to_gpu_f = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    to_gpu_i = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.int64)
+    apt  = to_gpu_f(action_probs_target_np)
+    apb  = to_gpu_f(action_probs_behavior_np)
+    q    = to_gpu_f(q_values_np)
+    nqa  = to_gpu_f(next_q_all_np)
+    acts = to_gpu_i(actions_np)
+    r    = to_gpu_f(rewards_np)
+    d    = to_gpu_f(dones_np)
+    out  = compute_retrace_triton(apt, apb, q, nqa, acts, r, d,
+                                  gamma=gamma, lambda_=lambda_, c_bar=c_bar)
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
+
+
 def numpy_retrace_cpu(rewards_np, dones_np, q_values_np, next_q_all_np,
                       actions_np, action_probs_target_np, action_probs_behavior_np,
                       gamma, lambda_=1.0, c_bar=1.0):
@@ -382,18 +401,19 @@ def bench_retrace():
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
         nw, ni = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace_triton, *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        vec_ms      = _bench_gpu(compiled_vec,           *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled_loop,          *args_gpu, gamma=0.99)
-        numpy_ms    = _bench_cpu(numpy_retrace_cpu,
-                                 rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
+        triton_ms   = _bench_gpu(compute_retrace_triton,       *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled_loop,                 *args_gpu, gamma=0.99)
+        e2e_ms      = _bench_cpu(numpy_retrace_np_to_triton,    rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
+        numpy_ms    = _bench_cpu(numpy_retrace_cpu,             rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
-            "vec_ms": vec_ms, "numpy_ms": numpy_ms,
+            "vec_ms": vec_ms, "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
             "su_vec":     vec_ms      / triton_ms,
+            "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
     return rows
@@ -442,8 +462,8 @@ def _fmt_row(r, include_numpy=False, include_vec=False):
         base += (f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
                  f"| {r['su_e2e']:>7.1f}x |")
     if include_vec:
-        base += (f" {r['vec_ms']:>13.3f} | {r['numpy_ms']:>10.3f} "
-                 f"| {r['su_vec']:>6.1f}x | {r['su_numpy']:>8.1f}x |")
+        base += (f" {r['vec_ms']:>13.3f} | {r['e2e_ms']:>17.3f} | {r['numpy_ms']:>10.3f} "
+                 f"| {r['su_vec']:>6.1f}x | {r['su_e2e']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
     return base
 
 
@@ -473,9 +493,9 @@ def _table_retrace(title, rows):
     header = (
         f"#### {title}\n\n"
         "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
-        " compile(vec) (ms) | numpy cpu (ms) | vs vec | vs numpy |\n"
+        " compile(vec) (ms) | np→triton→np (ms) | numpy cpu (ms) | vs vec | np→tri→np vs numpy | vs numpy |\n"
         "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
-        ":------------------:|:--------------:|:------:|:--------:|"
+        ":------------------:|:-----------------:|:--------------:|:------:|:-------------------:|:--------:|"
     )
     body = "\n".join(_fmt_row(r, include_vec=True) for r in rows)
     return header + "\n" + body

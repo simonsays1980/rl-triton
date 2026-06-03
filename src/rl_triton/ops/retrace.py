@@ -1,16 +1,6 @@
-import os
-import warnings
-
 import torch
 
-from rl_triton.ops._scan import _run_scan
-
-_RETRACE_WARNINGS = os.environ.get("RL_TRITON_RETRACE_WARNINGS", "0") == "1"
-
-
-def _retrace_warn(msg: str) -> None:
-    if _RETRACE_WARNINGS:
-        warnings.warn(msg, stacklevel=3)
+from rl_triton.ops._scan import _correctness_warn, _run_scan
 
 
 def compute_retrace_triton(
@@ -69,7 +59,7 @@ def compute_retrace_triton(
     and leave `truncateds=None`; the bootstrap is then zeroed on every boundary
     (conservative, correct for purely episodic data).
 
-    Set RL_TRITON_RETRACE_WARNINGS=1 to enable a runtime warning when
+    Set RL_TRITON_CORRECTNESS_WARNINGS=1 to enable a runtime warning when
     `truncateds` contains 1s that are not covered by `dones`, which is always
     a caller error.
 
@@ -148,7 +138,7 @@ def compute_retrace_triton(
         assert truncateds.shape == rewards.shape, \
             f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
         if (truncateds > dones).any():
-            _retrace_warn(
+            _correctness_warn(
                 "truncateds has entries where truncateds=1 but dones=0. "
                 "A step can only be truncated if it is also marked done; "
                 "the trace decay will not be stopped at those steps."

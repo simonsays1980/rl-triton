@@ -26,9 +26,18 @@ import triton
 # such as non-contiguous inputs that trigger implicit copies.
 _PERF_WARNINGS = os.environ.get("RL_TRITON_PERF_WARNINGS", "0") == "1"
 
+# Set RL_TRITON_CORRECTNESS_WARNINGS=1 to enable warnings about potentially
+# incorrect inputs, such as truncateds=1 without dones=1 in Retrace.
+_CORRECTNESS_WARNINGS = os.environ.get("RL_TRITON_CORRECTNESS_WARNINGS", "0") == "1"
+
 
 def _perf_warn(msg: str) -> None:
     if _PERF_WARNINGS:
+        warnings.warn(msg, stacklevel=3)
+
+
+def _correctness_warn(msg: str) -> None:
+    if _CORRECTNESS_WARNINGS:
         warnings.warn(msg, stacklevel=3)
 
 from rl_triton.kernels.scan import backward_scan_kernel, forward_scan_kernel

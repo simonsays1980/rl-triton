@@ -39,14 +39,14 @@ _SPEEDUP_FLOOR = 1.5
 # Minimal reference implementations (used only to build the compiled baseline)
 # ---------------------------------------------------------------------------
 
-def _ref_gae(deltas, decays, bootstrap=None):
-    T     = deltas.shape[1]
-    out   = torch.zeros_like(deltas)
-    carry = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)
-    if bootstrap is not None:
-        carry = bootstrap.clone()
+def _ref_gae(rewards, values, next_values, dones, gamma, lambda_):
+    T     = rewards.shape[1]
+    out   = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
-        carry     = deltas[:, t] + decays[:, t] * carry
+        not_done  = 1.0 - dones[:, t]
+        delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
+        carry     = delta + gamma * lambda_ * not_done * carry
         out[:, t] = carry
     return out
 
@@ -138,9 +138,11 @@ def _ref_traces(features, dones, gamma, lambda_, seed=None):
 def _gae_inputs():
     torch.manual_seed(0)
     d = "cuda"
-    deltas = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
-    decays = torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) * 0.99
-    return deltas, decays
+    rewards     = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    values      = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    next_values = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    dones       = (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float()
+    return rewards, values, next_values, dones
 
 
 def _vtrace_inputs():
@@ -191,13 +193,13 @@ def _warmup_compile(fn, *args, **kwargs):
 @cuda_only
 @pytest.mark.perf
 def test_perf_gae():
-    deltas, decays = _gae_inputs()
+    args = _gae_inputs()
     compiled = torch.compile(_ref_gae)
-    _warmup_compile(compiled, deltas, decays)
+    _warmup_compile(compiled, *args, gamma=0.99, lambda_=0.95)
 
     n_warmup, n_iter = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
-    triton_ms   = _bench_gpu(compute_gae_triton, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
-    compiled_ms = _bench_cpu(compiled, deltas, decays)
+    triton_ms   = _bench_gpu(compute_gae_triton, *args, gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+    compiled_ms = _bench_cpu(compiled, *args, gamma=0.99, lambda_=0.95)
     speedup = compiled_ms / triton_ms
 
     print(f"\nGAE  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile={compiled_ms:.3f}ms  speedup={speedup:.1f}x")

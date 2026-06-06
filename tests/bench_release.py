@@ -43,13 +43,14 @@ from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 # Reference implementations (PyTorch loops — ground truth & compiled baselines)
 # ---------------------------------------------------------------------------
 
-def _ref_gae(deltas, decays, bootstrap=None):
-    T     = deltas.shape[1]
-    out   = torch.zeros_like(deltas)
-    carry = (bootstrap.clone() if bootstrap is not None
-             else torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype))
+def _ref_gae(rewards, values, next_values, dones, gamma, lambda_):
+    T     = rewards.shape[1]
+    out   = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
-        carry     = deltas[:, t] + decays[:, t] * carry
+        not_done  = 1.0 - dones[:, t]
+        delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
+        carry     = delta + gamma * lambda_ * not_done * carry
         out[:, t] = carry
     return out
 
@@ -166,25 +167,43 @@ def _ref_traces(features, dones, gamma, lambda_, seed=None):
 # NumPy CPU baselines and NumPy→GPU→NumPy adoption paths (GAE and V-Trace)
 # ---------------------------------------------------------------------------
 
-def numpy_gae_cpu(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
-    """Pure NumPy backward scan on CPU."""
-    num_envs, seq_len = deltas_np.shape
-    out = np.empty_like(deltas_np)
-    for i in range(num_envs):
-        d = deltas_np[i]
-        c = decays_np[i]
-        last = 0.0
-        for t in reversed(range(seq_len)):
-            last      = d[t] + c[t] * last
-            out[i, t] = last
+def numpy_gae_cpu(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    next_values: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """CPU GAE backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    rewards, values, next_values, dones = (
+        rewards.cpu(), values.cpu(), next_values.cpu(), dones.cpu()
+    )
+    T     = rewards.shape[1]
+    out   = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[0])
+    for t in reversed(range(T)):
+        not_done  = 1.0 - dones[:, t]
+        delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
+        carry     = delta + gamma * lambda_ * not_done * carry
+        out[:, t] = carry
     return out
 
 
-def numpy_gae_np_to_triton(deltas_np: np.ndarray, decays_np: np.ndarray) -> np.ndarray:
+def numpy_gae_np_to_triton(
+    rewards_np: np.ndarray,
+    values_np: np.ndarray,
+    next_values_np: np.ndarray,
+    dones_np: np.ndarray,
+    gamma: float,
+    lambda_: float,
+) -> np.ndarray:
     """NumPy → GPU Triton → NumPy end-to-end adoption path for GAE."""
-    deltas = torch.from_numpy(deltas_np).to("cuda", torch.float32)
-    decays = torch.from_numpy(decays_np).to("cuda", torch.float32)
-    out = compute_gae_triton(deltas, decays)
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    out = compute_gae_triton(
+        to_gpu(rewards_np), to_gpu(values_np), to_gpu(next_values_np), to_gpu(dones_np),
+        gamma=gamma, lambda_=lambda_,
+    )
     torch.cuda.synchronize()
     return out.cpu().numpy()
 
@@ -272,8 +291,13 @@ def numpy_retrace_cpu(rewards_np, dones_np, q_values_np, next_q_all_np,
 
 def _make_gae(num_envs, seq_len, device="cuda"):
     torch.manual_seed(0)
-    return (torch.randn(num_envs, seq_len, device=device),
-            torch.rand(num_envs, seq_len, device=device) * 0.99)
+    d = device
+    return (
+        torch.randn(num_envs, seq_len, device=d),   # rewards
+        torch.randn(num_envs, seq_len, device=d),   # values
+        torch.randn(num_envs, seq_len, device=d),   # next_values
+        (torch.rand(num_envs, seq_len, device=d) < 0.05).float(),  # dones
+    )
 
 
 def _make_vtrace(num_envs, seq_len, device="cuda"):
@@ -332,20 +356,19 @@ CONFIGS = [
 
 def bench_gae():
     compiled = torch.compile(_ref_gae)
-    d, c = _make_gae(64, 512)
-    compiled(d, c); torch.cuda.synchronize()
+    args_warmup = _make_gae(64, 512)
+    compiled(*args_warmup, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        deltas_gpu, decays_gpu = _make_gae(num_envs, seq_len)
-        deltas_np = deltas_gpu.cpu().numpy()
-        decays_np = decays_gpu.cpu().numpy()
-        nw, ni = _n_iter_gpu(seq_len, num_envs)
+        args_gpu = _make_gae(num_envs, seq_len)
+        args_np  = tuple(t.cpu().numpy() for t in args_gpu)
+        nw, ni   = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_gae_triton,        deltas_gpu, decays_gpu, n_warmup=nw, n_iter=ni)
-        compiled_ms = _bench_cpu(compiled,                  deltas_gpu, decays_gpu)
-        e2e_ms      = _bench_cpu(numpy_gae_np_to_triton,    deltas_np,  decays_np)
-        numpy_ms    = _bench_cpu(numpy_gae_cpu,             deltas_np,  decays_np)
+        triton_ms   = _bench_gpu(compute_gae_triton,     *args_gpu, gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99, lambda_=0.95)
+        e2e_ms      = _bench_cpu(numpy_gae_np_to_triton, *args_np,  gamma=0.99, lambda_=0.95)
+        numpy_ms    = _bench_cpu(numpy_gae_cpu,          *args_gpu, gamma=0.99, lambda_=0.95)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,

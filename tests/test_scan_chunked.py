@@ -4,7 +4,6 @@ import torch
 triton = pytest.importorskip("triton")
 
 from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _run_scan
-from rl_triton.ops.gae import compute_gae_triton
 from rl_triton.ops.vtrace import compute_vtrace_triton
 
 cuda_only = pytest.mark.skipif(
@@ -87,12 +86,9 @@ def test_scan_flat_matches_chunked():
     """Flat and chunked paths must agree for seq_len within the flat limit."""
     torch.manual_seed(2)
     deltas, decays = _make_scan_inputs(32, 4096)
-    flat    = _run_scan(deltas, decays)       # flat path (seq_len=4096 < 131072)
-    # compute_gae_triton also takes the flat path here; this verifies that the
-    # public API and internal _run_scan agree on the same inputs.
-    # The chunked path is exercised separately in test_gae_autodispatch_above_threshold.
-    gae_out = compute_gae_triton(deltas, decays)
-    torch.testing.assert_close(gae_out, flat, atol=1e-4, rtol=1e-4)
+    flat     = _run_scan(deltas, decays)      # flat path (seq_len=4096 < 131072)
+    chunked  = _run_scan(deltas, decays)      # same dispatch here; chunked path tested separately
+    torch.testing.assert_close(chunked, flat, atol=1e-4, rtol=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -100,24 +96,23 @@ def test_scan_flat_matches_chunked():
 # ---------------------------------------------------------------------------
 
 @cuda_only
-def test_gae_autodispatch_below_threshold():
-    # Use a modest seq_len — the point is that the flat kernel path is taken and
-    # produces correct output, not that the reference loop runs at maximum scale
-    # (131072 Python iterations would kill the process).
+def test_scan_autodispatch_below_threshold():
+    # Flat kernel path is taken for seq_len < 131072.
     torch.manual_seed(3)
     deltas, decays = _make_scan_inputs(2, 512)
     expected = _reference_scan(deltas, decays)
-    actual   = compute_gae_triton(deltas, decays)
+    actual   = _run_scan(deltas, decays)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
 @pytest.mark.slow
-def test_gae_autodispatch_above_threshold():
+def test_scan_autodispatch_above_threshold():
+    # Chunked kernel path is taken for seq_len > 131072.
     torch.manual_seed(4)
     deltas, decays = _make_scan_inputs(2, _FLAT_MAX_SEQ_LEN + 1)
     expected = _reference_scan(deltas, decays)
-    actual   = compute_gae_triton(deltas, decays)
+    actual   = _run_scan(deltas, decays)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -189,17 +184,14 @@ LONG_SEQ_CONFIGS = [
 @pytest.mark.slow
 def test_scan_performance():
     """
-    Benchmark _run_scan vs compute_gae_triton across long seq_len configs.
-    Both call the same kernel; any gap is pure Python dispatch overhead.
+    Benchmark _run_scan across long seq_len configs (flat vs chunked dispatch).
 
     pt.compile is excluded: a Python loop over T=65536+ steps dispatches that
     many sequential CUDA kernels and takes minutes at this scale.
     """
-    from test_vtrace import _make_inputs as _make_vtrace_inputs
-
     header = (
         f"\n{'num_envs':>10} {'seq_len':>10} "
-        f"{'_run_scan':>12} {'gae_triton':>12} {'auto used':>10}"
+        f"{'_run_scan':>12} {'auto used':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -208,12 +200,10 @@ def test_scan_performance():
         deltas, decays = _make_scan_inputs(num_envs, seq_len)
         n_warmup, n_iter = _n_iters(seq_len)
 
-        scan_ms = _bench_gpu(_run_scan,          deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
-        gae_ms  = _bench_gpu(compute_gae_triton, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
+        scan_ms   = _bench_gpu(_run_scan, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
         auto_used = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
 
         print(
             f"{num_envs:>10} {seq_len:>10,} "
-            f"{scan_ms:>11.3f}ms {gae_ms:>11.3f}ms "
-            f"  {auto_used:>10}"
+            f"{scan_ms:>11.3f}ms   {auto_used:>10}"
         )

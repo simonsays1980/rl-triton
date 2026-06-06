@@ -1,5 +1,4 @@
 import torch
-import triton
 
 from rl_triton.kernels.gae import gae_fused_kernel
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
@@ -68,7 +67,6 @@ def compute_gae_triton(
     out = torch.empty_like(rewards)
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
-        BLOCK_SIZE = triton.next_power_of_2(seq_len)
         gae_fused_kernel[(num_envs,)](
             rewards, values, next_values, dones,
             out,
@@ -77,7 +75,6 @@ def compute_gae_triton(
             rewards.stride(0),
             gamma=gamma,
             lambda_=lambda_,
-            BLOCK_SIZE=BLOCK_SIZE,
         )
         return out
 

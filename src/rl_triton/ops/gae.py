@@ -1,6 +1,8 @@
 import torch
+import triton
 
-from rl_triton.ops._scan import _run_scan
+from rl_triton.kernels.gae import gae_fused_kernel
+from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
 
 
 def compute_gae_triton(
@@ -24,8 +26,10 @@ def compute_gae_triton(
       u[t] = delta[t]
       v[t] = gamma * lambda * (1 - done[t])
 
-    Dispatches to the flat single-block kernel for seq_len <= 131072 and falls
-    back to the chunked kernel for longer sequences.
+    Dispatches to the fully-fused single-block kernel for seq_len <= 131072
+    (delta and decay computed inside the kernel, no intermediate tensors),
+    and falls back to the chunked scan + PyTorch elementwise ops for longer
+    sequences.
 
     Args:
         rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
@@ -46,7 +50,39 @@ def compute_gae_triton(
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
         assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
 
+    num_envs, seq_len = rewards.shape
+
+    rewards     = rewards.contiguous()
+    values      = values.contiguous()
+    next_values = next_values.contiguous()
+    dones       = dones.contiguous()
+
+    if bootstrap_values is None:
+        bootstrap_values = torch.zeros(num_envs, device=rewards.device, dtype=torch.float32)
+    else:
+        assert bootstrap_values.shape == (num_envs,), \
+            f"bootstrap_values must have shape [{num_envs}], got {bootstrap_values.shape}"
+        assert bootstrap_values.is_cuda, "bootstrap_values must be on CUDA"
+        bootstrap_values = bootstrap_values.contiguous()
+
+    out = torch.empty_like(rewards)
+
+    if seq_len <= _FLAT_MAX_SEQ_LEN:
+        BLOCK_SIZE = triton.next_power_of_2(seq_len)
+        gae_fused_kernel[(num_envs,)](
+            rewards, values, next_values, dones,
+            out,
+            bootstrap_values,
+            seq_len,
+            rewards.stride(0),
+            gamma=gamma,
+            lambda_=lambda_,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+        return out
+
+    # Chunked path for seq_len > 131072: fall back to PyTorch pre-computation + chunked scan.
     not_done = 1.0 - dones
-    deltas = rewards + gamma * not_done * next_values - values
-    decays = gamma * lambda_ * not_done
+    deltas   = rewards + gamma * not_done * next_values - values
+    decays   = gamma * lambda_ * not_done
     return _run_scan(deltas, decays, bootstrap_values)

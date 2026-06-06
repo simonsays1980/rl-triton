@@ -11,7 +11,7 @@ Backward (right-to-left): A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap
     Lambda returns:      u = r+γ(1-λ)(1-d)V', v = γλ(1-d)
 
 Forward (left-to-right): e[t] = u[t] + v[t] * e[t-1],   e[-1] = seed
-    Eligibility traces:  u = x_t,        v = γλ(1-d)
+    Eligibility traces:  u = g_t,        v = γλ(1-d)
 
 _run_scan / _run_scan_forward own all input validation, contiguous enforcement,
 and flat/chunked dispatch.  Public wrappers compute u and v, then call them.

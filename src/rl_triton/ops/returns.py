@@ -96,7 +96,7 @@ def compute_discounted_returns(
 
 
 def compute_eligibility_traces(
-    features: torch.Tensor,
+    gradients: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
     lambda_: float,
@@ -105,34 +105,38 @@ def compute_eligibility_traces(
     """
     Compute accumulating eligibility traces via a forward associative scan.
 
-    Recurrence: e[t] = x[t] + gamma * lambda * (1 - done[t]) * e[t-1], e[-1] = seed.
+    Recurrence: z[t] = g[t] + gamma * lambda * (1 - done[t]) * z[t-1], z[-1] = seed.
+
+    g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t, w_t)
+    for general FA, or the feature vector x(s_t) in the linear special case.
 
     Unlike all other estimators in this package, eligibility traces accumulate
-    FORWARD in time: each trace depends on the current feature and the trace
+    FORWARD in time: each trace depends on the current input and the trace
     from the previous step, not the next step.
 
-    Maps to the forward linear recurrence e[t] = u[t] + v[t] * e[t-1] with:
-      u[t] = features[t]
+    Maps to the forward linear recurrence z[t] = u[t] + v[t] * z[t-1] with:
+      u[t] = gradients[t]
       v[t] = gamma * lambda * (1 - dones[t])
 
     Limited to seq_len <= 131072 (flat kernel only; a chunked forward kernel
     has not been implemented — see NOTES.md).
 
     Args:
-        features:    Input features x[t], [num_envs, seq_len], float32, CUDA.
+        gradients:   Per-step inputs g[t] — value-function gradients (or feature
+                     vectors under linear FA), [num_envs, seq_len], float32, CUDA.
         dones:       Episode termination flags (1.0=done), same shape, float32.
         gamma:       Discount factor.
         lambda_:     Trace decay parameter.
-        seed_values: Initial trace e[-1] per environment, shape [num_envs].
+        seed_values: Initial trace z[-1] per environment, shape [num_envs].
                      Defaults to zeros (traces start from scratch).
 
     Returns:
-        traces: e[t], shape [num_envs, seq_len], float32.
+        traces: z[t], shape [num_envs, seq_len], float32.
     """
-    assert features.is_cuda and dones.is_cuda, "features and dones must be on CUDA"
-    assert features.dtype == torch.float32, f"features: expected float32, got {features.dtype}"
-    assert dones.dtype == torch.float32,    f"dones: expected float32, got {dones.dtype}"
-    assert features.shape == dones.shape,   "features and dones must have the same shape"
+    assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
+    assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
+    assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"
+    assert gradients.shape == dones.shape,   "gradients and dones must have the same shape"
 
     v = gamma * lambda_ * (1.0 - dones)
-    return _run_scan_forward(features, v, seed_values)
+    return _run_scan_forward(gradients, v, seed_values)

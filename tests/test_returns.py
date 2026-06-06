@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import torch
 
@@ -62,6 +63,110 @@ def _make_inputs(num_envs, seq_len, device="cuda", seed=0):
     next_values = torch.randn(num_envs, seq_len, device=device)
     dones       = (torch.rand(num_envs, seq_len, device=device) < 0.05).float()
     return rewards, next_values, dones
+
+
+def _make_inputs_np(num_envs, seq_len, seed=0):
+    """Return the same random inputs as _make_inputs but as NumPy arrays (CPU)."""
+    args_cpu = _make_inputs(num_envs, seq_len, device="cpu", seed=seed)
+    return tuple(t.numpy() for t in args_cpu)
+
+
+# ---------------------------------------------------------------------------
+# numpy baselines and np->triton->np adoption paths (benchmark only)
+# ---------------------------------------------------------------------------
+
+def numpy_lambda_returns(
+    rewards: torch.Tensor,
+    next_values: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """CPU TD(λ) backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    rewards, next_values, dones = rewards.cpu(), next_values.cpu(), dones.cpu()
+    T     = rewards.shape[1]
+    out   = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[0])
+    for t in reversed(range(T)):
+        not_done  = 1.0 - dones[:, t]
+        carry     = (rewards[:, t]
+                     + gamma * (1.0 - lambda_) * not_done * next_values[:, t]
+                     + gamma * lambda_ * not_done * carry)
+        out[:, t] = carry
+    return out
+
+
+def numpy_discounted_returns(
+    rewards: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """CPU discounted-return backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    rewards, dones = rewards.cpu(), dones.cpu()
+    T     = rewards.shape[1]
+    out   = torch.zeros_like(rewards)
+    carry = torch.zeros(rewards.shape[0])
+    for t in reversed(range(T)):
+        carry     = rewards[:, t] + gamma * (1.0 - dones[:, t]) * carry
+        out[:, t] = carry
+    return out
+
+
+def numpy_eligibility_traces(
+    gradients: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """CPU eligibility-trace forward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    gradients, dones = gradients.cpu(), dones.cpu()
+    T     = gradients.shape[1]
+    out   = torch.zeros_like(gradients)
+    carry = torch.zeros(gradients.shape[0])
+    for t in range(T):
+        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        out[:, t] = carry
+    return out
+
+
+def np_to_triton_to_np_lambda(
+    rewards_np: np.ndarray,
+    next_values_np: np.ndarray,
+    dones_np: np.ndarray,
+    gamma: float,
+    lambda_: float,
+) -> np.ndarray:
+    """NumPy → GPU Triton kernel → NumPy end-to-end adoption path for TD(λ) returns."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
+    return compute_lambda_returns(
+        to_gpu(rewards_np), to_gpu(next_values_np), to_gpu(dones_np),
+        gamma=gamma, lambda_=lambda_,
+    ).cpu().numpy()
+
+
+def np_to_triton_to_np_discounted(
+    rewards_np: np.ndarray,
+    dones_np: np.ndarray,
+    gamma: float,
+) -> np.ndarray:
+    """NumPy → GPU Triton kernel → NumPy end-to-end adoption path for discounted returns."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
+    return compute_discounted_returns(
+        to_gpu(rewards_np), to_gpu(dones_np), gamma=gamma,
+    ).cpu().numpy()
+
+
+def np_to_triton_to_np_eligibility(
+    gradients_np: np.ndarray,
+    dones_np: np.ndarray,
+    gamma: float,
+    lambda_: float,
+) -> np.ndarray:
+    """NumPy → GPU Triton kernel → NumPy end-to-end adoption path for eligibility traces."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
+    return compute_eligibility_traces(
+        to_gpu(gradients_np), to_gpu(dones_np), gamma=gamma, lambda_=lambda_,
+    ).cpu().numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +296,9 @@ def test_eligibility_traces_known_values_basic():
     # e[0] = 1 + 1*0 = 1
     # e[1] = 2 + 1*1 = 3
     # e[2] = 3 + 1*3 = 6
-    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    gradients = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones    = torch.zeros(1, 3, device="cuda")
-    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=1.0)
+    out = compute_eligibility_traces(gradients, dones, gamma=1.0, lambda_=1.0)
     torch.testing.assert_close(out, torch.tensor([[1.0, 3.0, 6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -202,19 +307,19 @@ def test_eligibility_traces_known_values_decay():
     # gamma=1, lambda=0.5, no dones, seed=0.
     # e[0] = 1 + 0.5*0 = 1
     # e[1] = 2 + 0.5*1 = 2.5
-    features = torch.tensor([[1.0, 2.0]], device="cuda")
+    gradients = torch.tensor([[1.0, 2.0]], device="cuda")
     dones    = torch.zeros(1, 2, device="cuda")
-    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=0.5)
+    out = compute_eligibility_traces(gradients, dones, gamma=1.0, lambda_=0.5)
     torch.testing.assert_close(out, torch.tensor([[1.0, 2.5]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 @cuda_only
 def test_eligibility_traces_known_values_done():
-    # done[1]=1 resets the trace: e[1] = features[1] + gamma*lambda*(1-done[1])*e[0] = features[1] + 0.
+    # done[1]=1 resets the trace: e[1] = gradients[1] + gamma*lambda*(1-done[1])*e[0] = gradients[1] + 0.
     # e[0] = 1,  e[1] = 2 + 0.9*0 = 2,  e[2] = 3 + 0.9*2 = 4.8
-    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    gradients = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
-    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=0.9)
+    out = compute_eligibility_traces(gradients, dones, gamma=1.0, lambda_=0.9)
     torch.testing.assert_close(out, torch.tensor([[1.0, 2.0, 4.8]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -223,20 +328,20 @@ def test_eligibility_traces_known_values_seed():
     # Non-zero seed: e[-1]=2, gamma=1, lambda=1, no dones.
     # e[0] = 1 + 1*2 = 3
     # e[1] = 2 + 1*3 = 5
-    features = torch.tensor([[1.0, 2.0]], device="cuda")
+    gradients = torch.tensor([[1.0, 2.0]], device="cuda")
     dones    = torch.zeros(1, 2, device="cuda")
     seed     = torch.tensor([2.0], device="cuda")
-    out = compute_eligibility_traces(features, dones, gamma=1.0, lambda_=1.0, seed_values=seed)
+    out = compute_eligibility_traces(gradients, dones, gamma=1.0, lambda_=1.0, seed_values=seed)
     torch.testing.assert_close(out, torch.tensor([[3.0, 5.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 @cuda_only
 def test_eligibility_traces_lambda0():
-    """lambda=0: trace equals the feature at every step (no accumulation)."""
-    features = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
+    """lambda=0: trace equals the gradient at every step (no accumulation)."""
+    gradients = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones    = torch.zeros(1, 3, device="cuda")
-    out = compute_eligibility_traces(features, dones, gamma=0.99, lambda_=0.0)
-    torch.testing.assert_close(out, features, atol=1e-6, rtol=1e-6)
+    out = compute_eligibility_traces(gradients, dones, gamma=0.99, lambda_=0.0)
+    torch.testing.assert_close(out, gradients, atol=1e-6, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -244,20 +349,20 @@ def test_eligibility_traces_lambda0():
 # ---------------------------------------------------------------------------
 
 def reference_eligibility_traces(
-    features: torch.Tensor,
+    gradients: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
     lambda_: float,
     seed_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pure-PyTorch forward scan — ground truth."""
-    T     = features.shape[1]
-    out   = torch.zeros_like(features)
-    carry = torch.zeros(features.shape[0], device=features.device, dtype=features.dtype)
+    T     = gradients.shape[1]
+    out   = torch.zeros_like(gradients)
+    carry = torch.zeros(gradients.shape[0], device=gradients.device, dtype=gradients.dtype)
     if seed_values is not None:
         carry = seed_values.clone()
     for t in range(T):
-        carry     = features[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
         out[:, t] = carry
     return out
 
@@ -272,9 +377,9 @@ def reference_eligibility_traces(
 ])
 def test_eligibility_traces_correctness(num_envs, seq_len, lambda_):
     rewards, _, dones = _make_inputs(num_envs, seq_len, seed=50)
-    features = rewards   # any float tensor works as features
-    expected = reference_eligibility_traces(features, dones, gamma=0.99, lambda_=lambda_)
-    actual   = compute_eligibility_traces(features, dones, gamma=0.99, lambda_=lambda_)
+    gradients = rewards   # any float tensor works as gradients
+    expected = reference_eligibility_traces(gradients, dones, gamma=0.99, lambda_=lambda_)
+    actual   = compute_eligibility_traces(gradients, dones, gamma=0.99, lambda_=lambda_)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -324,23 +429,51 @@ def test_discounted_returns_correctness(num_envs, seq_len):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Compiled cumsum baselines (benchmark only)
+# Compiled vectorized baselines (benchmark only)
 # ---------------------------------------------------------------------------
 
-def cumsum_discounted_returns(
+def vectorized_lambda_returns(
+    rewards: torch.Tensor,
+    next_values: torch.Tensor,
+    dones: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """
+    TD(λ) returns via flipped cumsum — vectorized compiled baseline.
+
+    The recurrence G[t] = u[t] + (γλ(1-d[t])) * G[t+1] with
+    u[t] = r[t] + γ(1-λ)(1-d[t])*V(s_{t+1}) has the same backward weighted-
+    cumsum structure as discounted returns, with per-step additive term u[t]
+    and per-step decay γλ(1-d[t]). The log-cumsum trick handles the
+    episode-boundary resets. Not production-hardened; only used for benchmarking.
+    """
+    not_done = 1.0 - dones
+    u        = rewards + gamma * (1.0 - lambda_) * not_done * next_values
+    decay    = gamma * lambda_ * not_done
+    log_dec  = torch.log(decay.clamp(min=1e-38))
+    # Suffix log-product of decay factors: log_w[t] = sum_{k=t}^{T-1} log_dec[k]
+    log_w    = torch.flip(torch.cumsum(torch.flip(log_dec, [1]), dim=1), [1])
+    weights  = torch.exp(log_w)
+    # Weighted backward cumsum: sum_{k=t}^{T-1} (prod_{j=t}^{k-1} decay[j]) * u[k]
+    scaled   = u * weights
+    running  = torch.flip(torch.cumsum(torch.flip(scaled, [1]), dim=1), [1])
+    return running / weights
+
+
+def vectorized_discounted_returns(
     rewards: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
 ) -> torch.Tensor:
     """
-    Discounted returns via flipped cumsum — strong compiled baseline.
+    Discounted returns via flipped cumsum — vectorized compiled baseline.
 
     Reverses the sequence, applies the cumsum correction trick with geometric
-    discounting via log-space, then flips back.  Not production-hardened;
+    discounting via log-space, then flips back. Not production-hardened;
     only used for benchmarking.
     """
     not_done  = 1.0 - dones
-    # Build per-step discount factors and compute log-cumsum for geometric weights.
     log_gamma = torch.full_like(rewards, gamma).log() * not_done
     log_disc  = torch.flip(torch.cumsum(torch.flip(log_gamma, [1]), dim=1), [1])
     discounted = rewards * log_disc.exp()
@@ -348,23 +481,23 @@ def cumsum_discounted_returns(
     return running / log_disc.exp()
 
 
-def cumsum_eligibility_traces(
-    features: torch.Tensor,
+def vectorized_eligibility_traces(
+    gradients: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
     """
-    Eligibility traces via cumsum correction trick — strong compiled baseline.
+    Eligibility traces via cumsum correction trick — vectorized compiled baseline.
 
-    Same segment-correction approach as cumsum_episodic_prefix_sum, extended
+    Same segment-correction approach as cumsum_discounted_returns, extended
     with per-step geometric decay gamma*lambda*(1-done).  Not production-
     hardened; only used for benchmarking.
     """
     decay    = gamma * lambda_ * (1.0 - dones)
     log_acc  = torch.cumsum(torch.log(decay.clamp(min=1e-38)), dim=1)
     weights  = torch.exp(log_acc)
-    scaled   = features * weights
+    scaled   = gradients * weights
     running  = torch.cumsum(scaled, dim=1)
     boundary = running * dones
     offset   = torch.cumsum(boundary, dim=1) - boundary
@@ -372,7 +505,7 @@ def cumsum_eligibility_traces(
 
 
 # ---------------------------------------------------------------------------
-# Performance benchmark
+# Performance benchmarks (one per function)
 # ---------------------------------------------------------------------------
 
 BENCH_CONFIGS = [
@@ -383,98 +516,251 @@ BENCH_CONFIGS = [
     (512, 4096),
 ]
 
+SPEEDUP_THRESHOLD = 1.5
+
 
 @cuda_only
 @pytest.mark.slow
-def test_returns_performance():
+def test_lambda_returns_performance():
     """
-    Benchmark compute_lambda_returns and compute_discounted_returns against
-    torch.compile on the reference loops.
+    Benchmark compute_lambda_returns against torch.compile baselines.
 
-    Both Triton kernels use CUDA events (pure kernel time).
-    pt.compile uses wall-clock — it dispatches one CUDA op per timestep from
-    Python; CUDA events would miss that CPU stall.
-
-    Assertion: both kernels must be >=1.5x faster than torch.compile.
+    Baselines: (1) compiled sequential reference loop (wall-clock),
+               (2) compiled vectorized cumsum (CUDA events),
+               (3) numpy CPU loop (wall-clock).
+    Also times the NumPy→GPU→NumPy adoption path end-to-end.
+    Triton kernel uses CUDA events (pure kernel time).
+    Assertions:
+      - triton >=1.5x faster than max(loop, vec).
+      - np->triton->np >=1.5x faster than numpy(cpu).
     """
-    compiled_lam_loop  = torch.compile(reference_lambda_returns)
-    compiled_disc_loop = torch.compile(reference_discounted_returns)
-    compiled_trc_loop  = torch.compile(reference_eligibility_traces)
-    compiled_disc_vec  = torch.compile(cumsum_discounted_returns)
-    compiled_trc_vec   = torch.compile(cumsum_eligibility_traces)
+    compiled_loop = torch.compile(reference_lambda_returns)
+    compiled_vec  = torch.compile(vectorized_lambda_returns)
 
     _r, _nv, _d = _make_inputs(64, 512)
-    compiled_lam_loop(_r, _nv, _d, gamma=0.99, lambda_=0.95)
-    compiled_disc_loop(_r, _d, gamma=0.99)
-    compiled_trc_loop(_r, _d, gamma=0.99, lambda_=0.95)
-    compiled_disc_vec(_r, _d, gamma=0.99)
-    compiled_trc_vec(_r, _d, gamma=0.99, lambda_=0.95)
+    compiled_loop(_r, _nv, _d, gamma=0.99, lambda_=0.95)
+    compiled_vec(_r, _nv, _d, gamma=0.99, lambda_=0.95)
     torch.cuda.synchronize()
 
-    # lambda returns have no clean vectorized cumsum equivalent — loop is the baseline.
-    # discounted returns and eligibility traces have a vectorized cumsum baseline.
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'λ(tri)':>8} {'G(tri)':>8} {'e(tri)':>8} "
-        f"{'λ loop':>8} {'G loop':>8} {'e loop':>8} "
-        f"{'G vec':>7} {'e vec':>7} "
-        f"{'numpy λ':>9} {'numpy G':>9} {'numpy e':>9} "
-        f"{'vs λ':>6} {'vs G':>6} {'vs e':>6}"
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups = []
+    all_speedups_vec = []
+    all_speedups_e2e = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        rewards, next_values, dones = _make_inputs(num_envs, seq_len)
-        rewards_cpu, next_values_cpu, dones_cpu = _make_inputs(num_envs, seq_len, device="cpu")
+        args_gpu = _make_inputs(num_envs, seq_len)
+        args_np  = _make_inputs_np(num_envs, seq_len)
         n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
 
-        lam_ms      = _bench_gpu(compute_lambda_returns,    rewards, next_values, dones,
-                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
-        disc_ms     = _bench_gpu(compute_discounted_returns, rewards, dones,
-                                  gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        traces_ms   = _bench_gpu(compute_eligibility_traces, rewards, dones,
-                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        rewards, next_values, dones = args_gpu
+        rewards_np, next_values_np, dones_np = args_np
 
-        lam_loop_ms  = _bench_cpu(compiled_lam_loop,  rewards, next_values, dones, gamma=0.99, lambda_=0.95)
-        disc_loop_ms = _bench_cpu(compiled_disc_loop,  rewards, dones, gamma=0.99)
-        trc_loop_ms  = _bench_cpu(compiled_trc_loop,   rewards, dones, gamma=0.99, lambda_=0.95)
+        tri_ms    = _bench_gpu(compute_lambda_returns, rewards, next_values, dones,
+                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        vec_ms    = _bench_gpu(compiled_vec,  rewards, next_values, dones,
+                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        loop_ms   = _bench_cpu(compiled_loop, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        np_tri_ms = _bench_cpu(np_to_triton_to_np_lambda, rewards_np, next_values_np, dones_np,
+                                gamma=0.99, lambda_=0.95)
+        numpy_ms  = _bench_cpu(numpy_lambda_returns, rewards, next_values, dones,
+                                gamma=0.99, lambda_=0.95)
 
-        disc_vec_ms  = _bench_gpu(compiled_disc_vec,   rewards, dones,
-                                  gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
-        trc_vec_ms   = _bench_gpu(compiled_trc_vec,    rewards, dones,
-                                  gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
-
-        numpy_lam_ms  = _bench_cpu(reference_lambda_returns,    rewards_cpu, next_values_cpu, dones_cpu, gamma=0.99, lambda_=0.95)
-        numpy_disc_ms = _bench_cpu(reference_discounted_returns, rewards_cpu, dones_cpu, gamma=0.99)
-        numpy_trc_ms  = _bench_cpu(reference_eligibility_traces, rewards_cpu, dones_cpu, gamma=0.99, lambda_=0.95)
-
-        # Assert against strongest compiled baseline per kernel.
-        su_lam  = lam_loop_ms  / lam_ms
-        su_disc = disc_vec_ms  / disc_ms
-        su_trc  = trc_vec_ms   / traces_ms
-        all_speedups.extend([su_lam, su_disc, su_trc])
-
+        su_vec = vec_ms  / tri_ms
+        su_loop = loop_ms / tri_ms
+        su_e2e = numpy_ms / np_tri_ms
+        all_speedups_vec.append(su_vec)
+        all_speedups_e2e.append(su_e2e)
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{lam_ms:>7.3f}ms {disc_ms:>7.3f}ms {traces_ms:>7.3f}ms "
-            f"{lam_loop_ms:>7.3f}ms {disc_loop_ms:>7.3f}ms {trc_loop_ms:>7.3f}ms "
-            f"{disc_vec_ms:>6.3f}ms {trc_vec_ms:>6.3f}ms "
-            f"{numpy_lam_ms:>8.3f}ms {numpy_disc_ms:>8.3f}ms {numpy_trc_ms:>8.3f}ms "
-            f"{su_lam:>5.1f}x {su_disc:>5.1f}x {su_trc:>5.1f}x"
+            f"{tri_ms:>8.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{np_tri_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
         )
 
     print(
-        "\nλ/G/e (tri)   : CUDA events — pure kernel time, no CPU overhead."
-        "\nloop baselines : wall-clock — one CUDA op per timestep from Python."
-        "\nvec baselines  : CUDA events — vectorized cumsum (no Python loop); "
-        "\n                 not available for λ-returns (mixed V term prevents clean cumsum)."
-        "\nnumpy          : wall-clock — reference loop on CPU tensors."
-        "\nspeedups vs strongest compiled baseline: λ vs loop, G vs vec, e vs vec."
+        "\ntriton      : CUDA events — pure kernel time."
+        "\ncompile(vec): CUDA events — vectorized backward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\n               CUDA events would miss the CPU stall."
+        "\nnp->tri->np : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)  : wall-clock — plain Python loop on CPU tensors."
+        "\nspeedups vs triton kernel."
+    )
+    assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x speedup over pt.compile(vec), worst was {min(all_speedups_vec):.2f}x"
+    )
+    assert min(all_speedups_e2e) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x end-to-end speedup (np->triton->np vs numpy(cpu)), "
+        f"worst was {min(all_speedups_e2e):.2f}x"
     )
 
-    assert min(all_speedups) >= 1.5, (
-        f"Expected >=1.5x speedup over strongest compiled baseline, worst was {min(all_speedups):.2f}x"
+
+@cuda_only
+@pytest.mark.slow
+def test_discounted_returns_performance():
+    """
+    Benchmark compute_discounted_returns against torch.compile baselines.
+
+    Baselines: (1) compiled sequential reference loop (wall-clock),
+               (2) compiled vectorized cumsum (CUDA events),
+               (3) numpy CPU loop (wall-clock).
+    Also times the NumPy→GPU→NumPy adoption path end-to-end.
+    Triton kernel uses CUDA events (pure kernel time).
+    Assertions:
+      - triton >=1.5x faster than max(loop, vec).
+      - np->triton->np >=1.5x faster than numpy(cpu).
+    """
+    compiled_loop = torch.compile(reference_discounted_returns)
+    compiled_vec  = torch.compile(vectorized_discounted_returns)
+
+    _r, _, _d = _make_inputs(64, 512)
+    compiled_loop(_r, _d, gamma=0.99)
+    compiled_vec(_r, _d, gamma=0.99)
+    torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    all_speedups_vec = []
+    all_speedups_e2e = []
+
+    for num_envs, seq_len in BENCH_CONFIGS:
+        args_gpu = _make_inputs(num_envs, seq_len)
+        args_np  = _make_inputs_np(num_envs, seq_len)
+        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        rewards, _, dones = args_gpu
+        rewards_np, _, dones_np = args_np
+
+        tri_ms    = _bench_gpu(compute_discounted_returns, rewards, dones,
+                                gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        vec_ms    = _bench_gpu(compiled_vec,  rewards, dones,
+                                gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+        loop_ms   = _bench_cpu(compiled_loop, rewards, dones, gamma=0.99)
+        np_tri_ms = _bench_cpu(np_to_triton_to_np_discounted, rewards_np, dones_np, gamma=0.99)
+        numpy_ms  = _bench_cpu(numpy_discounted_returns, rewards, dones, gamma=0.99)
+
+        su_vec  = vec_ms  / tri_ms
+        su_loop = loop_ms / tri_ms
+        su_e2e  = numpy_ms / np_tri_ms
+        all_speedups_vec.append(su_vec)
+        all_speedups_e2e.append(su_e2e)
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{tri_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{np_tri_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
+        )
+
+    print(
+        "\ntriton       : CUDA events — pure kernel time."
+        "\ncompile(vec) : CUDA events — vectorized backward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\n               CUDA events would miss the CPU stall."
+        "\nnp->tri->np  : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)   : wall-clock — plain Python loop on CPU tensors."
+        "\nspeedups vs triton kernel."
+    )
+    assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x speedup over pt.compile(vec), worst was {min(all_speedups_vec):.2f}x"
+    )
+    assert min(all_speedups_e2e) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x end-to-end speedup (np->triton->np vs numpy(cpu)), "
+        f"worst was {min(all_speedups_e2e):.2f}x"
+    )
+
+
+@cuda_only
+@pytest.mark.slow
+def test_eligibility_traces_performance():
+    """
+    Benchmark compute_eligibility_traces against torch.compile baselines.
+
+    Baselines: (1) compiled sequential reference loop (wall-clock),
+               (2) compiled vectorized cumsum (CUDA events),
+               (3) numpy CPU loop (wall-clock).
+    Also times the NumPy→GPU→NumPy adoption path end-to-end.
+    Triton kernel uses CUDA events (pure kernel time).
+    Assertions:
+      - triton >=1.5x faster than max(loop, vec).
+      - np->triton->np >=1.5x faster than numpy(cpu).
+    """
+    compiled_loop = torch.compile(reference_eligibility_traces)
+    compiled_vec  = torch.compile(vectorized_eligibility_traces)
+
+    _r, _, _d = _make_inputs(64, 512)
+    compiled_loop(_r, _d, gamma=0.99, lambda_=0.95)
+    compiled_vec(_r, _d, gamma=0.99, lambda_=0.95)
+    torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    all_speedups_vec = []
+    all_speedups_e2e = []
+
+    for num_envs, seq_len in BENCH_CONFIGS:
+        args_gpu = _make_inputs(num_envs, seq_len)
+        args_np  = _make_inputs_np(num_envs, seq_len)
+        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        gradients, _, dones = args_gpu
+        gradients_np, _, dones_np = args_np
+
+        tri_ms    = _bench_gpu(compute_eligibility_traces, gradients, dones,
+                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        vec_ms    = _bench_gpu(compiled_vec,  gradients, dones,
+                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+        loop_ms   = _bench_cpu(compiled_loop, gradients, dones, gamma=0.99, lambda_=0.95)
+        np_tri_ms = _bench_cpu(np_to_triton_to_np_eligibility, gradients_np, dones_np,
+                                gamma=0.99, lambda_=0.95)
+        numpy_ms  = _bench_cpu(numpy_eligibility_traces, gradients, dones,
+                                gamma=0.99, lambda_=0.95)
+
+        su_vec  = vec_ms  / tri_ms
+        su_loop = loop_ms / tri_ms
+        su_e2e  = numpy_ms / np_tri_ms
+        all_speedups_vec.append(su_vec)
+        all_speedups_e2e.append(su_e2e)
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{tri_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{np_tri_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
+            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
+        )
+
+    print(
+        "\ntriton       : CUDA events — pure kernel time."
+        "\ncompile(vec) : CUDA events — vectorized forward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\n               CUDA events would miss the CPU stall."
+        "\nnp->tri->np  : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)   : wall-clock — plain Python loop on CPU tensors."
+        "\nspeedups vs triton kernel."
+    )
+    assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x speedup over pt.compile(vec), worst was {min(all_speedups_vec):.2f}x"
+    )
+    assert min(all_speedups_e2e) >= SPEEDUP_THRESHOLD, (
+        f"Expected >={SPEEDUP_THRESHOLD}x end-to-end speedup (np->triton->np vs numpy(cpu)), "
+        f"worst was {min(all_speedups_e2e):.2f}x"
     )

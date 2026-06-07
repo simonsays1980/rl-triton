@@ -77,21 +77,14 @@ def compute_gae_triton(
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
         num_warps  = _WARPS.get(BLOCK_SIZE, 16)
 
-        ENVS_PER_BLOCK = 1
-        if num_envs < 64:
-            ENVS_PER_BLOCK = max(1, 64 // num_envs)
-        grid = (triton.cdiv(num_envs, ENVS_PER_BLOCK),)
-
-        gae_fused_kernel[grid](
+        gae_fused_kernel[(num_envs,)](
             rewards, values, dones,
             out,
             bootstrap_values,
-            num_envs,
             seq_len,
             rewards.stride(0),
             gamma=gamma,
             lambda_=lambda_,
-            ENVS_PER_BLOCK=ENVS_PER_BLOCK,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
             num_stages=2,

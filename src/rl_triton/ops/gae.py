@@ -76,6 +76,7 @@ def compute_gae_triton(
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
         num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+        num_stages = 2 if BLOCK_SIZE >= 2048 else 1
 
         gae_fused_kernel[(num_envs,)](
             rewards, values, dones,
@@ -87,7 +88,7 @@ def compute_gae_triton(
             lambda_=lambda_,
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
-            num_stages=2,
+            num_stages=num_stages,
         )
         return out
 

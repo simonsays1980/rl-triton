@@ -23,9 +23,9 @@ def gae_fused_kernel(
     kernel launch overhead.  All inputs are read once; the result is written once.
 
     v_{t+1} is read directly from values[t+1] (no separate next_values tensor),
-    saving one full HBM read pass (~25% bandwidth reduction).  At t=T-1 (reversed
-    position 0), V(s_T) is taken from bootstrap_ptr, which doubles as both A[T]
-    and V(s_T).
+    saving one full HBM read pass (~20% bandwidth reduction).  At reversed position
+    offs=0 (real time t=T-1), V(s_T) comes from bootstrap_ptr; for all other
+    positions load values[rev_offsets + 1] = values[t+1].
 
       u[t] = delta[t] = r[t] + gamma * (1 - done[t]) * V(s_{t+1}) - V(s_t)
       v[t] = decay[t] = gamma * lambda * (1 - done[t])
@@ -46,19 +46,21 @@ def gae_fused_kernel(
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
 
-    offsets     = tl.arange(0, BLOCK_SIZE)
-    rev_offsets = seq_len - 1 - offsets      # pos 0 = last real timestep
-    mask        = offsets < seq_len
+    offs        = tl.arange(0, BLOCK_SIZE)
+    rev         = seq_len - 1 - offs          # offs=0 → t=T-1, offs=1 → t=T-2, …
+    mask        = offs < seq_len
 
-    r    = tl.load(rewards_ptr + base + rev_offsets, mask=mask, other=0.0)
-    v    = tl.load(values_ptr  + base + rev_offsets, mask=mask, other=0.0)
-    done = tl.load(dones_ptr   + base + rev_offsets, mask=mask, other=1.0)
+    r    = tl.load(rewards_ptr + base + rev, mask=mask, other=0.0)
+    v    = tl.load(values_ptr  + base + rev, mask=mask, other=0.0)
+    done = tl.load(dones_ptr   + base + rev, mask=mask, other=1.0)
 
-    # V(s_{t+1}): at reversed pos 0 (t=T-1), use bootstrap as V(s_T).
+    # v_next[t] = values[t+1].
+    # offs=0 is t=T-1; its v_next is bootstrap (V(s_T)).
+    # offs>0 is t<T-1; load values[t+1] = values[rev+1].
     bootstrap  = tl.load(bootstrap_ptr + env_idx)
-    v_next_raw = tl.load(values_ptr + base + rev_offsets - 1,
-                         mask=mask & (rev_offsets > 0), other=0.0)
-    v_next = tl.where(offsets == 0, bootstrap, v_next_raw)
+    v_next_raw = tl.load(values_ptr + base + rev + 1,
+                         mask=mask & (offs > 0), other=0.0)
+    v_next = tl.where(offs == 0, bootstrap, v_next_raw)
 
     not_done = 1.0 - done
     delta    = r + gamma * v_next * not_done - v
@@ -67,4 +69,4 @@ def gae_fused_kernel(
     out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
     out = out_local + decay_prod * bootstrap
 
-    tl.store(out_ptr + base + rev_offsets, out, mask=mask)
+    tl.store(out_ptr + base + rev, out, mask=mask)

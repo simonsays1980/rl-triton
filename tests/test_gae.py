@@ -187,15 +187,17 @@ def test_gae_known_values_lambda():
 @cuda_only
 def test_gae_known_values_truncated():
     # gamma=1, lambda=1, no dones, bootstrap=2.0, V=0.
-    # next_values = [0, 0, 2(bootstrap)] -> delta[t]=r[t]+bootstrap_at_T
-    # A[2] = 3 + 1*2 = 5
-    # A[1] = 2 + 1*5 = 7
-    # A[0] = 1 + 1*7 = 8
+    # bootstrap serves as both A[T] and V(s_T) (standard GAE semantics).
+    # v_next = [values[1], values[2], bootstrap] = [0, 0, 2]
+    # delta  = [1+0-0, 2+0-0, 3+2-0] = [1, 2, 5]
+    # A[2] = delta[2] + 1*A[T] = 5 + 2 = 7
+    # A[1] = delta[1] + 1*A[2] = 2 + 7 = 9
+    # A[0] = delta[0] + 1*A[1] = 1 + 9 = 10
     rewards    = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values     = torch.zeros(1, 3, device="cuda")
     dones      = torch.zeros(1, 3, device="cuda")
     bootstrap  = torch.tensor([2.0], device="cuda")
-    expected   = torch.tensor([[8.0, 7.0, 5.0]], device="cuda")
+    expected   = torch.tensor([[10.0, 9.0, 7.0]], device="cuda")
     torch.testing.assert_close(
         compute_gae_triton(rewards, values, dones,
                            gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap),

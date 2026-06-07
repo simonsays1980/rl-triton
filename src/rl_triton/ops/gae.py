@@ -4,11 +4,12 @@ import triton
 from rl_triton.kernels.gae import gae_fused_kernel
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
 
+_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+
 
 def compute_gae_triton(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    next_values: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
     lambda_: float,
@@ -22,6 +23,11 @@ def compute_gae_triton(
 
     where delta[t] = r[t] + gamma * (1 - done[t]) * V(s_{t+1}) - V(s_t).
 
+    V(s_{t+1}) is read directly from values[:, t+1]; the caller does NOT need to
+    pass a separate next_values tensor.  For the last timestep, V(s_T) is taken
+    from bootstrap_values (which is also A[T] = 0 for terminated episodes, or
+    V(s_T) for truncated ones).
+
     Maps to the shared linear recurrence A[t] = u[t] + v[t] * A[t+1] with:
       u[t] = delta[t]
       v[t] = gamma * lambda * (1 - done[t])
@@ -34,28 +40,28 @@ def compute_gae_triton(
     Args:
         rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
         values:           V(s_t), same shape, float32, CUDA.
-        next_values:      V(s_{t+1}), same shape, float32, CUDA.
+                          V(s_{t+1}) is read as values[:, t+1] inside the kernel.
         dones:            Episode termination flags (1.0=done), same shape, float32.
         gamma:            Discount factor.
         lambda_:          GAE trace parameter in [0, 1].
-        bootstrap_values: Per-environment boundary value A[T], shape [num_envs].
+        bootstrap_values: Per-environment V(s_T) / boundary value A[T], shape [num_envs].
                           Use V(s_T) for truncated episodes, 0 for terminated ones.
+                          Also used as V(s_{t+1}) at t=T-1 inside the kernel.
                           Defaults to zeros.
 
     Returns:
         advantages: A[t], shape [num_envs, seq_len], float32.
     """
-    for name, t in [("rewards", rewards), ("values", values), ("next_values", next_values), ("dones", dones)]:
+    for name, t in [("rewards", rewards), ("values", values), ("dones", dones)]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
         assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
 
     num_envs, seq_len = rewards.shape
 
-    rewards     = rewards.contiguous()
-    values      = values.contiguous()
-    next_values = next_values.contiguous()
-    dones       = dones.contiguous()
+    rewards = rewards.contiguous()
+    values  = values.contiguous()
+    dones   = dones.contiguous()
 
     if bootstrap_values is None:
         bootstrap_values = torch.zeros(num_envs, device=rewards.device, dtype=torch.float32)
@@ -69,20 +75,34 @@ def compute_gae_triton(
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        gae_fused_kernel[(num_envs,)](
-            rewards, values, next_values, dones,
+        num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+
+        ENVS_PER_BLOCK = 1
+        if num_envs < 64:
+            ENVS_PER_BLOCK = max(1, 64 // num_envs)
+        grid = (triton.cdiv(num_envs, ENVS_PER_BLOCK),)
+
+        gae_fused_kernel[grid](
+            rewards, values, dones,
             out,
             bootstrap_values,
+            num_envs,
             seq_len,
             rewards.stride(0),
             gamma=gamma,
             lambda_=lambda_,
+            ENVS_PER_BLOCK=ENVS_PER_BLOCK,
             BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=2,
         )
         return out
 
-    # Chunked path for seq_len > 131072: fall back to PyTorch pre-computation + chunked scan.
-    not_done = 1.0 - dones
-    deltas   = rewards + gamma * not_done * next_values - values
-    decays   = gamma * lambda_ * not_done
+    # Chunked path for seq_len > 131072: PyTorch pre-computation + chunked scan.
+    not_done    = 1.0 - dones
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = bootstrap_values
+    deltas = rewards + gamma * not_done * next_values - values
+    decays = gamma * lambda_ * not_done
     return _run_scan(deltas, decays, bootstrap_values)

@@ -39,10 +39,14 @@ _SPEEDUP_FLOOR = 1.5
 # Minimal reference implementations (used only to build the compiled baseline)
 # ---------------------------------------------------------------------------
 
-def _ref_gae(rewards, values, next_values, dones, gamma, lambda_):
+def _ref_gae(rewards, values, dones, gamma, lambda_):
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
+    # next_values[t] = values[t+1], with 0 at t=T-1 (matches kernel behaviour).
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = 0.0
     for t in reversed(range(T)):
         not_done  = 1.0 - dones[:, t]
         delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
@@ -138,11 +142,10 @@ def _ref_traces(features, dones, gamma, lambda_, seed=None):
 def _gae_inputs():
     torch.manual_seed(0)
     d = "cuda"
-    rewards     = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
-    values      = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
-    next_values = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
-    dones       = (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float()
-    return rewards, values, next_values, dones
+    rewards = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    values  = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    dones   = (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float()
+    return rewards, values, dones
 
 
 def _vtrace_inputs():

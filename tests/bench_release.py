@@ -43,10 +43,13 @@ from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 # Reference implementations (PyTorch loops — ground truth & compiled baselines)
 # ---------------------------------------------------------------------------
 
-def _ref_gae(rewards, values, next_values, dones, gamma, lambda_):
+def _ref_gae(rewards, values, dones, gamma, lambda_):
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = 0.0
     for t in reversed(range(T)):
         not_done  = 1.0 - dones[:, t]
         delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
@@ -170,15 +173,15 @@ def _ref_traces(features, dones, gamma, lambda_, seed=None):
 def numpy_gae_cpu(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    next_values: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
     """CPU GAE backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
-    rewards, values, next_values, dones = (
-        rewards.cpu(), values.cpu(), next_values.cpu(), dones.cpu()
-    )
+    rewards, values, dones = rewards.cpu(), values.cpu(), dones.cpu()
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = 0.0
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0])
@@ -193,7 +196,6 @@ def numpy_gae_cpu(
 def numpy_gae_np_to_triton(
     rewards_np: np.ndarray,
     values_np: np.ndarray,
-    next_values_np: np.ndarray,
     dones_np: np.ndarray,
     gamma: float,
     lambda_: float,
@@ -201,7 +203,7 @@ def numpy_gae_np_to_triton(
     """NumPy → GPU Triton → NumPy end-to-end adoption path for GAE."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
     out = compute_gae_triton(
-        to_gpu(rewards_np), to_gpu(values_np), to_gpu(next_values_np), to_gpu(dones_np),
+        to_gpu(rewards_np), to_gpu(values_np), to_gpu(dones_np),
         gamma=gamma, lambda_=lambda_,
     )
     torch.cuda.synchronize()
@@ -295,7 +297,6 @@ def _make_gae(num_envs, seq_len, device="cuda"):
     return (
         torch.randn(num_envs, seq_len, device=d),   # rewards
         torch.randn(num_envs, seq_len, device=d),   # values
-        torch.randn(num_envs, seq_len, device=d),   # next_values
         (torch.rand(num_envs, seq_len, device=d) < 0.05).float(),  # dones
     )
 

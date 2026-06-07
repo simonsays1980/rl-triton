@@ -4,16 +4,6 @@ import triton.language as tl
 from rl_triton.kernels.scan import _combine
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=1),
-        triton.Config({}, num_warps=2),
-        triton.Config({}, num_warps=4),
-        triton.Config({}, num_warps=8),
-        triton.Config({}, num_warps=16),
-    ],
-    key=["seq_len"],
-)
 @triton.jit
 def gae_fused_kernel(
     rewards_ptr, values_ptr, next_values_ptr, dones_ptr,
@@ -21,8 +11,8 @@ def gae_fused_kernel(
     bootstrap_ptr,
     seq_len,
     stride_env,
-    gamma: tl.constexpr,
-    lambda_: tl.constexpr,
+    gamma,
+    lambda_,
     BLOCK_SIZE: tl.constexpr,
 ):
     """

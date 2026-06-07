@@ -13,9 +13,9 @@ def vtrace_fused_kernel(
     bootstrap_ptr,
     seq_len,
     stride_env,
-    gamma: tl.constexpr,
-    rho_bar: tl.constexpr,
-    c_bar: tl.constexpr,
+    gamma,
+    rho_bar,
+    c_bar,
     BLOCK_SIZE: tl.constexpr,
 ):
     """

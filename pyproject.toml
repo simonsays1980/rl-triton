@@ -5,12 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rl-triton"
 version = "0.1.0"
-description = "High-performance Triton GPU kernels for RL computations"
+description = "High-performance Triton GPU kernels for reinforcement learning"
 requires-python = ">=3.10"
+keywords = ["reinforcement learning", "triton", "gpu", "cuda", "kernels", "gae", "vtrace"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = [
     "torch>=2.2",
     "triton>=2.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/simonsays1980/rl-triton"
+Repository = "https://github.com/simonsays1980/rl-triton"
+Documentation = "https://simonsays1980.github.io/rl-triton"
+"Bug Tracker" = "https://github.com/simonsays1980/rl-triton/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "numpy"]

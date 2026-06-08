@@ -21,6 +21,7 @@ triton = pytest.importorskip("triton")
 
 from bench_utils import _bench_gpu, _n_iter_gpu
 from rl_triton.ops.gae import compute_gae_triton
+from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 from rl_triton.ops.retrace import compute_retrace_triton
 from rl_triton.ops.returns import (
     compute_discounted_returns,
@@ -32,6 +33,7 @@ from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 # Import vectorized baselines from each algorithm's test module.
 # These are the strongest compiled PyTorch baselines (no Python loop per timestep).
 from test_gae import vectorized_gae
+from test_prefix_sum import cumsum_episodic_prefix_sum
 from test_retrace import vectorized_retrace
 from test_returns import (
     vectorized_discounted_returns,
@@ -224,4 +226,30 @@ def test_perf_eligibility_traces():
     print(f"\nElig-traces  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(vec)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
     assert speedup >= _SPEEDUP_FLOOR, (
         f"Eligibility-traces Triton {speedup:.2f}x vs torch.compile(vec) — below {_SPEEDUP_FLOOR}x floor"
+    )
+
+
+def _prefix_sum_inputs():
+    torch.manual_seed(0)
+    d = "cuda"
+    inputs = torch.randn(_NUM_ENVS, _SEQ_LEN, device=d)
+    dones  = (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float()
+    return inputs, dones
+
+
+@cuda_only
+@pytest.mark.perf
+def test_perf_prefix_sum():
+    args = _prefix_sum_inputs()
+    compiled = torch.compile(cumsum_episodic_prefix_sum)
+    _warmup(compiled, *args)
+
+    nw, ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
+    triton_ms = _bench_gpu(compute_episodic_prefix_sum, *args, n_warmup=nw, n_iter=ni)
+    vec_ms    = _bench_gpu(compiled,                    *args, n_warmup=nw, n_iter=ni)
+    speedup   = vec_ms / triton_ms
+
+    print(f"\nPrefix-sum  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(cumsum)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
+    assert speedup >= _SPEEDUP_FLOOR, (
+        f"Prefix-sum Triton {speedup:.2f}x vs torch.compile(cumsum) — below {_SPEEDUP_FLOOR}x floor"
     )

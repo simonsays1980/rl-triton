@@ -1,6 +1,12 @@
 import torch
+import triton
 
-from rl_triton.ops._scan import _run_scan_forward
+from rl_triton.kernels.prefix_sum_fused import prefix_sum_fused_kernel
+from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN
+
+# Prefix sum carries the fewest registers of any kernel (2 loads, v=1-done, scan).
+# Use the same aggressive warp/stage settings as the other light kernels.
+_WARPS = {512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 
 
 def compute_episodic_prefix_sum(
@@ -20,7 +26,8 @@ def compute_episodic_prefix_sum(
     When d[t] = 1, v[t] = 0 and C[t] = x[t]: the accumulation resets.
     When d[t] = 0, v[t] = 1 and C[t] = x[t] + C[t-1]: standard prefix sum.
 
-    Limited to seq_len <= 131072 (flat kernel only; see NOTES.md).
+    Dispatches to the fully-fused single-block kernel for seq_len <= 131072.
+    Longer sequences are not supported (chunked forward scan not implemented).
 
     Args:
         inputs:      Values to accumulate x[t], [num_envs, seq_len], float32, CUDA.
@@ -36,5 +43,36 @@ def compute_episodic_prefix_sum(
     assert dones.dtype == torch.float32,  f"dones: expected float32, got {dones.dtype}"
     assert inputs.shape == dones.shape,   "inputs and dones must have the same shape"
 
-    v = (1.0 - dones).to(inputs.dtype)
-    return _run_scan_forward(inputs, v, seed_values)
+    num_envs, seq_len = inputs.shape
+
+    assert seq_len <= _FLAT_MAX_SEQ_LEN, (
+        f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
+        "A chunked forward scan kernel has not been implemented yet."
+    )
+
+    inputs = inputs.contiguous()
+    dones  = dones.contiguous()
+
+    if seed_values is None:
+        seed_values = torch.zeros(num_envs, device=inputs.device, dtype=torch.float32)
+    else:
+        assert seed_values.shape == (num_envs,), \
+            f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
+        assert seed_values.is_cuda, "seed_values must be on CUDA"
+        seed_values = seed_values.contiguous()
+
+    out = torch.empty_like(inputs)
+
+    BLOCK_SIZE = triton.next_power_of_2(seq_len)
+    num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+    num_stages = 2 if BLOCK_SIZE >= 1024 else 1
+
+    prefix_sum_fused_kernel[(num_envs,)](
+        inputs, dones,
+        out, seed_values,
+        seq_len, inputs.stride(0),
+        BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
+    return out

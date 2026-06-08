@@ -6,7 +6,12 @@ from rl_triton.kernels.eligibility_traces_fused import eligibility_traces_fused_
 from rl_triton.kernels.lambda_returns_fused import lambda_returns_fused_kernel
 from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN
 
-_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+# Lambda returns carries more registers (next_values, u computation) — same budget as GAE.
+_WARPS_LAMBDA = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+
+# Discounted returns and eligibility traces carry very few registers (2 loads, 1 scan).
+# More warps fit without spilling, giving the scan tree more parallelism.
+_WARPS_LIGHT = {512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 
 
 def compute_lambda_returns(
@@ -79,7 +84,7 @@ def compute_lambda_returns(
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+        num_warps  = _WARPS_LAMBDA.get(BLOCK_SIZE, 16)
         num_stages = 2 if BLOCK_SIZE >= 2048 else 1
         lambda_returns_fused_kernel[(num_envs,)](
             rewards, next_values, dones,
@@ -150,8 +155,8 @@ def compute_discounted_returns(
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        num_warps  = _WARPS.get(BLOCK_SIZE, 16)
-        num_stages = 2 if BLOCK_SIZE >= 2048 else 1
+        num_warps  = _WARPS_LIGHT.get(BLOCK_SIZE, 16)
+        num_stages = 2 if BLOCK_SIZE >= 1024 else 1
         discounted_returns_fused_kernel[(num_envs,)](
             rewards, dones,
             out, bootstrap_values,
@@ -232,8 +237,8 @@ def compute_eligibility_traces(
     out = torch.empty_like(gradients)
 
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
-    num_warps  = _WARPS.get(BLOCK_SIZE, 16)
-    num_stages = 2 if BLOCK_SIZE >= 2048 else 1
+    num_warps  = _WARPS_LIGHT.get(BLOCK_SIZE, 16)
+    num_stages = 2 if BLOCK_SIZE >= 1024 else 1
 
     eligibility_traces_fused_kernel[(num_envs,)](
         gradients, dones,

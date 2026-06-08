@@ -48,6 +48,8 @@ from rl_triton.kernels.scan_chunked import chunked_backward_scan_kernel
 _FLAT_MAX_SEQ_LEN = 131072
 _CHUNK_SIZE = triton.next_power_of_2(1024)
 
+_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+
 
 def _run_scan(
     u: torch.Tensor,
@@ -108,12 +110,16 @@ def _run_scan(
         )
     else:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
+        num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+        num_stages = 2 if BLOCK_SIZE >= 2048 else 1
         backward_scan_kernel[(num_envs,)](
             u, v, out,
             bootstrap,
             seq_len,
             u.stride(0),
             BLOCK_SIZE=BLOCK_SIZE,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
 
     return out
@@ -170,6 +176,8 @@ def _run_scan_forward(
 
     out        = torch.empty_like(u)
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
+    num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+    num_stages = 2 if BLOCK_SIZE >= 2048 else 1
 
     forward_scan_kernel[(num_envs,)](
         u, v, out,
@@ -177,5 +185,7 @@ def _run_scan_forward(
         seq_len,
         u.stride(0),
         BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
     return out

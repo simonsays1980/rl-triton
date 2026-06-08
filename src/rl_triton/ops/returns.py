@@ -13,6 +13,11 @@ _WARPS_LAMBDA = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 # More warps fit without spilling, giving the scan tree more parallelism.
 _WARPS_LIGHT = {512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 
+# Discounted returns: process multiple envs per block to amortise scan overhead.
+# Only applied to discounted returns (2 loads) — the lightest kernel.
+# At larger BLOCK_SIZE the per-env register cost of the loop grows, so we taper off.
+_ENVS_PER_BLOCK_DISC = {512: 4, 1024: 4, 2048: 2, 4096: 1, 8192: 1, 16384: 1}
+
 
 def compute_lambda_returns(
     rewards: torch.Tensor,
@@ -154,15 +159,18 @@ def compute_discounted_returns(
     out = torch.empty_like(rewards)
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
-        BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        num_warps  = _WARPS_LIGHT.get(BLOCK_SIZE, 16)
-        num_stages = 2 if BLOCK_SIZE >= 1024 else 1
-        discounted_returns_fused_kernel[(num_envs,)](
+        BLOCK_SIZE      = triton.next_power_of_2(seq_len)
+        num_warps       = _WARPS_LIGHT.get(BLOCK_SIZE, 16)
+        num_stages      = 2 if BLOCK_SIZE >= 1024 else 1
+        ENVS_PER_BLOCK  = _ENVS_PER_BLOCK_DISC.get(BLOCK_SIZE, 1)
+        num_blocks      = triton.cdiv(num_envs, ENVS_PER_BLOCK)
+        discounted_returns_fused_kernel[(num_blocks,)](
             rewards, dones,
             out, bootstrap_values,
-            seq_len, rewards.stride(0),
+            seq_len, num_envs, rewards.stride(0),
             gamma=gamma,
             BLOCK_SIZE=BLOCK_SIZE,
+            ENVS_PER_BLOCK=ENVS_PER_BLOCK,
             num_warps=num_warps,
             num_stages=num_stages,
         )

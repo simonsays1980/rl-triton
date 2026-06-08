@@ -1,6 +1,7 @@
 import torch
 
-from rl_triton.ops._scan import _correctness_warn, _run_scan
+from rl_triton.ops._scan import _correctness_warn, _run_scan, _FLAT_MAX_SEQ_LEN
+from rl_triton.ops.retrace_fused import compute_retrace_fused
 
 
 def compute_retrace_triton(
@@ -160,15 +161,20 @@ def compute_retrace_triton(
     else:
         terminated = dones
 
-    # u[t] = r[t] + γ * E_π[Q(s_{t+1},a)] * (1-terminated[t]) - Q(s_t,a_t)
-    # The bootstrap γ·E_π[Q(s_{t+1},·)] is kept for truncated boundaries and
-    # zeroed only for true terminations.
+    num_envs, seq_len = rewards.shape
+
+    if seq_len <= _FLAT_MAX_SEQ_LEN:
+        return compute_retrace_fused(
+            action_probs_target, action_probs_behavior,
+            q_values, next_q_values_all, actions,
+            rewards, dones, terminated,
+            gamma=gamma, lambda_=lambda_, c_bar=c_bar,
+        )
+
+    # Chunked fallback for seq_len > 131072: build u and v in PyTorch, scan via _run_scan.
     expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
     u = rewards + gamma * expected_next_q * (1.0 - terminated) - q_values
 
-    # v[t] = γ * c[t+1] * (1-done[t])
-    # dones (terminated OR truncated) stops trace propagation across any boundary.
-    # c[t] = λ * min(c_bar, π(a_t) / μ(a_t)); c_next[:,-1]=0 (out-of-bounds).
     pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
     c_next = torch.empty_like(c)

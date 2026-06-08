@@ -4,13 +4,13 @@ import triton
 from rl_triton.kernels.vtrace_fused import vtrace_fused_kernel
 
 _FLAT_MAX_SEQ_LEN = 131072
+_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 
 
 def compute_vtrace_fused(
     log_pi_target: torch.Tensor,
     log_pi_behavior: torch.Tensor,
     values: torch.Tensor,
-    next_values: torch.Tensor,
     rewards: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
@@ -21,24 +21,22 @@ def compute_vtrace_fused(
     """
     Fully-fused V-Trace targets and advantages via a single Triton kernel.
 
-    Called by compute_vtrace_triton for seq_len <= 131072.  Avoids the eight
-    intermediate PyTorch elementwise kernels by computing IS ratios, deltas,
-    decays, targets, and advantages entirely inside one GPU kernel per environment
-    row.  For longer sequences compute_vtrace_triton falls back to the chunked
-    path automatically — do not call this function directly for seq_len > 131072.
+    V(s_{t+1}) is read directly from values[:, t+1] inside the kernel — the
+    caller does not need to pass a separate next_values tensor.  For the last
+    timestep, V(s_T) is taken from bootstrap_values (same as the scan boundary).
 
     Args:
         log_pi_target:    Log probs under target policy, [num_envs, seq_len], float32, CUDA.
         log_pi_behavior:  Log probs under behavior policy, same shape.
-        values:           V(s_t), same shape.
-        next_values:      V(s_{t+1}), same shape.
+        values:           V(s_t), same shape.  V(s_{t+1}) is read as values[:, t+1].
         rewards:          Per-step rewards, same shape.
         dones:            Episode termination flags (1.0=done), same shape, float32.
         gamma:            Discount factor.
         rho_bar:          IS ratio clip for delta (default 1.0).
         c_bar:            IS ratio clip for decay (default 1.0).
-        bootstrap_values: Per-env boundary value Delta[T], shape [num_envs].
-                          Defaults to zeros (terminated episodes).
+        bootstrap_values: Per-env boundary value Delta[T] / V(s_T), shape [num_envs].
+                          Use V(s_T) for truncated episodes, 0 for terminated ones.
+                          Defaults to zeros.
 
     Returns:
         vtrace_targets:    [num_envs, seq_len], float32.
@@ -48,11 +46,10 @@ def compute_vtrace_fused(
         ("log_pi_target",   log_pi_target),
         ("log_pi_behavior", log_pi_behavior),
         ("values",          values),
-        ("next_values",     next_values),
         ("rewards",         rewards),
         ("dones",           dones),
     ]:
-        assert t.is_cuda,               f"{name} must be on CUDA"
+        assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
         assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
 
@@ -65,7 +62,6 @@ def compute_vtrace_fused(
     log_pi_target   = log_pi_target.contiguous()
     log_pi_behavior = log_pi_behavior.contiguous()
     values          = values.contiguous()
-    next_values     = next_values.contiguous()
     rewards         = rewards.contiguous()
     dones           = dones.contiguous()
 
@@ -81,9 +77,13 @@ def compute_vtrace_fused(
     vtrace_advantages = torch.empty_like(rewards)
 
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
+    num_warps  = _WARPS.get(BLOCK_SIZE, 16)
+    num_stages = 2 if BLOCK_SIZE >= 2048 else 1
+
     vtrace_fused_kernel[(num_envs,)](
         log_pi_target, log_pi_behavior,
-        values, next_values, rewards, dones,
+        values,
+        rewards, dones,
         vtrace_targets, vtrace_advantages,
         bootstrap_values,
         seq_len,
@@ -92,5 +92,7 @@ def compute_vtrace_fused(
         rho_bar=rho_bar,
         c_bar=c_bar,
         BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
     return vtrace_targets, vtrace_advantages

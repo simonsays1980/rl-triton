@@ -8,7 +8,6 @@ def compute_vtrace_triton(
     log_pi_target: torch.Tensor,
     log_pi_behavior: torch.Tensor,
     values: torch.Tensor,
-    next_values: torch.Tensor,
     rewards: torch.Tensor,
     dones: torch.Tensor,
     gamma: float,
@@ -35,6 +34,10 @@ def compute_vtrace_triton(
     V-Trace advantages (for actor loss):
       A[t] = ρ[t] * (r[t] + γ * v[t+1] * (1 - done[t]) - V(s_t))
 
+    V(s_{t+1}) is read directly from values[:, t+1] inside the kernel — the
+    caller does not need to pass a separate next_values tensor.  For the last
+    timestep, V(s_T) is taken from bootstrap_values.
+
     Dispatches to the fully-fused single-block kernel for seq_len <= 131072
     (IS ratios, scan, targets, and advantages in one GPU kernel), and falls back
     to the chunked scan + PyTorch elementwise ops for longer sequences.
@@ -43,14 +46,15 @@ def compute_vtrace_triton(
         log_pi_target:    Log probabilities under target policy, [num_envs, seq_len], float32, CUDA.
         log_pi_behavior:  Log probabilities under behavior policy, same shape.
         values:           Value function predictions V(s_t), same shape.
-        next_values:      Value function predictions V(s_{t+1}), same shape.
+                          V(s_{t+1}) is read as values[:, t+1] inside the kernel.
         rewards:          Per-step rewards, same shape.
         dones:            Episode termination flags (1.0 = done), same shape, float32.
         gamma:            Discount factor.
         rho_bar:          IS ratio clip for δ (default 1.0).
         c_bar:            IS ratio clip for decay (default 1.0).
-        bootstrap_values: Per-environment boundary value Δ[T], shape [num_envs], float32.
-                          Use γ * c[T] * V(s_T) for truncated episodes, 0 for terminated.
+        bootstrap_values: Per-environment V(s_T) / boundary value Δ[T], shape [num_envs].
+                          Use V(s_T) for truncated episodes, 0 for terminated ones.
+                          Also used as V(s_{t+1}) at t=T-1 inside the kernel.
                           Defaults to zeros (all episodes terminated).
 
     Returns:
@@ -61,7 +65,6 @@ def compute_vtrace_triton(
         ("log_pi_target",   log_pi_target),
         ("log_pi_behavior", log_pi_behavior),
         ("values",          values),
-        ("next_values",     next_values),
         ("rewards",         rewards),
         ("dones",           dones),
     ]:
@@ -74,7 +77,6 @@ def compute_vtrace_triton(
     log_pi_target   = log_pi_target.contiguous()
     log_pi_behavior = log_pi_behavior.contiguous()
     values          = values.contiguous()
-    next_values     = next_values.contiguous()
     rewards         = rewards.contiguous()
     dones           = dones.contiguous()
 
@@ -87,17 +89,19 @@ def compute_vtrace_triton(
         bootstrap_values = bootstrap_values.contiguous()
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
-        # Fused path: IS ratios, deltas, scan, targets, and advantages in one kernel.
         return compute_vtrace_fused(
             log_pi_target, log_pi_behavior,
-            values, next_values, rewards, dones,
+            values, rewards, dones,
             gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
             bootstrap_values=bootstrap_values,
         )
 
     # Chunked path for seq_len > 131072.
-    # u[t] = ρ[t] * (r[t] + γV'[t](1-d[t]) - V[t])
-    # v[t] = γ * c[t] * (1-d[t])
+    # Build next_values from values shifted by 1, bootstrap at boundary.
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = bootstrap_values
+
     is_ratios = torch.exp(log_pi_target - log_pi_behavior)
     rho = torch.clamp(is_ratios, max=rho_bar)
     c   = torch.clamp(is_ratios, max=c_bar)
@@ -109,7 +113,7 @@ def compute_vtrace_triton(
 
     next_vtrace_targets = torch.empty_like(vtrace_targets)
     next_vtrace_targets[:, :-1] = vtrace_targets[:, 1:]
-    next_vtrace_targets[:, -1]  = next_values[:, -1]
+    next_vtrace_targets[:, -1]  = bootstrap_values
 
     vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * (1.0 - dones) - values)
     return vtrace_targets, vtrace_advantages

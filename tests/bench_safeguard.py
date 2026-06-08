@@ -69,7 +69,6 @@ def _vtrace_inputs():
         -torch.rand(_NUM_ENVS, _SEQ_LEN, device=d),   # log_pi_target
         -torch.rand(_NUM_ENVS, _SEQ_LEN, device=d),   # log_pi_behavior
         torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),   # values
-        torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),   # next_values
         torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),   # rewards
         (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float(),  # dones
     )

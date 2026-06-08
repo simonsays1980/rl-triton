@@ -58,9 +58,12 @@ def _ref_gae(rewards, values, dones, gamma, lambda_):
     return out
 
 
-def _ref_vtrace(log_pi_t, log_pi_b, values, next_values, rewards, dones, gamma,
+def _ref_vtrace(log_pi_t, log_pi_b, values, rewards, dones, gamma,
                 rho_bar=1.0, c_bar=1.0, bootstrap_values=None):
     num_envs, T = rewards.shape
+    next_values = torch.empty_like(values)
+    next_values[:, :-1] = values[:, 1:]
+    next_values[:, -1]  = 0.0 if bootstrap_values is None else bootstrap_values
     rho = torch.clamp(torch.exp(log_pi_t - log_pi_b), max=rho_bar)
     c   = torch.clamp(torch.exp(log_pi_t - log_pi_b), max=c_bar)
     deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
@@ -74,7 +77,7 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, next_values, rewards, dones, gamma,
     targets = out + values
     next_t  = torch.empty_like(targets)
     next_t[:, :-1] = targets[:, 1:]
-    next_t[:, -1]  = next_values[:, -1]
+    next_t[:, -1]  = 0.0 if bootstrap_values is None else bootstrap_values
     advantages = rho * (rewards + gamma * next_t * (1.0 - dones) - values)
     return targets, advantages
 
@@ -210,11 +213,14 @@ def numpy_gae_np_to_triton(
     return out.cpu().numpy()
 
 
-def numpy_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
+def numpy_vtrace_cpu(log_pi_t, log_pi_b, values, rewards, dones,
                      gamma, rho_bar=1.0, c_bar=1.0):
     """CPU V-Trace backward loop on CPU tensors."""
-    cpu     = lambda t: t.cpu().float()
-    lpt, lpb, v, nv, r, d = map(cpu, [log_pi_t, log_pi_b, values, next_values, rewards, dones])
+    cpu = lambda t: t.cpu().float()
+    lpt, lpb, v, r, d = map(cpu, [log_pi_t, log_pi_b, values, rewards, dones])
+    nv = torch.empty_like(v)
+    nv[:, :-1] = v[:, 1:]
+    nv[:, -1]  = 0.0
     num_envs, T = r.shape
     rho = torch.clamp(torch.exp(lpt - lpb), max=rho_bar)
     c   = torch.clamp(torch.exp(lpt - lpb), max=c_bar)
@@ -223,8 +229,8 @@ def numpy_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
     out   = torch.zeros_like(r)
     carry = torch.zeros(num_envs)
     for t in reversed(range(T)):
-        carry      = deltas[:, t] + disc[:, t] * c[:, t] * carry
-        out[:, t]  = carry
+        carry     = deltas[:, t] + disc[:, t] * c[:, t] * carry
+        out[:, t] = carry
     targets = out + v
     next_t  = torch.empty_like(targets)
     next_t[:, :-1] = targets[:, 1:]
@@ -233,13 +239,15 @@ def numpy_vtrace_cpu(log_pi_t, log_pi_b, values, next_values, rewards, dones,
     return targets, advantages
 
 
-def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np, next_values_np,
+def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np,
                                rewards_np, dones_np, gamma, rho_bar=1.0, c_bar=1.0):
     """NumPy → GPU Triton → NumPy end-to-end adoption path for V-Trace."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
-    args = map(to_gpu, [log_pi_t_np, log_pi_b_np, values_np, next_values_np,
-                        rewards_np, dones_np])
-    targets, advantages = compute_vtrace_triton(*args, gamma=gamma, rho_bar=rho_bar, c_bar=c_bar)
+    targets, advantages = compute_vtrace_triton(
+        to_gpu(log_pi_t_np), to_gpu(log_pi_b_np), to_gpu(values_np),
+        to_gpu(rewards_np), to_gpu(dones_np),
+        gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
+    )
     torch.cuda.synchronize()
     return targets.cpu().numpy(), advantages.cpu().numpy()
 
@@ -305,12 +313,11 @@ def _make_vtrace(num_envs, seq_len, device="cuda"):
     torch.manual_seed(0)
     d = device
     return (
-        -torch.rand(num_envs, seq_len, device=d),
-        -torch.rand(num_envs, seq_len, device=d),
-        torch.randn(num_envs, seq_len, device=d),
-        torch.randn(num_envs, seq_len, device=d),
-        torch.randn(num_envs, seq_len, device=d),
-        (torch.rand(num_envs, seq_len, device=d) < 0.05).float(),
+        -torch.rand(num_envs, seq_len, device=d),   # log_pi_target
+        -torch.rand(num_envs, seq_len, device=d),   # log_pi_behavior
+        torch.randn(num_envs, seq_len, device=d),   # values
+        torch.randn(num_envs, seq_len, device=d),   # rewards
+        (torch.rand(num_envs, seq_len, device=d) < 0.05).float(),  # dones
     )
 
 

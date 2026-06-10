@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_PAT }}
+          token: ${{ secrets.GH_PAT }}
       # Package already installed by start.sh; pull latest changes for this ref.
       - run: pip install --quiet --no-deps -e .
       - name: Run correctness tests
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_PAT }}
+          token: ${{ secrets.GH_PAT }}
       - run: pip install --quiet --no-deps -e .
       - name: Run safeguard benchmarks
         id: bench
@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_PAT }}
+          token: ${{ secrets.GH_PAT }}
       - run: pip install --quiet --no-deps -e .
       - name: Run full benchmark sweep
         run: |

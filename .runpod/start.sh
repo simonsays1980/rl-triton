@@ -5,16 +5,16 @@
 # Every boot reconstructs state from scratch (no network volume).
 #
 # Required env vars (set in RunPod pod environment):
-#   GITHUB_PAT   — classic PAT with repo scope, or fine-grained with
+#   GH_PAT      — classic PAT with repo scope, or fine-grained with
 #                  Administration: write (needed to mint registration tokens)
-#   GITHUB_REPO  — owner/repo, e.g. simonsays1980/rl-triton
+#   GITHUB_REPO — owner/repo, e.g. simonsays1980/rl-triton
 #
 # Optional:
 #   RUNNER_NAME  — defaults to runpod-$(hostname)
 
 set -euo pipefail
 
-REPO_URL="https://x-access-token:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git"
+REPO_URL="https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git"
 WORK_DIR="/root/actions-runner"
 REPO_DIR="/root/rl-triton"
 
@@ -50,7 +50,7 @@ mkdir -p "${WORK_DIR}"
 cd "${WORK_DIR}"
 
 RUNNER_VERSION=$(curl -fsSL \
-    -H "Authorization: Bearer ${GITHUB_PAT}" \
+    -H "Authorization: Bearer ${GH_PAT}" \
     "https://api.github.com/repos/actions/runner/releases/latest" \
     | jq -r '.tag_name' | sed 's/^v//')
 
@@ -63,7 +63,7 @@ curl -fsSL \
 # ---------------------------------------------------------------------------
 REG_TOKEN=$(curl -fsSL \
     -X POST \
-    -H "Authorization: Bearer ${GITHUB_PAT}" \
+    -H "Authorization: Bearer ${GH_PAT}" \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/${GITHUB_REPO}/actions/runners/registration-token" \
     | jq -r '.token')

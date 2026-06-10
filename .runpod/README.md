@@ -20,14 +20,14 @@ Needed for both cloning and minting runner registration tokens at boot.
 
    | Variable | Value |
    |---|---|
-   | `GITHUB_PAT` | your PAT |
+   | `GH_PAT` | your PAT |
    | `GITHUB_REPO` | `simonsays1980/rl-triton` |
    | `RUNNER_NAME` | `runpod-gpu-1` (optional) |
 
 5. Container Start Command — paste this one-liner (bootstraps then runs start.sh):
 
    ```
-   bash -c "git clone https://x-access-token:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git /root/rl-triton && bash /root/rl-triton/.runpod/start.sh"
+   bash -c "git clone https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git /root/rl-triton && bash /root/rl-triton/.runpod/start.sh"
    ```
 
 6. Deploy. After ~60 s the runner appears as **Idle** under

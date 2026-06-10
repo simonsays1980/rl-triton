@@ -39,6 +39,8 @@ jobs:
   safeguard:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, linux, gpu]
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - run: pip install --quiet --no-deps -e .

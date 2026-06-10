@@ -7,7 +7,7 @@ launches by doing everything — IS ratio computation, backward scan, target
 construction, and advantage computation — inside a single Triton kernel per
 environment row.  It is the fast path for `seq_len <= 131072`.
 
-For longer sequences, `compute_vtrace_triton` falls back to a two-stage path:
+For longer sequences, `compute_vtrace` falls back to a two-stage path:
 PyTorch elementwise ops to compute `deltas` and `decays`, followed by
 `compute_vtrace_chunked` for the backward scan.  This path is not fused.
 
@@ -68,7 +68,7 @@ with torch.autocast("cuda"):
     # ... policy forward pass in bf16 ...
     deltas = deltas.float()
     decays = decays.float()
-    advantages = compute_gae_triton(deltas, decays)
+    advantages = compute_gae(deltas, decays)
 ```
 
 This matches standard mixed-precision RL practice: the policy network runs in

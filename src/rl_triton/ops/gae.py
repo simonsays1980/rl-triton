@@ -7,7 +7,7 @@ from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
 _WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 
 
-def compute_gae_triton(
+def compute_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
     dones: torch.Tensor,

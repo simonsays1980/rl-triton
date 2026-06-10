@@ -4,7 +4,7 @@ from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 
-def compute_vtrace_triton(
+def compute_vtrace(
     log_pi_target: torch.Tensor,
     log_pi_behavior: torch.Tensor,
     values: torch.Tensor,

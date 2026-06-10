@@ -28,14 +28,15 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent))
 from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
-from rl_triton.ops.gae import compute_gae_triton
-from rl_triton.ops.retrace import compute_retrace_triton
+from rl_triton.ops.gae import compute_gae
+from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
+from rl_triton.ops.retrace import compute_retrace
 from rl_triton.ops.returns import (
     compute_discounted_returns,
     compute_eligibility_traces,
     compute_lambda_returns,
 )
-from rl_triton.ops.vtrace import compute_vtrace_triton
+from rl_triton.ops.vtrace import compute_vtrace
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 
@@ -205,7 +206,7 @@ def numpy_gae_np_to_triton(
 ) -> np.ndarray:
     """NumPy → GPU Triton → NumPy end-to-end adoption path for GAE."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
-    out = compute_gae_triton(
+    out = compute_gae(
         to_gpu(rewards_np), to_gpu(values_np), to_gpu(dones_np),
         gamma=gamma, lambda_=lambda_,
     )
@@ -243,7 +244,7 @@ def numpy_vtrace_np_to_triton(log_pi_t_np, log_pi_b_np, values_np,
                                rewards_np, dones_np, gamma, rho_bar=1.0, c_bar=1.0):
     """NumPy → GPU Triton → NumPy end-to-end adoption path for V-Trace."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
-    targets, advantages = compute_vtrace_triton(
+    targets, advantages = compute_vtrace(
         to_gpu(log_pi_t_np), to_gpu(log_pi_b_np), to_gpu(values_np),
         to_gpu(rewards_np), to_gpu(dones_np),
         gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
@@ -265,7 +266,7 @@ def numpy_retrace_np_to_triton(rewards_np, dones_np, q_values_np, next_q_all_np,
     acts = to_gpu_i(actions_np)
     r    = to_gpu_f(rewards_np)
     d    = to_gpu_f(dones_np)
-    out  = compute_retrace_triton(apt, apb, q, nqa, acts, r, d,
+    out  = compute_retrace(apt, apb, q, nqa, acts, r, d,
                                   gamma=gamma, lambda_=lambda_, c_bar=c_bar)
     torch.cuda.synchronize()
     return out.cpu().numpy()
@@ -373,7 +374,7 @@ def bench_gae():
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
         nw, ni   = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_gae_triton,     *args_gpu, gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
+        triton_ms   = _bench_gpu(compute_gae,     *args_gpu, gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
         compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99, lambda_=0.95)
         e2e_ms      = _bench_cpu(numpy_gae_np_to_triton, *args_np,  gamma=0.99, lambda_=0.95)
         numpy_ms    = _bench_cpu(numpy_gae_cpu,          *args_gpu, gamma=0.99, lambda_=0.95)
@@ -432,7 +433,7 @@ def bench_retrace():
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
         nw, ni = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace_triton,       *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        triton_ms   = _bench_gpu(compute_retrace,       *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
         vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
         compiled_ms = _bench_cpu(compiled_loop,                 *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(numpy_retrace_np_to_triton,    rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
@@ -479,6 +480,29 @@ def bench_returns():
         rows_disc.append(  {**base, "triton_ms": disc_ms, "compiled_ms": cdisc_ms, "su_compile": cdisc_ms / disc_ms})
         rows_traces.append({**base, "triton_ms": trc_ms,  "compiled_ms": ctrc_ms,  "su_compile": ctrc_ms  / trc_ms})
     return rows_lambda, rows_disc, rows_traces
+
+
+def bench_prefix_sum():
+    from test_prefix_sum import vectorized_episodic_prefix_sum
+    compiled = torch.compile(vectorized_episodic_prefix_sum)
+    r, _, d = _make_returns(64, 512)
+    compiled(r, d); torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        inputs = torch.randn(num_envs, seq_len, device="cuda")
+        dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        nw, ni = _n_iter_gpu(seq_len, num_envs)
+
+        triton_ms   = _bench_gpu(compute_episodic_prefix_sum, inputs, dones, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled, inputs, dones)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "compiled_ms": compiled_ms,
+            "su_compile": compiled_ms / triton_ms,
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +582,9 @@ def _detect_gpu() -> str:
 # README updater
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).parent.parent
-README    = REPO_ROOT / "README.md"
+REPO_ROOT     = Path(__file__).parent.parent
+README        = REPO_ROOT / "README.md"
+BENCHMARKS_MD = REPO_ROOT / "benchmarks.md"
 
 _BENCH_RE = re.compile(
     r"<!-- BENCH_START -->.*?<!-- BENCH_END -->",
@@ -577,6 +602,45 @@ def update_readme(section: str) -> None:
     print(f"\nREADME.md updated ({README})")
 
 
+def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> None:
+    """Prepend a new versioned section to benchmarks.md, preserving history.
+
+    If an entry for the same version already exists (e.g. from an aborted prior
+    run), it is replaced in-place rather than duplicated.
+    """
+    date = datetime.date.today().isoformat()
+    gpu  = gpu_label or _detect_gpu()
+    heading = f"## {version} — {date} — {gpu}\n\n"
+    body    = "\n\n".join(tables) + "\n"
+    new_section = heading + body
+
+    if BENCHMARKS_MD.exists():
+        existing = BENCHMARKS_MD.read_text()
+    else:
+        existing = "# Benchmarks\n\nFull benchmark history across releases.\n\n"
+
+    # Replace existing entry for this version if present.
+    # Each section starts with "## <version> —" and ends just before the next "## ".
+    version_re = re.compile(
+        r"(## " + re.escape(version) + r" —[^\n]*\n).*?(?=\n## |\Z)",
+        re.DOTALL,
+    )
+    if version_re.search(existing):
+        updated = version_re.sub(new_section.rstrip(), existing)
+        print(f"  (replaced existing {version} entry)")
+    else:
+        # Prepend before the first release section, after the file header.
+        insert_marker = "\n## "
+        idx = existing.find(insert_marker)
+        if idx == -1:
+            updated = existing.rstrip() + "\n\n" + new_section
+        else:
+            updated = existing[:idx] + "\n\n" + new_section + existing[idx:]
+
+    BENCHMARKS_MD.write_text(updated)
+    print(f"\nbenchmarks.md updated ({BENCHMARKS_MD})")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -584,14 +648,35 @@ def update_readme(section: str) -> None:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-update", action="store_true",
-                        help="Print results but do not modify README.md")
+                        help="Print results but do not modify README.md or benchmarks.md")
     parser.add_argument("--gpu", default="", metavar="LABEL",
                         help="GPU label to embed in the table header (default: auto-detect)")
+    parser.add_argument("--version", default="", metavar="TAG",
+                        help="Release version tag (e.g. v0.1.0) written into benchmarks.md")
     args = parser.parse_args()
 
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() and not args.no_update:
         print("CUDA not available — aborting.")
         sys.exit(1)
+
+    if args.no_update and not torch.cuda.is_available():
+        # Dry-run without GPU: just render dummy tables to verify formatting.
+        print("CUDA not available — rendering dummy output for format verification.")
+        dummy = {"num_envs": 128, "seq_len": 1024, "triton_ms": 1.234,
+                 "compiled_ms": 2.345, "su_compile": 1.9,
+                 "e2e_ms": 5.678, "numpy_ms": 8.901, "su_e2e": 1.6, "su_numpy": 7.2,
+                 "vec_ms": 2.100, "su_vec": 1.7}
+        tables = [
+            _table_numpy("GAE (`compute_gae`)", [dummy]),
+            _table_numpy("V-Trace (`compute_vtrace`)", [dummy]),
+            _table_retrace("Retrace(λ) (`compute_retrace`)", [dummy]),
+            _table_simple("λ-returns (`compute_lambda_returns`)", [dummy]),
+            _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
+            _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
+            _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
+        ]
+        print(_section(args.gpu or "dry-run GPU", tables))
+        return
 
     print("Running GAE benchmark …")
     gae_rows = bench_gae()
@@ -601,14 +686,17 @@ def main():
     retrace_rows = bench_retrace()
     print("Running returns / eligibility-traces benchmark …")
     lambda_rows, disc_rows, traces_rows = bench_returns()
+    print("Running episodic prefix sum benchmark …")
+    prefix_sum_rows = bench_prefix_sum()
 
     tables = [
-        _table_numpy("GAE (`compute_gae_triton`)", gae_rows),
-        _table_numpy("V-Trace (`compute_vtrace_triton`)", vtrace_rows),
-        _table_retrace("Retrace(λ) (`compute_retrace_triton`)", retrace_rows),
+        _table_numpy("GAE (`compute_gae`)", gae_rows),
+        _table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows),
+        _table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows),
         _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows),
         _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows),
         _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows),
+        _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows),
     ]
 
     section = _section(args.gpu, tables)
@@ -617,6 +705,8 @@ def main():
 
     if not args.no_update:
         update_readme(section)
+        version = args.version or "unreleased"
+        update_benchmarks_md(version, args.gpu, tables)
 
 
 if __name__ == "__main__":

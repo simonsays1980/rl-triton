@@ -3,7 +3,7 @@ import triton
 
 from src.gae import gae_scan_kernel
 
-def compute_gae_triton(deltas: torch.Tensor, decays: torch.Tensor):
+def compute_gae(deltas: torch.Tensor, decays: torch.Tensor):
     # deltas and decays are shape [num_envs, seq_len]
     num_envs, seq_len = deltas.shape
     advantages = torch.empty_like(deltas)

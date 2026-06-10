@@ -9,7 +9,7 @@ from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
 triton = pytest.importorskip("triton")
 
-from rl_triton.ops.gae import compute_gae_triton
+from rl_triton.ops.gae import compute_gae
 
 cuda_only = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA not available"
@@ -102,7 +102,7 @@ def numpy_to_triton_to_numpy(
 ) -> np.ndarray:
     """NumPy → GPU Triton kernel → NumPy end-to-end adoption path."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
-    result = compute_gae_triton(
+    result = compute_gae(
         to_gpu(rewards_np), to_gpu(values_np), to_gpu(dones_np),
         gamma=gamma, lambda_=lambda_,
     )
@@ -132,7 +132,7 @@ def test_gae_known_values_single_env():
     dones    = torch.zeros(1, 3, device="cuda")
     expected = torch.tensor([[6.0, 5.0, 3.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -151,7 +151,7 @@ def test_gae_known_values_delta():
     # A[0] = 1 + 4 = 5
     expected = torch.tensor([[5.0, 4.0, 2.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -167,7 +167,7 @@ def test_gae_known_values_gamma():
     dones    = torch.zeros(1, 2, device="cuda")
     expected = torch.tensor([[2.8, 2.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=0.9, lambda_=1.0),
+        compute_gae(rewards, values, dones, gamma=0.9, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -179,7 +179,7 @@ def test_gae_known_values_lambda():
     values   = torch.zeros(1, 3, device="cuda")
     dones    = torch.zeros(1, 3, device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=1.0, lambda_=0.0),
+        compute_gae(rewards, values, dones, gamma=1.0, lambda_=0.0),
         rewards, atol=1e-5, rtol=1e-5,
     )
 
@@ -199,7 +199,7 @@ def test_gae_known_values_truncated():
     bootstrap  = torch.tensor([2.0], device="cuda")
     expected   = torch.tensor([[10.0, 9.0, 7.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones,
+        compute_gae(rewards, values, dones,
                            gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap),
         expected, atol=1e-5, rtol=1e-5,
     )
@@ -224,7 +224,7 @@ def test_gae_known_values_mixed_termination():
     expected  = reference_gae(rewards, values, dones,
                                gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap)
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones,
+        compute_gae(rewards, values, dones,
                            gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap),
         expected, atol=1e-5, rtol=1e-5,
     )
@@ -242,7 +242,7 @@ def test_gae_known_values_episode_boundary():
     dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
     expected = torch.tensor([[3.0, 2.0, 3.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -258,7 +258,7 @@ def test_gae_known_values_batch():
     dones    = torch.zeros(2, 2, device="cuda")
     expected = torch.tensor([[3.0, 2.0], [7.0, 4.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae_triton(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -271,7 +271,7 @@ def test_gae_known_values_batch():
 def test_gae_correctness_basic():
     rewards, values, dones = _make_inputs(64, 512, seed=0)
     expected = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
-    actual   = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -287,7 +287,7 @@ def test_gae_correctness_basic():
 def test_gae_correctness_shapes(num_envs, seq_len):
     rewards, values, dones = _make_inputs(num_envs, seq_len, seed=42)
     expected = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
-    actual   = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -297,7 +297,7 @@ def test_gae_correctness_bootstrap():
     bootstrap = torch.rand(32, device="cuda")
     expected  = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95,
                                bootstrap_values=bootstrap)
-    actual    = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.95,
+    actual    = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95,
                                    bootstrap_values=bootstrap)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
@@ -310,7 +310,7 @@ def test_gae_lambda0():
     next_values = _make_next_values(values, None)
     not_done = 1.0 - dones
     expected = rewards + 0.99 * not_done * next_values - values
-    actual   = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.0)
+    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.0)
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
@@ -326,7 +326,7 @@ def test_gae_non_contiguous_input():
         rewards.contiguous(), values.contiguous(), dones.contiguous(),
         gamma=0.99, lambda_=0.95,
     )
-    actual = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    actual = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -384,7 +384,7 @@ def test_gae_performance():
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        tri_ms    = _bench_gpu(compute_gae_triton, *args_gpu,
+        tri_ms    = _bench_gpu(compute_gae, *args_gpu,
                                 gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
         vec_ms    = _bench_gpu(compiled_vec,  *args_gpu,
                                 gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)

@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
 from rl_triton.ops.gae import compute_gae
+from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 from rl_triton.ops.retrace import compute_retrace
 from rl_triton.ops.returns import (
     compute_discounted_returns,
@@ -481,6 +482,29 @@ def bench_returns():
     return rows_lambda, rows_disc, rows_traces
 
 
+def bench_prefix_sum():
+    from test_prefix_sum import vectorized_episodic_prefix_sum
+    compiled = torch.compile(vectorized_episodic_prefix_sum)
+    r, _, d = _make_returns(64, 512)
+    compiled(r, d); torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        inputs = torch.randn(num_envs, seq_len, device="cuda")
+        dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        nw, ni = _n_iter_gpu(seq_len, num_envs)
+
+        triton_ms   = _bench_gpu(compute_episodic_prefix_sum, inputs, dones, n_warmup=nw, n_iter=ni)
+        compiled_ms = _bench_cpu(compiled, inputs, dones)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "compiled_ms": compiled_ms,
+            "su_compile": compiled_ms / triton_ms,
+        })
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Table formatters
 # ---------------------------------------------------------------------------
@@ -579,7 +603,11 @@ def update_readme(section: str) -> None:
 
 
 def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> None:
-    """Prepend a new versioned section to benchmarks.md, preserving history."""
+    """Prepend a new versioned section to benchmarks.md, preserving history.
+
+    If an entry for the same version already exists (e.g. from an aborted prior
+    run), it is replaced in-place rather than duplicated.
+    """
     date = datetime.date.today().isoformat()
     gpu  = gpu_label or _detect_gpu()
     heading = f"## {version} — {date} — {gpu}\n\n"
@@ -591,14 +619,23 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
     else:
         existing = "# Benchmarks\n\nFull benchmark history across releases.\n\n"
 
-    # Insert after the top-level heading block (first blank line after header).
-    # If the file already has release sections, prepend before the first one.
-    insert_marker = "\n## "
-    idx = existing.find(insert_marker)
-    if idx == -1:
-        updated = existing.rstrip() + "\n\n" + new_section
+    # Replace existing entry for this version if present.
+    # Each section starts with "## <version> —" and ends just before the next "## ".
+    version_re = re.compile(
+        r"(## " + re.escape(version) + r" —[^\n]*\n).*?(?=\n## |\Z)",
+        re.DOTALL,
+    )
+    if version_re.search(existing):
+        updated = version_re.sub(new_section.rstrip(), existing)
+        print(f"  (replaced existing {version} entry)")
     else:
-        updated = existing[:idx] + "\n\n" + new_section + existing[idx:]
+        # Prepend before the first release section, after the file header.
+        insert_marker = "\n## "
+        idx = existing.find(insert_marker)
+        if idx == -1:
+            updated = existing.rstrip() + "\n\n" + new_section
+        else:
+            updated = existing[:idx] + "\n\n" + new_section + existing[idx:]
 
     BENCHMARKS_MD.write_text(updated)
     print(f"\nbenchmarks.md updated ({BENCHMARKS_MD})")
@@ -636,6 +673,7 @@ def main():
             _table_simple("λ-returns (`compute_lambda_returns`)", [dummy]),
             _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
             _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
+            _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
         ]
         print(_section(args.gpu or "dry-run GPU", tables))
         return
@@ -648,6 +686,8 @@ def main():
     retrace_rows = bench_retrace()
     print("Running returns / eligibility-traces benchmark …")
     lambda_rows, disc_rows, traces_rows = bench_returns()
+    print("Running episodic prefix sum benchmark …")
+    prefix_sum_rows = bench_prefix_sum()
 
     tables = [
         _table_numpy("GAE (`compute_gae`)", gae_rows),
@@ -656,6 +696,7 @@ def main():
         _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows),
         _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows),
         _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows),
+        _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows),
     ]
 
     section = _section(args.gpu, tables)

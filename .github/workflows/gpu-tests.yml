@@ -23,6 +23,7 @@ jobs:
       - run: pip install --quiet --no-deps -e .
       - name: Run correctness tests
         run: |
+          set -o pipefail
           pytest tests/ \
             -v \
             -m "not perf and not slow" \
@@ -51,6 +52,7 @@ jobs:
       - name: Run safeguard benchmarks
         id: bench
         run: |
+          set -o pipefail
           pytest tests/bench_safeguard.py \
             -v \
             -m perf \

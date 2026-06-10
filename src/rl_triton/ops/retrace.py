@@ -4,7 +4,7 @@ from rl_triton.ops._scan import _correctness_warn, _run_scan, _FLAT_MAX_SEQ_LEN
 from rl_triton.ops.retrace_fused import compute_retrace_fused
 
 
-def compute_retrace_triton(
+def compute_retrace(
     action_probs_target: torch.Tensor,
     action_probs_behavior: torch.Tensor,
     q_values: torch.Tensor,
@@ -27,7 +27,7 @@ def compute_retrace_triton(
     Discrete actions only.  Retrace requires E_π[Q(s_{t+1},a)] as an exact sum
     over all actions, which is tractable only for discrete action spaces.  For
     continuous actions this expectation is an integral with no closed form;
-    use V-Trace (compute_vtrace_triton) instead, which only needs log-density
+    use V-Trace (compute_vtrace) instead, which only needs log-density
     ratios at the taken action.
 
     Bootstrap and terminal vs. truncated boundaries

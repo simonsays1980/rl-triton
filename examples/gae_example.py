@@ -5,7 +5,7 @@ Run with:
     python examples/gae_example.py
 """
 import torch
-from rl_triton.ops.gae import compute_gae_triton
+from rl_triton.ops.gae import compute_gae
 
 
 def reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95):
@@ -36,7 +36,7 @@ def main():
     dones   = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
 
     ref = reference_gae(rewards, values, dones)
-    out = compute_gae_triton(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    out = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
 
     max_err = (out - ref).abs().max().item()
     print(f"num_envs={num_envs}, seq_len={seq_len}")

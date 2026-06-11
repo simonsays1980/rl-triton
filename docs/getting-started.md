@@ -29,17 +29,17 @@ All kernels follow the same convention: inputs are `(num_envs, seq_len)` tensors
 
 ```python
 import torch
-from rl_triton import compute_gae_triton
+from rl_triton import compute_gae
 
 num_envs, seq_len = 64, 512
 device = "cuda"
 
-rewards         = torch.randn(num_envs, seq_len, device=device)
-values          = torch.randn(num_envs, seq_len + 1, device=device)
-dones           = torch.zeros(num_envs, seq_len, device=device)
+rewards          = torch.randn(num_envs, seq_len, device=device)
+values           = torch.randn(num_envs, seq_len + 1, device=device)
+dones            = torch.zeros(num_envs, seq_len, device=device)
 bootstrap_values = values[:, -1]  # V(s_T) for truncated episodes
 
-advantages = compute_gae_triton(
+advantages = compute_gae(
     rewards=rewards,
     values=values,
     dones=dones,
@@ -52,12 +52,12 @@ advantages = compute_gae_triton(
 ### V-Trace (off-policy)
 
 ```python
-from rl_triton import compute_vtrace_triton
+from rl_triton import compute_vtrace
 
 log_pi_target   = torch.randn(num_envs, seq_len, device=device)
 log_pi_behavior = torch.randn(num_envs, seq_len, device=device)
 
-vs, advantages = compute_vtrace_triton(
+vs, advantages = compute_vtrace(
     log_pi_target=log_pi_target,
     log_pi_behavior=log_pi_behavior,
     values=values,
@@ -114,6 +114,21 @@ traces = compute_eligibility_traces(
     lambda_=0.95,
 )  # → (num_envs, seq_len)
 ```
+
+### Episodic Prefix Sum
+
+```python
+from rl_triton import compute_episodic_prefix_sum
+
+inputs = torch.randn(num_envs, seq_len, device=device)
+
+prefix_sums = compute_episodic_prefix_sum(
+    inputs=inputs,
+    dones=dones,
+)  # → (num_envs, seq_len)
+```
+
+The accumulation resets to zero whenever `dones[t] == 1`, so each episode's cumulative sum is independent of the previous one. An optional `seed_values` tensor of shape `(num_envs,)` sets the initial carry $C[-1]$ per environment (defaults to zero). Limited to `seq_len ≤ 131072`.
 
 ## Tensor Layout
 

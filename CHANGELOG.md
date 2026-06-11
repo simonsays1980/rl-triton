@@ -18,4 +18,3 @@ Versioning: [Semantic Versioning](https://semver.org/)
 - Episodic Prefix Sum kernel: cumulative sum with done-mask episode resets
 - Safeguard benchmark suite enforcing minimum speedup thresholds
 - PyTorch wrappers for all kernels with full docstrings
-- Example scripts for all kernels in examples/

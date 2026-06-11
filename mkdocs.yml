@@ -1,0 +1,62 @@
+site_name: rl-triton
+site_description: High-performance Triton GPU kernels for reinforcement learning
+site_url: https://simonsays1980.github.io/rl-triton
+repo_url: https://github.com/simonsays1980/rl-triton
+repo_name: simonsays1980/rl-triton
+
+theme:
+  name: material
+  logo: assets/icon.svg
+  favicon: assets/icon.svg
+  palette:
+    scheme: slate
+    primary: custom
+    accent: custom
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+    - content.code.annotate
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+plugins:
+  - search
+  - include-markdown
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            docstring_style: google
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Kernels:
+    - Overview: kernels/index.md
+    - GAE: kernels/gae.md
+    - V-Trace: kernels/vtrace.md
+    - Retrace: kernels/retrace.md
+    - Returns: kernels/returns.md
+    - Episodic Prefix Sum: kernels/prefix_sum.md 
+  - Benchmarks: benchmarks.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - admonition
+  - attr_list

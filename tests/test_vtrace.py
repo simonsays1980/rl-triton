@@ -10,7 +10,7 @@ from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
 
 triton = pytest.importorskip("triton")
 
-from rl_triton.ops.vtrace import compute_vtrace_triton
+from rl_triton.ops.vtrace import compute_vtrace
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 cuda_only = pytest.mark.skipif(
@@ -155,7 +155,7 @@ def numpy_to_triton_to_numpy(
 ) -> tuple[np.ndarray, np.ndarray]:
     """NumPy → GPU Triton kernel → NumPy end-to-end adoption path."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(device="cuda", dtype=torch.float32)
-    vtrace_targets, vtrace_advantages = compute_vtrace_triton(
+    vtrace_targets, vtrace_advantages = compute_vtrace(
         to_gpu(log_pi_target_np), to_gpu(log_pi_behavior_np),
         to_gpu(values_np), to_gpu(rewards_np), to_gpu(dones_np),
         gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
@@ -187,7 +187,7 @@ def test_vtrace_known_values_single_env():
     rewards = torch.ones(1, 2, device="cuda")
     dones   = torch.zeros(1, 2, device="cuda")
 
-    targets, advantages = compute_vtrace_triton(
+    targets, advantages = compute_vtrace(
         log_pi, log_pi, values, rewards, dones,
         gamma=1.0, rho_bar=100.0, c_bar=100.0,
     )
@@ -213,7 +213,7 @@ def test_vtrace_known_values_truncated():
     dones     = torch.zeros(1, 2, device="cuda")
     bootstrap = torch.tensor([0.5], device="cuda")
 
-    targets, advantages = compute_vtrace_triton(
+    targets, advantages = compute_vtrace(
         log_pi, log_pi, values, rewards, dones,
         gamma=1.0, rho_bar=100.0, c_bar=100.0,
         bootstrap_values=bootstrap,
@@ -239,7 +239,7 @@ def test_vtrace_known_values_done():
     rewards = torch.ones(1, 2, device="cuda")
     dones   = torch.tensor([[1.0, 0.0]], device="cuda")
 
-    targets, _ = compute_vtrace_triton(
+    targets, _ = compute_vtrace(
         log_pi, log_pi, values, rewards, dones,
         gamma=1.0, rho_bar=100.0, c_bar=100.0,
     )
@@ -259,7 +259,7 @@ def test_vtrace_known_values_clipping():
     rewards  = torch.ones(1, 2, device="cuda")
     dones    = torch.zeros(1, 2, device="cuda")
 
-    targets, _ = compute_vtrace_triton(
+    targets, _ = compute_vtrace(
         log_pi_t, log_pi_b, values, rewards, dones,
         gamma=1.0, rho_bar=1.0, c_bar=1.0,
     )
@@ -282,7 +282,7 @@ def test_vtrace_known_values_clipping():
 def test_vtrace_correctness_shapes(num_envs, seq_len):
     args = _make_inputs(num_envs, seq_len, seed=42)
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99)
+    act_t, act_a = compute_vtrace(*args, gamma=0.99)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 
@@ -292,7 +292,7 @@ def test_vtrace_correctness_bootstrap():
     args = _make_inputs(32, 512, seed=3)
     bootstrap = torch.rand(32, device="cuda")
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99, bootstrap_values=bootstrap)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99, bootstrap_values=bootstrap)
+    act_t, act_a = compute_vtrace(*args, gamma=0.99, bootstrap_values=bootstrap)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 
@@ -305,7 +305,7 @@ def test_vtrace_correctness_mixed_termination():
         torch.rand(8, device="cuda"),
     ])
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99, bootstrap_values=bootstrap)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99, bootstrap_values=bootstrap)
+    act_t, act_a = compute_vtrace(*args, gamma=0.99, bootstrap_values=bootstrap)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 
@@ -325,7 +325,7 @@ def test_vtrace_non_contiguous_input():
         values.contiguous(), rewards.contiguous(), dones.contiguous(),
         gamma=0.99,
     )
-    act_t, act_a = compute_vtrace_triton(
+    act_t, act_a = compute_vtrace(
         log_pi_t, log_pi_b, values, rewards, dones, gamma=0.99,
     )
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)

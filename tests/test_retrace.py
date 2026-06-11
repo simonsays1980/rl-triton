@@ -5,7 +5,7 @@ import numpy as np
 triton = pytest.importorskip("triton")
 
 from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
-from rl_triton.ops.retrace import compute_retrace_triton
+from rl_triton.ops.retrace import compute_retrace
 
 cuda_only = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA not available"
@@ -158,7 +158,7 @@ def test_retrace_known_values_single_env():
     rewards   = torch.ones(1, 2, device="cuda")
     dones     = torch.zeros(1, 2, device="cuda")
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
     torch.testing.assert_close(out, torch.tensor([[7.0, 4.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -178,7 +178,7 @@ def test_retrace_known_values_done():
     rewards   = torch.ones(1, 2, device="cuda")
     dones     = torch.tensor([[1.0, 0.0]], device="cuda")
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
     torch.testing.assert_close(out, torch.tensor([[1.0, 4.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -200,7 +200,7 @@ def test_retrace_known_values_clipping():
     rewards   = torch.ones(1, 2, device="cuda")
     dones     = torch.zeros(1, 2, device="cuda")
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
     torch.testing.assert_close(out, torch.tensor([[3.0, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -233,7 +233,7 @@ def test_retrace_terminal_no_bootstrap():
     rewards = torch.ones(1, 1, device="cuda")
     dones   = torch.ones(1, 1, device="cuda")   # terminated
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones, gamma=1.0)
     torch.testing.assert_close(out, torch.tensor([[1.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
@@ -252,7 +252,7 @@ def test_retrace_truncated_keeps_bootstrap():
     dones      = torch.ones(1, 1, device="cuda")   # boundary
     truncateds = torch.ones(1, 1, device="cuda")   # truncated, not terminated
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones,
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones,
                                   gamma=1.0, truncateds=truncateds)
     torch.testing.assert_close(out, torch.tensor([[6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
@@ -284,7 +284,7 @@ def test_retrace_truncated_c_boundary_zero_bootstrap_kept():
     dones      = torch.tensor([[0.0, 1.0]], device="cuda")
     truncateds = torch.tensor([[0.0, 1.0]], device="cuda")
 
-    out = compute_retrace_triton(probs_t, probs_b, q, q_next, actions, rewards, dones,
+    out = compute_retrace(probs_t, probs_b, q, q_next, actions, rewards, dones,
                                   gamma=1.0, truncateds=truncateds)
     torch.testing.assert_close(out, torch.tensor([[12.0, 6.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
@@ -304,7 +304,7 @@ def test_retrace_truncated_c_boundary_zero_bootstrap_kept():
 def test_retrace_correctness_shapes(num_envs, seq_len, num_actions):
     args = _make_inputs(num_envs, seq_len, num_actions=num_actions, seed=42)
     expected = reference_retrace(*args, gamma=0.99)
-    actual   = compute_retrace_triton(*args, gamma=0.99)
+    actual   = compute_retrace(*args, gamma=0.99)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -313,7 +313,7 @@ def test_retrace_correctness_lambda():
     """lambda_ < 1 reduces the effective trace length."""
     args     = _make_inputs(16, 256, seed=4)
     expected = reference_retrace(*args, gamma=0.99, lambda_=0.5)
-    actual   = compute_retrace_triton(*args, gamma=0.99, lambda_=0.5)
+    actual   = compute_retrace(*args, gamma=0.99, lambda_=0.5)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -322,7 +322,7 @@ def test_retrace_correctness_clipping():
     """c_bar < 1 clips IS ratios; result must match the reference with the same clip."""
     args     = _make_inputs(16, 256, seed=5)
     expected = reference_retrace(*args, gamma=0.99, c_bar=0.5)
-    actual   = compute_retrace_triton(*args, gamma=0.99, c_bar=0.5)
+    actual   = compute_retrace(*args, gamma=0.99, c_bar=0.5)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -342,7 +342,7 @@ def test_retrace_on_policy_matches_td():
 
     args = probs_t, probs_b, q, q_next, actions, rewards, dones
     expected = reference_retrace(*args, gamma=0.99, lambda_=1.0, c_bar=1e6)
-    actual   = compute_retrace_triton(*args, gamma=0.99, lambda_=1.0, c_bar=1e6)
+    actual   = compute_retrace(*args, gamma=0.99, lambda_=1.0, c_bar=1e6)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -365,7 +365,7 @@ def test_retrace_non_contiguous_input():
         return t.contiguous()
 
     expected = reference_retrace(*[contiguous(a) for a in args], gamma=0.99)
-    actual   = compute_retrace_triton(*args, gamma=0.99)
+    actual   = compute_retrace(*args, gamma=0.99)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -382,7 +382,7 @@ def _np_to_triton_retrace(*args_gpu, gamma, lambda_=1.0, c_bar=1.0):
     apt_np, apb_np, q_np, nqa_np, act_np, r_np, d_np = args_np
     to_f = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
     to_i = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.int64)
-    out = compute_retrace_triton(
+    out = compute_retrace(
         to_f(apt_np), to_f(apb_np), to_f(q_np), to_f(nqa_np),
         to_i(act_np), to_f(r_np), to_f(d_np),
         gamma=gamma, lambda_=lambda_, c_bar=c_bar,
@@ -443,7 +443,7 @@ def test_retrace_performance():
         args_cpu = _make_inputs(num_envs, seq_len, device="cpu")
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace_triton,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        triton_ms   = _bench_gpu(compute_retrace,  *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         vec_ms      = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
         loop_ms     = _bench_cpu(compiled_loop,            *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(_np_to_triton_retrace,   *args_gpu, gamma=0.99)

@@ -56,7 +56,7 @@ def compute_vtrace_fused(
     num_envs, seq_len = rewards.shape
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
-        "Use compute_vtrace_triton for longer sequences (it auto-dispatches to chunked)."
+        "Use compute_vtrace for longer sequences (it auto-dispatches to chunked)."
     )
 
     log_pi_target   = log_pi_target.contiguous()

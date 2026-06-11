@@ -26,7 +26,7 @@ def compute_retrace_fused(
     Computes E_π[Q(s_{t+1},a)], IS ratios, u[t], v[t], and the backward
     associative scan all in one kernel — no intermediate tensor allocations.
 
-    Only valid for seq_len <= 131072.  Use compute_retrace_triton for longer
+    Only valid for seq_len <= 131072.  Use compute_retrace for longer
     sequences (it auto-dispatches here for short sequences and falls back to
     the chunked path otherwise).
 

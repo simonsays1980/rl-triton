@@ -4,7 +4,7 @@ import torch
 triton = pytest.importorskip("triton")
 
 from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _run_scan
-from rl_triton.ops.vtrace import compute_vtrace_triton
+from rl_triton.ops.vtrace import compute_vtrace
 
 cuda_only = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA not available"
@@ -126,7 +126,7 @@ def test_vtrace_autodispatch_below_threshold():
     torch.manual_seed(3)
     args = _make_inputs(2, 512)
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99)
+    act_t, act_a = compute_vtrace(*args, gamma=0.99)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 
@@ -138,7 +138,7 @@ def test_vtrace_autodispatch_above_threshold():
     torch.manual_seed(4)
     args = _make_inputs(2, _FLAT_MAX_SEQ_LEN + 1)
     exp_t, exp_a = reference_vtrace(*args, gamma=0.99)
-    act_t, act_a = compute_vtrace_triton(*args, gamma=0.99)
+    act_t, act_a = compute_vtrace(*args, gamma=0.99)
     torch.testing.assert_close(act_t, exp_t, atol=1e-4, rtol=1e-4)
     torch.testing.assert_close(act_a, exp_a, atol=1e-4, rtol=1e-4)
 

@@ -1,0 +1,101 @@
+name: GPU Tests
+
+on:
+  push:
+    branches-ignore: [main]   # correctness on every branch push; main only via merge
+  pull_request:
+    branches: [main]          # safeguard benchmarks gate the merge
+  release:
+    types: [published]        # full benchmark sweep on release tags
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Correctness — runs on every branch push and on PRs
+  # ---------------------------------------------------------------------------
+  correctness:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: [self-hosted, linux, gpu]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      # Package already installed by start.sh; pull latest changes for this ref.
+      - run: pip install --quiet --no-deps -e .
+      - name: Run correctness tests
+        run: |
+          set -o pipefail
+          pytest tests/ \
+            -v \
+            -m "not perf and not slow" \
+            --tb=short \
+            --ignore=tests/bench_safeguard.py \
+            --ignore=tests/bench_release.py \
+            | tee /tmp/pytest-correctness.txt
+          # Write pass/fail summary to the Actions job summary page.
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -20 /tmp/pytest-correctness.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Safeguard benchmarks — PR gate only, never on plain branch pushes
+  # ---------------------------------------------------------------------------
+  safeguard:
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, linux, gpu]
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - run: pip install --quiet --no-deps -e .
+      - name: Run safeguard benchmarks
+        id: bench
+        run: |
+          set -o pipefail
+          pytest tests/bench_safeguard.py \
+            -v \
+            -m perf \
+            --tb=short \
+            -s \
+            | tee /tmp/pytest-safeguard.txt
+      - name: Post speedup table as PR comment
+        if: always()   # comment even on failure so regressions are visible
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.bench.outcome }}"
+          ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
+          BODY=$(printf '%s Safeguard benchmarks — %s\n\n```\n%s\n```' \
+            "$ICON" "$STATUS" "$(grep -E 'PASSED|FAILED|speedup|triton=' /tmp/pytest-safeguard.txt || cat /tmp/pytest-safeguard.txt)")
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"
+
+  # ---------------------------------------------------------------------------
+  # Release benchmarks — full sweep, updates README.md and benchmarks.md
+  # ---------------------------------------------------------------------------
+  release-bench:
+    if: github.event_name == 'release'
+    runs-on: [self-hosted, linux, gpu]
+    permissions:
+      contents: write   # needed to push the updated docs back to the repo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - run: pip install --quiet --no-deps -e .
+      - name: Run full benchmark sweep
+        run: |
+          GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
+          python tests/bench_release.py \
+            --gpu  "$GPU_NAME" \
+            --version "${{ github.event.release.tag_name }}"
+      - name: Commit updated README.md and benchmarks.md
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md benchmarks.md
+          git diff --cached --quiet || \
+            git commit -m "bench: update results for ${{ github.event.release.tag_name }}"
+          git push origin HEAD:main

@@ -6,7 +6,7 @@ Generalized Advantage Estimation (GAE; Schulman et al., 2016) is a first-order l
 
 For typical PPO (Schulman et al., 2017) rollout sizes (a few hundred to a few thousand steps), a well-written PyTorch loop is already fast and the overhead of a custom kernel can offset much of the gain. The Triton kernel described here targets workloads where sequence length or batch size is large enough that the parallel reduction pays off — for example, very long trajectories, continuous control tasks with fine time resolution, or research into scalable RL infrastructure.
 
-This tutorial provides a precise, technical walkthrough of how this kernel uses a **Parallel Associative Scan** to restructure the $O(N)$ sequential recurrence into an $O(\log N)$ parallel tree reduction, and explains exactly when and why that matters.
+This tutorial provides a precise, technical walkthrough of how this kernel uses a **Parallel Associative Scan** to restructure the $O(N)$ sequential recurrence into an $O(\log N)$ parallel tree reduction, and explains exactly when and why that matters. Readers unfamiliar with how Triton kernels map onto GPU hardware (memory layout, strides, BLOCK_SIZE, masking) may find the [GPU Concepts](gpu-concepts.md) reference page useful alongside this tutorial.
 
 ---
 

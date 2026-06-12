@@ -1,4 +1,4 @@
-# Triton Kernel Concepts — Mental Models
+# GPU Concepts for Triton Kernels
 
 ## Memory layout: how a 2D tensor lives in RAM
 

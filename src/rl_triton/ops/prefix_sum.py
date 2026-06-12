@@ -17,26 +17,22 @@ def compute_episodic_prefix_sum(
     """
     Cumulative sum that resets to zero at episode boundaries.
 
-    Recurrence:  C[t] = x[t] + (1 - d[t]) * C[t-1],  C[-1] = seed
+    Recurrence:
 
-    Maps to the forward linear recurrence e[t] = u[t] + v[t] * e[t-1] with:
-      u[t] = inputs[t]
-      v[t] = 1 - dones[t]   (1.0 while episode ongoing, 0.0 at terminal step)
+    - C[t] = x[t] + (1 - done[t]) * C[t-1],  C[-1] = seed
+    - done[t]=1: accumulator resets, C[t] = x[t]
+    - done[t]=0: accumulator continues, C[t] = x[t] + C[t-1]
 
-    When d[t] = 1, v[t] = 0 and C[t] = x[t]: the accumulation resets.
-    When d[t] = 0, v[t] = 1 and C[t] = x[t] + C[t-1]: standard prefix sum.
-
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072.
-    Longer sequences are not supported (chunked forward scan not implemented).
+    Limited to seq_len <= 131072.
 
     Args:
         inputs:      Values to accumulate x[t], [num_envs, seq_len], float32, CUDA.
-        dones:       Episode termination flags (1.0 = done), same shape, float32.
+        dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         seed_values: Initial carry C[-1] per environment, shape [num_envs].
-                     Defaults to zeros (accumulation starts from scratch).
+                     Defaults to zeros.
 
     Returns:
-        prefix_sums: C[t], shape [num_envs, seq_len], same dtype as inputs.
+        prefix_sums: C[t], shape [num_envs, seq_len], float32.
     """
     assert inputs.is_cuda and dones.is_cuda, "inputs and dones must be on CUDA"
     assert inputs.dtype == torch.float32, f"inputs: expected float32, got {inputs.dtype}"

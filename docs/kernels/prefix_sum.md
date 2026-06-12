@@ -1,72 +1,82 @@
 # Tutorial: Episodic Prefix Sums (Segmented Scans) in AI Infrastructure
 
-### Introduction
+## Introduction
 
-While algorithms like GAE and V-Trace accumulate values *backward* in time, many core infrastructure tasks in reinforcement learning and sequence modeling require accumulating values *forward* in time. 
+While algorithms like GAE and V-Trace accumulate values *backward* in time, many core infrastructure tasks in reinforcement learning and sequence modeling require accumulating values *forward* in time.
 
-The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but instantly resets the sum whenever a boundary condition is met—such as an episode ending or a padding token appearing.
+The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but resets the sum whenever a boundary condition is met — such as an episode ending or a padding token appearing.
 
-By mapping this segmented logic into a Triton associative scan kernel, we bypass Python sequential loops and standard PyTorch masking overhead, achieving massive parallel speedups for data loaders, memory buffers, and token packing.
+By mapping this segmented logic into a Triton associative scan kernel, we avoid Python sequential loops and standard PyTorch masking overhead, enabling parallel computation for data loaders, memory buffers, and token packing pipelines.
 
 ---
 
-### 1. The Mathematical Recurrence
+## 1. The Mathematical Recurrence
 
-A standard prefix sum computes a running total: $C_t = x_t + C_{t-1}$. 
+A standard prefix sum computes a running total: $C_t = x_t + C_{t-1}$.
 
-To make it *episodic* (segmented), we introduce a binary terminal flag, $d_t$, where $1$ indicates a boundary (e.g., the end of an episode or a document). 
+To make it *episodic* (segmented), we introduce a binary terminal flag $d_t$, where $1$ indicates a boundary (e.g., the end of an episode or a document).
 
 The recurrence becomes:
 
 $$C_t = x_t + (1 - d_t) C_{t-1}$$
 
-If the previous step was a terminal state ($d_{t-1} = 1$), the $(1-d_t)$ mask evaluates to $0$. This effectively multiplies the entire historical sum by zero, restarting the count with just the current $x_t$.
+If the previous step was a terminal state ($d_{t-1} = 1$), the $(1-d_t)$ mask evaluates to $0$, multiplying the entire historical sum by zero and restarting the count with just the current $x_t$.
 
 ---
 
-### 2. Mapping to the Associative Scan
+## 2. Mapping to the Associative Scan
 
-This is a perfect first-order linear recurrence $f(x) = u + vx$. We use the exact same universal associative operator ($\oplus$) that powers our advantage estimators:
+This is a first-order linear recurrence $f(x) = u + vx$, using the same universal associative operator ($\oplus$) as the advantage estimators:
 
 $$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B u_A, \,\, v_A v_B)$$
 
 We map the inputs for our hardware tuples $(u, v)$ as follows:
 
-* **The value to accumulate ($u_t$):** $u_t = x_t$
-* **The boundary reset mask ($v_t$):** $v_t = 1.0 - d_t$
+* **Value to accumulate ($u_t$):** $u_t = x_t$
+* **Boundary reset mask ($v_t$):** $v_t = 1 - d_t$
 
-**CRITICAL DIFFERENCE:** Unlike GAE or Retrace, this is a **forward** accumulation. Threads in the hardware naturally pull data from lower memory indices (the chronological past) rather than higher indices (the future), executing the scan strictly left-to-right.
+Unlike the backward recurrence in GAE or Retrace, this is a **forward** accumulation. Threads pull data from lower memory indices (the chronological past), executing the scan strictly left-to-right. The reduction tree mechanics are identical to those described in the [GAE tutorial](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree); only the scan direction differs.
 
 ---
 
-### 3. Production Use Cases: Where Segmented Scans Live
+## 3. Production Use Cases
 
-It is easy to look at a prefix sum and see just a mathematical trick, but in modern AI infrastructure, segmented scans are the backbone of high-throughput data processing. Whenever you need to process massive contiguous blocks of memory but still respect the logical boundaries inside that memory, you use a segmented scan.
+Segmented scans appear wherever large contiguous memory blocks must be processed while respecting logical boundaries within that memory.
 
-#### A. Vectorized Logging (Total Episodic Return)
-Often, environments stack data from multiple episodes together. Usually __Total Episodic Return__ is logged to ensure an agent is learning. Because 4096 environments reset at completely different, unpredictable times, we cannot simply call a `torch.sum(rewards)`.
+### A. Vectorized Logging (Total Episodic Return)
 
-__The Prefix Sum Solution__: We run a forward episodic prefix sum directly over the rewards tensor. This creates a running tally of the score. We then simply look at the indices where `done == 1`. The value of the prefix sum at that exact index is your final episodic return. We mask out the rest, take the average, and push it to WandB. It calculates 4096 individual episode scores in a single GPU instruction.
+When environments stack data from multiple episodes together, computing the total episodic return naively requires tracking which rewards belong to which episode. Because environments reset at unpredictable times, a simple `torch.sum(rewards)` is insufficient.
 
-#### B. Time-Aware RL (State Augmentation)
-In environments with strict time limits (e.g., a robot is forced to reset after 1000 steps), the Markov property is technically violated unless the agent knows how much time it has left. Standard practice is to append the current timestep to the agent's observation state.
+A forward episodic prefix sum over the rewards tensor creates a running tally of the score. The value of the prefix sum at each index where `done == 1` is the final episodic return for that episode. This computes individual episode scores across all parallel environments in a single kernel launch.
 
-__The Prefix Sum Solution__: Instead of tracking 4096 separate integer counters in Python and resetting them individually when an environment dies, we create a tensor of `1.0`s and run the episodic prefix sum over it. It instantly generates the exact chronologically correct timestep for every single agent, cleanly resetting back to 1 the moment an agent dies.
+### B. Time-Aware RL (State Augmentation)
 
-#### C. LLM Training: Sequence Packing & `position_ids`
-To maximize GPU utilization during LLM pre-training, engineers use **Sequence Packing**. They concatenate multiple independent documents into one massive sequence (e.g., 8192 tokens), separated by `<EOS>` (End of Sentence) tokens. 
+In environments with strict time limits, the Markov property is violated unless the agent knows how much time it has left. Standard practice is to append the current timestep to the observation.
 
-However, the transformer's Positional Embeddings (RoPE) need to know the position of each token in its *respective document*. The `position_ids` cannot just be `[0, 1, 2, ... 8191]`. They must reset at every `<EOS>` token: `[0, 1, 2, 0, 1, 2, 3, 4, 0, 1...]`.
+Instead of tracking separate integer counters per environment in Python, a tensor of $1.0$s passed through an episodic prefix sum produces the correct per-step timestep index for every environment simultaneously, resetting to $1$ at each episode boundary.
 
-By passing an array of `1.0`s into a segmented scan, using the `<EOS>` locations as the $d_t$ mask, the GPU calculates the exact, resetting `position_ids` for billions of packed tokens directly in VRAM in microseconds, completely bypassing the CPU data-loader bottleneck.
+### C. LLM Training: Sequence Packing and `position_ids`
 
-#### D. Offline RL: Decision Transformers & Trajectory Packing
-Modern Offline RL algorithms, like the Decision Transformer, treat RL as a sequence modeling problem, feeding the transformer a sequence of `(Return, State, Action)` tokens. 
+To maximize GPU utilization during LLM pre-training, engineers use **sequence packing**: concatenating multiple independent documents into one long sequence separated by `<EOS>` tokens.
 
-Just like LLMs pack documents, Decision Transformers pack multiple short RL trajectories into a single context window. The model requires a `timestep` embedding to know which step of the episode it is currently evaluating. Using a segmented prefix sum, the GPU instantly calculates the chronologically correct timestep for every state across a massive batch of packed trajectories, automatically resetting to `0` whenever a trajectory ends.
+The transformer's positional embeddings (e.g., RoPE) require per-document positions, not global sequence positions — the `position_ids` must reset at every `<EOS>`. Passing an array of $1.0$s through a segmented scan with `<EOS>` locations as the $d_t$ mask produces the correct resetting `position_ids` directly on the GPU.
 
-#### E. State Space Models (Mamba)
-Modern alternatives to transformers, like Mamba (Structured State Space Models), scale linearly by replacing attention with an associative scan. However, when Mamba trains on packed sequences, the internal hidden state of Document A cannot bleed into Document B. Mamba modifies its scan to be segmented; by dynamically treating document boundaries as reset gates (exactly like our $d_t$ mask), the hidden state is instantly wiped to zero at the start of a new document.
+### D. Offline RL: Decision Transformers and Trajectory Packing
 
-#### F. GPU-Native Prioritized Experience Replay (PER)
-To sample from a massive prioritized replay buffer (e.g., 1,000,000 transitions) entirely on the GPU, you represent the priorities as a flat array. You run a parallel prefix sum over it to generate a Cumulative Distribution Function (CDF). Once the CDF is generated, you can sample thousands of transitions simultaneously by executing a parallel binary search directly inside the GPU's SRAM against the prefix sum array, bypassing slow, CPU-bound Sum Trees.
+The Decision Transformer (Chen et al., 2021) treats RL as a sequence modeling problem, feeding the model a sequence of `(Return, State, Action)` tokens. Like LLM sequence packing, multiple short trajectories are packed into a single context window and the model requires a per-step timestep embedding that resets at trajectory boundaries. A segmented prefix sum produces these embeddings without CPU-side bookkeeping.
+
+### E. State Space Models (Mamba)
+
+Mamba (Gu & Dao, 2023) replaces attention with an associative scan to achieve linear scaling. When training on packed sequences, the internal hidden state of one document must not bleed into the next. Mamba handles this by treating document boundaries as reset gates — structurally identical to the $d_t$ mask used here.
+
+### F. Prioritized Experience Replay (PER)
+
+To sample from a prioritized replay buffer entirely on the GPU, priorities can be represented as a flat array. A parallel prefix sum over this array produces a cumulative distribution function (CDF), which then supports parallel sampling via binary search — replacing CPU-bound sum trees (Schaul et al., 2016).
+
+---
+
+## References
+
+* Chen, L., Lu, K., Rajeswaran, A., Lee, K., Grover, A., Laskin, M., ... & Mordatch, I. (2021). *Decision Transformer: Reinforcement Learning via Sequence Modeling.* NeurIPS 2021. arXiv:2106.01345.
+* Gu, A., & Dao, T. (2023). *Mamba: Linear-Time Sequence Modeling with Selective State Spaces.* arXiv:2312.00752.
+* Schaul, T., Quan, J., Antonoglou, I., & Silver, D. (2016). *Prioritized Experience Replay.* ICLR 2016. arXiv:1511.05952.

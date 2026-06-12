@@ -27,37 +27,20 @@ def compute_lambda_returns(
     Compute TD(λ) targets (λ-returns) via a backward associative scan.
 
     Recurrence:
-      G[t] = r[t] + γ(1-d[t]) * [(1-λ)*V(s_{t+1}) + λ*G[t+1]],  G[T] = bootstrap
 
-    Maps to the shared linear recurrence A[t] = u[t] + v[t] * A[t+1] with:
-      u[t] = r[t] + γ * (1-λ) * (1-d[t]) * V(s_{t+1})
-      v[t] = γ * λ * (1-d[t])
+    - G[t] = r[t] + γ(1-d[t]) * [(1-λ)*V(s_{t+1}) + λ*G[t+1]],  G[T] = bootstrap
 
-    V(s_{t+1}) is read directly from next_values[:, t] — the caller supplies this
-    as a pre-shifted values tensor (next_values[:, t] = values[:, t+1]).  For
-    seq_len <= 131072 the fused kernel instead reads values[t+1] directly from
-    the values tensor, so next_values is only used as the source for V(s_{t+1})
-    — it does not need to be a shifted copy; passing the raw values tensor works
-    and avoids an extra allocation when the caller has values available.
-
-    Special cases:
-      λ=0: reduces to one-step TD targets  G[t] = r[t] + γ(1-d[t])*V(s_{t+1})
-      λ=1: reduces to discounted returns   G[t] = r[t] + γ(1-d[t])*G[t+1]
-
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072 and
-    falls back to the chunked scan for longer sequences.
+    Special cases: λ=0 reduces to one-step TD; λ=1 reduces to discounted returns.
 
     Args:
         rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
-        next_values:      V(s_{t+1}), same shape, float32, CUDA.
-                          For the fused path next_values[:, t] = values[:, t+1]
-                          is reconstructed inside the kernel; bootstrap_values
-                          provides V(s_T) at the boundary.
-        dones:            Episode termination flags (1.0=done), same shape, float32.
+        next_values:      V(s_{t+1}), [num_envs, seq_len], float32, CUDA.
+        dones:            Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         gamma:            Discount factor.
         lambda_:          Trace parameter in [0, 1].
-        bootstrap_values: Per-environment boundary value G[T] / V(s_T),
-                          shape [num_envs]. Defaults to zeros (terminated episodes).
+        bootstrap_values: G[T] / V(s_T) per environment, shape [num_envs].
+                          Use V(s_T) for truncated episodes, 0 for terminated ones.
+                          Defaults to zeros.
 
     Returns:
         lambda_returns: G[t], shape [num_envs, seq_len], float32.
@@ -84,6 +67,8 @@ def compute_lambda_returns(
     out = torch.empty_like(rewards)
 
     if seq_len <= _FLAT_MAX_SEQ_LEN:
+        # u[t] = r[t] + γ*(1-λ)*(1-d[t])*V(s_{t+1}),  v[t] = γ*λ*(1-d[t]).
+        # Fused kernel reconstructs V(s_{t+1}) = values[:, t+1] internally.
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
         num_warps  = _WARPS_LAMBDA.get(BLOCK_SIZE, 16)
         num_stages = 2 if BLOCK_SIZE >= 2048 else 1
@@ -114,25 +99,21 @@ def compute_discounted_returns(
     """
     Compute discounted returns (reward-to-go) via a backward associative scan.
 
-    Recurrence: G[t] = r[t] + gamma * (1 - done[t]) * G[t+1], G[T] = bootstrap.
+    Recurrence:
 
-    Maps to the shared linear recurrence A[t] = u[t] + v[t] * A[t+1] with:
-      u[t] = rewards[t]
-      v[t] = gamma * (1 - dones[t])
+    - G[t] = r[t] + gamma * (1 - done[t]) * G[t+1],  G[T] = bootstrap
 
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072 and
-    falls back to the chunked scan for longer sequences.
 
     Args:
         rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
-        dones:            Episode termination flags (1.0=done), same shape, float32.
+        dones:            Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         gamma:            Discount factor.
-        bootstrap_values: Per-environment boundary value G[T], shape [num_envs].
+        bootstrap_values: G[T] per environment, shape [num_envs].
                           Use V(s_T) for truncated episodes, 0 for terminated ones.
                           Defaults to zeros.
 
     Returns:
-        returns: Discounted returns G[t], shape [num_envs, seq_len], float32.
+        returns: G[t], shape [num_envs, seq_len], float32.
     """
     assert rewards.is_cuda and dones.is_cuda, "rewards and dones must be on CUDA"
     assert rewards.dtype == torch.float32, f"rewards: expected float32, got {rewards.dtype}"
@@ -184,30 +165,24 @@ def compute_eligibility_traces(
     """
     Compute accumulating eligibility traces via a forward associative scan.
 
-    Recurrence: z[t] = g[t] + gamma * lambda * (1 - done[t]) * z[t-1], z[-1] = seed.
+    Recurrence:
 
-    g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t, w_t)
-    for general FA, or the feature vector x(s_t) in the linear special case.
+    - z[t] = g[t] + gamma * lambda * (1 - done[t]) * z[t-1],  z[-1] = seed
 
-    Unlike all other estimators in this package, eligibility traces accumulate
-    FORWARD in time: each trace depends on the current input and the trace
-    from the previous step, not the next step.
 
-    Maps to the forward linear recurrence z[t] = u[t] + v[t] * z[t-1] with:
-      u[t] = gradients[t]
-      v[t] = gamma * lambda * (1 - dones[t])
-
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072.
-    Longer sequences are not supported (chunked forward scan not implemented).
+    g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t) for
+    general function approximation, or the feature vector x(s_t) in the linear
+    case.  Unlike all other kernels, this scan runs forward in time.
+    Limited to seq_len <= 131072.
 
     Args:
-        gradients:   Per-step inputs g[t] — value-function gradients (or feature
-                     vectors under linear FA), [num_envs, seq_len], float32, CUDA.
-        dones:       Episode termination flags (1.0=done), same shape, float32.
+        gradients:   g[t] — value-function gradients or feature vectors,
+                     [num_envs, seq_len], float32, CUDA.
+        dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         gamma:       Discount factor.
         lambda_:     Trace decay parameter.
         seed_values: Initial trace z[-1] per environment, shape [num_envs].
-                     Defaults to zeros (traces start from scratch).
+                     Defaults to zeros.
 
     Returns:
         traces: z[t], shape [num_envs, seq_len], float32.

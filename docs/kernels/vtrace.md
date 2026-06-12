@@ -2,21 +2,25 @@
 
 ### Introduction
 
-Having established the $O(\log N)$ parallel associative scan for Generalized Advantage Estimation (GAE), we have already solved the fundamental sequential bottleneck of reinforcement learning algorithms on the GPU. 
+The [GAE tutorial](gae.md) established how a Parallel Associative Scan restructures a first-order linear recurrence into an $O(\log N)$ parallel tree reduction. This tutorial applies the same technique to **V-Trace** (the off-policy target correction algorithm introduced in IMPALA; Espeholt et al., 2018).
 
-This tutorial builds directly upon that foundation to implement **V-Trace** (the off-policy target correction algorithm introduced in IMPALA). Because V-Trace relies on the exact same first-order linear recurrence structure as GAE, we do not need to design a new hardware algorithm. Instead, we algebraically redefine the mathematical inputs, reuse our custom associative operator, and execute the identical Triton reduction tree. 
+Because V-Trace relies on the exact same recurrence structure as GAE, no new hardware algorithm is needed. Instead, we algebraically redefine the mathematical inputs, reuse the same associative operator, and execute the identical Triton reduction tree.
 
 ---
 
 ### 1. The V-Trace Architecture and the Off-Policy Bottleneck
 
-Unlike GAE, which assumes data is strictly on-policy, V-Trace allows agents to learn from off-policy trajectories. This was originally designed for the IMPALA distributed architecture, where dozens of "Actor" CPUs collect data for a single "Learner" GPU. Because the Learner continuously updates the network, the policy that generated the data (the **behavior policy, $\mu$**) is often older than the policy being trained (the **target policy, $\pi$**).
+Unlike GAE, which assumes data is strictly on-policy, V-Trace allows agents to learn from off-policy trajectories. This was originally designed for the IMPALA distributed architecture (Espeholt et al., 2018), where dozens of "Actor" CPUs collect data for a single "Learner" GPU. Because the Learner continuously updates the network, the policy that generated the data (the **behavior policy, $\mu$**) is often older than the policy being trained (the **target policy, $\pi$**).
 
 If we apply standard on-policy math to off-policy data, the value estimates diverge. V-Trace corrects this "policy lag" by introducing two clipped importance sampling weights at each timestep $t$:
 
-* **$\rho_t$ (rho):** Used to scale the immediate Temporal Difference (TD) error. It answers the question, *"How likely was the current policy to take this action compared to the old policy?"* $$\rho_t = \min\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
+* **$\rho_t$ (rho):** Used to scale the immediate Temporal Difference (TD) error. It answers the question, *"How likely was the current policy to take this action compared to the old policy?"*
+
+    $$\rho_t = \min\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
+
 * **$c_t$:** Used to cut or scale the trace decay parameter for future steps. If the old policy took an action that the new policy completely disagrees with, $c_t$ drops to $0$, stopping any further off-policy future rewards from corrupting the current state's value.
-  $$c_t = \min\left(\bar{c}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
+
+    $$c_t = \min\left(\bar{c}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
 
 The standard V-Trace formula calculates the corrected $n$-step value target ($v_s$) for a state $s$:
 
@@ -28,7 +32,7 @@ $$\delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$$
 
 ---
 
-### 2. The Magic Trick: Why Accumulate TD Errors?
+### 2. Why Accumulate TD Errors? The Telescoping Sum
 
 Looking at the V-Trace summation formula above, a common question arises: *Why does V-Trace accumulate future TD errors instead of simply accumulating discounted rewards?* Standard $n$-step returns sum up rewards and bootstrap at the end. 
 
@@ -87,41 +91,48 @@ Because the mathematical structure is mapped to the same recurrence, the GPU thr
 
 $$(u_B,v_B)\oplus(u_A,v_A)=(u_B+v_B u_A,v_A v_B)$$
 
-Let us trace how multiple threads add together to calculate the V-Trace polynomial over a 4-step sequence. As before, the array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
+The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly — only the definition of $u_t$ and $v_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
 
-* **T1 (Index 1, $t=3$):** Holds $T_1=(u_1, v_1)$
-* **T2 (Index 2, $t=2$):** Holds $T_2=(u_2, v_2)$
-* **T3 (Index 3, $t=1$):** Holds $T_3=(u_3, v_3)$
-* **T4 (Index 4, $t=0$):** Holds $T_4=(u_4, v_4)$
+#### Setup (Step 0)
 
-#### The Reduction Tree
+Each thread loads its initial tuple $(u_i, v_i)$ into local registers:
 
-In the first hardware cycle (Distance = 1), the hardware tells *every* thread simultaneously to look 1 step to their "left":
+* **T1** (index 1, $t=3$): holds $T_1=(u_1, v_1)$
+* **T2** (index 2, $t=2$): holds $T_2=(u_2, v_2)$
+* **T3** (index 3, $t=1$): holds $T_3=(u_3, v_3)$
+* **T4** (index 4, $t=0$): holds $T_4=(u_4, v_4)$
 
-* **T1** has no left neighbor, so it keeps $T_1$.
-* **T2** grabs $T_1$ and computes $T_{1..2}=T_2\oplus T_1$.
-* **T3** grabs $T_2$ and computes $T_{2..3}=T_3\oplus T_2$.
-* **T4** grabs $T_3$ and computes $T_{3..4}=T_4\oplus T_3$.
+#### Hardware Loop 1: Parallel Pairs (Distance = 1)
 
-In the second hardware cycle (Distance = 2), the hardware tells *every* thread to look 2 steps to their "left":
+Every thread simultaneously looks 1 step to their "left" and combines using $\oplus$:
 
-* **T1** and **T2** have no neighbors at distance 2, so they keep their current chunks.
-* **T3** grabs $T_1$ from **T1**. It computes $T_{1..3}=T_{2..3}\oplus T_1$.
-* **T4** grabs the pre-computed chunk from **T2**. Because T2 is holding $T_{1..2}$, T4 performs the final combination: $T_{3..4}\oplus T_{1..2}=T_{1..4}$.
+* **T1**: no left neighbor, keeps $T_1$.
+* **T2**: grabs $T_1$, computes $T_{1..2}=T_2\oplus T_1$.
+* **T3**: grabs $T_2$, computes $T_{2..3}=T_3\oplus T_2$.
+* **T4**: grabs $T_3$, computes $T_{3..4}=T_4\oplus T_3$.
 
-#### The Resulting Polynomial
+#### Hardware Loop 2: Tree Merge (Distance = 2)
 
-et's verify the accumulated $u$ value sitting in T4's register ($u_{1..4}$) after the scan. By applying the $\oplus$ operator, the hardware computed:
+Every thread simultaneously looks 2 steps to their "left":
+
+* **T1**: no neighbor at distance 2, keeps $T_1$.
+* **T2**: no neighbor at distance 2, keeps $T_{1..2}$.
+* **T3**: grabs $T_1$ from T1, computes $T_{1..3}=T_{2..3}\oplus T_1$.
+* **T4**: grabs $T_{1..2}$ from T2, computes $T_{1..4}=T_{3..4}\oplus T_{1..2}$.
+
+#### Verification
+
+The accumulated $u$ value in T4's register after the scan:
 
 $$u_{1..4}=(u_4+v_4 u_3)+(v_3 v_4)(u_2+v_2 u_1)$$
 
 $$u_{1..4}=u_4+v_4 u_3+v_4 v_3 u_2+v_4 v_3 v_2 u_1$$
 
-Now, we substitute our chronological V-Trace definitions back into this final polynomial. Remembering our reversed mapping ($u_4$ is chronological $t=1$, etc.), we get:
+Substituting back the V-Trace definitions ($u_i = \delta_i^V$, $v_i = \gamma c_i$) and remembering the reversed index mapping ($u_4$ is chronological $t=1$, etc.):
 
 $$u_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V$$
 
-Because the hardware accumulates these transformations rather than discrete numbers, Thread 4 correctly expands the entire forward-looking sequence of V-Trace importance weights ($\rho$ inside $\delta^V$, and $c$ inside the trace decay) to calculate the target for $t=1$, without ever waiting sequentially for Thread 3 or Thread 2 to finish their independent calculations.
+This matches the V-Trace sum exactly. Thread 4 built its chunk $T_{3..4}$ in parallel with Thread 2 building $T_{1..2}$, with no sequential wait between them.
 
 ---
 
@@ -143,32 +154,38 @@ $$A_t=\rho_t(r_t+\gamma v_{t+1}-V(s_t))$$
 
 ---
 
-### 6. The Hardware Reality: What Triton Actually Does
+### 6. Hardware Execution
 
-By utilizing the exact same kernel architecture designed for GAE, V-Trace inherits the identical hardware optimizations, completely bypassing High Bandwidth Memory (HBM) thrashing:
+V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all $u_t$ and $v_t$ arrays into SRAM, the $O(\log N)$ reduction entirely within registers and SRAM, and a single synchronized HBM store of the $\Delta_t$ results. See the [GAE hardware section](gae.md#6-the-hardware-reality-what-triton-actually-does) for the full breakdown.
 
-1. **The Single Load (HBM $\rightarrow$ SRAM):** The arrays for $u$ (TD errors scaled by $\rho$) and $v$ (trace decays scaled by $c$) are loaded into the Streaming Multiprocessor's SRAM in one coalesced operation.
-2. **Thread Allocation (SRAM $\rightarrow$ Registers):** Threads load their respective $u_t$ and $v_t$ tuples into fast, local Arithmetic Logic Units.
-3. **The Scan Execution (Registers $\leftrightarrow$ SRAM):** The reduction tree operates strictly between registers (via warp shuffles) and shared SRAM. No data returns to main memory during the calculation.
-4. **The Single Store (Registers $\rightarrow$ HBM):** In one synchronized write instruction, all threads flush their calculated $\Delta_t$ arrays directly back to HBM.
+### 7. V-Trace Applications
 
-Through algebraic manipulation, we successfully routed the complexities of off-policy importance sampling directly into our existing parallel scan framework.
+V-Trace was originally introduced as the core mathematical component of the IMPALA architecture to correct the "policy lag" that occurs when massively distributed CPU actors generate trajectories asynchronously for a centralized GPU learner (Espeholt et al., 2018). Because of this stability, algorithms like Asynchronous Proximal Policy Optimization (APPO; Berner et al., 2019) rely directly on V-Trace targets to safely optimize policies using stale trajectories collected by out-of-sync workers.
 
-### 7. V-Trace Applications in AI
+---
 
-**Classical Reinforcement Learning**
-V-Trace was originally introduced as the core mathematical component of the IMPALA architecture to correct the "policy lag" that occurs when massively distributed CPU actors generate trajectories asynchronously for a centralized GPU learner (Espeholt et al. (2018)). By decoupling acting and learning, this off-policy correction became the foundational stabilizer for high-throughput classical RL frameworks, allowing them to scale to thousands of machines without sacrificing training stability or data efficiency (Espeholt et al. (2018)). Because of this stability, algorithms like Asynchronous Proximal Policy Optimization (APPO) rely directly on V-Trace targets to safely optimize policies using stale trajectories collected by out-of-sync workers (Espeholt et al. (2018)).
+### 8. Autoreset Mode and Loss Masking
 
-**LLM Post-Training and Alignment**
-In modern LLM pipelines, enforcing strict synchronization between the generation phase (which is heavily bounded by autoregressive inference latency) and the optimization phase leads to severe underutilization of AI accelerators (Zhang et al. (2026)). To overcome this bottleneck, researchers utilize asynchronous RL training, which fundamentally alters the optimization landscape by introducing forward policy lag (Zhang et al. (2026)). Frameworks seeking to stabilize these asynchronous REINFORCE and PPO-style algorithms during LLM alignment apply variance-controlled off-policy corrections based directly on V-Trace (Zhong et al. (2026)). This allows LLMs to learn safely from delayed, outcome-based signals—such as human preferences or mathematical correctness—without off-policy gradient variance collapsing the model (Zhong et al. (2026)).
+With Gymnasium's **next-step autoreset**, position `t+1` after a termination holds a stale observation — the policy acted on it but the environment discarded that action. The V-Trace advantage and target at that position are meaningless and must be masked:
 
-**Vision-Language-Action (VLA) and Embodied AI**
-The requirement for off-policy correction in asynchronous architectures extends directly into embodied AI and high-throughput robotic training. When training hierarchical agents or VLA policies over long timescales, the optimization landscape is highly non-stationary and prone to local minima (Gürtler et al. (2025)). To achieve the billions of samples required for robust multi-task control without creating synchronization barriers across the GPU cluster, researchers employ frameworks like Scalable Option Learning (SOL), which explicitly utilize IMPALA's V-Trace off-policy correction mechanisms (Gürtler et al. (2025)). By leveraging V-Trace, these systems can securely bootstrap value functions and maintain stability while training on asynchronous robotic data streams (Gürtler et al. (2025)).
+```python
+episode_over = terminated | truncated          # [num_envs, seq_len]
+mask = ~episode_over
+actor_loss  = (vtrace_advantages * mask).mean()
+critic_loss = ((vtrace_targets - values) ** 2 * mask).mean()
+```
+
+For truncated boundaries `obs[t+1]` is the genuine continuation state, but a rollout-window truncation on the last step would cause the scan accumulator from the old window to bleed into the new one. Apply the same mask at rollout boundaries regardless:
+
+```python
+mask = torch.cat([initial_episode_over, ~episode_over[:, :-1]], dim=1)
+```
+
+**Same-step autoreset** does not produce stale observations and needs no masking.
 
 ---
 
 ### References
-* Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., ... & Kavukcuoglu, K. (2018). *IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures.* arXiv preprint arXiv:1802.01561.
-* Zhang, J., Wang, Y., et al. (2026). *GAC: Stabilizing Asynchronous RL Training for LLMs via Gradient Alignment Control.* arXiv preprint arXiv:2603.01501.
-* Zhong, Y., et al. (2026). *Stable Asynchrony: Variance-Controlled Off-Policy RL for LLMs.* ResearchGate.
-* Gürtler, N., de Lazcano, M., et al. (2025). *Scalable Option Learning in High-Throughput Environments.* arXiv preprint arXiv:2509.00338.
+
+* Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., ... & Kavukcuoglu, K. (2018). *IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures.* ICML 2018. arXiv:1802.01561.
+* Berner, C., Brockman, G., Chan, B., Cheung, V., Dębiak, P., Dennison, C., ... & Zoph, B. (2019). *Dota 2 with Large Scale Deep Reinforcement Learning.* arXiv:1912.06680.

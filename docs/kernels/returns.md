@@ -8,7 +8,7 @@ Despite their apparent simplicity, all three share the same first-order linear r
 
 The shared kernel solves the backward recurrence
 
-$$A[t] = u[t] + v[t] \cdot A[t+1], \qquad A[T] = \text{bootstrap}$$
+$$A_t = u_t + v_t \cdot A_{t+1}, \qquad A_T = \text{bootstrap}$$
 
 for any choice of $u$ and $v$. Each estimator below specifies its own $u_t$ and $v_t$; the kernel is unaware of the difference.
 
@@ -38,7 +38,7 @@ Each reward $r_k$ is discounted by $\gamma^{k-t}$ and masked by the product of a
 
 $$u_t = r_t, \qquad v_t = \gamma(1-d_t)$$
 
-This is the simplest possible instantiation of $A[t] = u[t] + v[t] \cdot A[t+1]$. No derived quantities, no additional tensors.
+This is the simplest possible instantiation of $A_t = u_t + v_t \cdot A_{t+1}$. No derived quantities, no additional tensors.
 
 #### Bootstrap at truncated boundaries
 
@@ -213,33 +213,32 @@ This is the decayed accumulation of all past inputs up to $t=4$, which is exactl
 
 Once the $O(\log N)$ scan finishes, each position holds its result directly with no further post-processing:
 
-$$G_t = A[t] \quad \text{(discounted returns)}$$
-$$G^\lambda_t = A[t] \quad \text{(λ-returns)}$$
-$$\mathbf{z}_t = A[t] \quad \text{(eligibility traces)}$$
+$$G_t = A_t \quad \text{(discounted returns)}$$
+$$G^\lambda_t = A_t \quad \text{(λ-returns)}$$
+$$\mathbf{z}_t = A_t \quad \text{(eligibility traces)}$$
 
-This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $u_t$ already encodes the full additive term, so $A[t]$ is the target directly.
+This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $u_t$ already encodes the full additive term, so $A_t$ is the target directly.
 
 ---
 
 ### 6. Applications in AI
 
 **Discounted Returns in Policy Gradient Methods**
-Discounted returns form the direct reward signal in REINFORCE and its modern variants. In LLM post-training, reward-to-go is used as the baseline for group-relative policy optimization (GRPO), where the expected return across a group of sampled responses provides a variance-reduced advantage signal without requiring a learned critic (Shao et al. (2024)).
+Discounted returns form the direct reward signal in REINFORCE and its variants. In group-relative policy optimization (GRPO), reward-to-go is used as the advantage signal across a group of sampled responses, providing variance reduction without a learned critic (Shao et al., 2024).
 
 **TD(λ) Returns in On-Policy Actor-Critic**
-λ-returns provide a unified interpolation between the high-bias/low-variance one-step TD target and the low-bias/high-variance Monte Carlo return. PPO implementations often use λ-returns (which are numerically equivalent to GAE targets when the value function is used as the baseline) to balance this tradeoff during policy updates (Schulman et al. (2017)).
+λ-returns provide a unified interpolation between the high-bias/low-variance one-step TD target and the low-bias/high-variance Monte Carlo return. PPO implementations often use λ-returns (which are numerically equivalent to GAE targets when the value function is used as the baseline) to balance this tradeoff during policy updates (Schulman et al., 2017).
 
 **Eligibility Traces in Online TD(λ)**
-The backward-view TD(λ) update $\mathbf{w} \leftarrow \mathbf{w} + \alpha\,\delta_t\,\mathbf{e}_t$ is the classical algorithm for online credit assignment in tabular and linear-function-approximation settings, allowing single-step updates to propagate learning signals to all previously visited states (Sutton & Barto (2018)). More recently, eligibility-trace-style decaying accumulators have re-emerged in the context of recurrent state-space models for deep RL, where the fixed $\gamma\lambda$ decay rate is replaced by a learned per-dimension gating mechanism (Morad et al. (2023)).
+The backward-view TD(λ) update $\mathbf{w} \leftarrow \mathbf{w} + \alpha\,\delta_t\,\mathbf{e}_t$ is the classical algorithm for online credit assignment in tabular and linear-function-approximation settings, allowing single-step updates to propagate learning signals to all previously visited states (Sutton & Barto, 2018).
 
 ---
 
 ### References
 
-* Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal Policy Optimization Algorithms.* arXiv preprint arXiv:1707.06347.
-* Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., ... & Luo, F. (2024). *DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models.* arXiv preprint arXiv:2402.03300.
+* Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal Policy Optimization Algorithms.* arXiv:1707.06347.
+* Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., ... & Luo, F. (2024). *DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models.* arXiv:2402.03300.
 * Sutton, R. S., & Barto, A. G. (2018). *Reinforcement Learning: An Introduction* (2nd ed.). MIT Press.
-* Morad, S., Kortvelesy, R., Dalmasso, M., Liwicki, S., & Sheratt, R. (2023). *S5RL: Structured State Space Models for Reinforcement Learning.* arXiv preprint arXiv:2309.01387.
 * Kobayashi, T. (2022). *Towards Eligibility Traces for Deep Neural Networks.* Adaptive Behavior.
 * Daley, B., & Amato, C. *Reconciling λ-Returns with Experience Replay.*
-* Harb, J., & Precup, D. (2017). *Investigating Recurrence and Eligibility Traces in Deep Q-Networks.* arXiv preprint arXiv:1704.05495.
+* Harb, J., & Precup, D. (2017). *Investigating Recurrence and Eligibility Traces in Deep Q-Networks.* arXiv:1704.05495.

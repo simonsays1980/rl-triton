@@ -39,10 +39,10 @@ pip install -e ".[dev]"
 import torch
 from rl_triton import compute_gae
 
-rewards = torch.randn(64, 512, device="cuda")
-values  = torch.randn(64, 512, device="cuda")
-dones   = torch.zeros(64, 512, device="cuda")
-advantages = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
+rewards     = torch.randn(64, 512, device="cuda")
+values      = torch.randn(64, 512, device="cuda")
+terminateds = torch.zeros(64, 512, device="cuda")
+advantages  = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
 ```
 
 ## Testing

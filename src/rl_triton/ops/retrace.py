@@ -21,64 +21,28 @@ def compute_retrace(
     Compute Retrace(λ) Q-value targets via a backward associative scan.
 
     Retrace(λ) (Munos et al. 2016) corrects off-policy Q-value estimates using
-    truncated importance sampling traces.  Unlike V-Trace, IS ratios are not
-    applied to the TD error itself — only to the decay factor.
-
-    Discrete actions only.  Retrace requires E_π[Q(s_{t+1},a)] as an exact sum
-    over all actions, which is tractable only for discrete action spaces.  For
-    continuous actions this expectation is an integral with no closed form;
-    use V-Trace (compute_vtrace) instead, which only needs log-density
-    ratios at the taken action.
-
-    Bootstrap and terminal vs. truncated boundaries
-    ------------------------------------------------
-    Unlike GAE and V-Trace, Retrace never requires a separately supplied
-    bootstrap value.  The one-step Q-bootstrap
-
-        γ · E_π[Q(s_{t+1}, a)]
-
-    is already folded into every TD error δ[t] via `next_q_values_all`.  All
-    the caller needs to supply is the right boundary mask.
-
-    Two distinct reasons a trajectory can end mid-sequence must be handled
-    differently:
-
-      terminated[t] = 1  — the environment signalled a true episode end.
-                           s_{t+1} is a reset state with no meaningful value.
-                           The bootstrap γ·E_π[Q(s_{t+1},·)] must be zeroed.
-
-      truncated[t]  = 1  — the sequence window ended but the episode continues
-                           (time-limit cutoff or replay-buffer window boundary).
-                           s_{t+1} is a real state; the bootstrap must be kept.
-
-    The `dones` flag (= terminated OR truncated) is used only to stop trace
-    propagation across any boundary (v[t]=0 when done[t]=1).  The one-step TD
-    bootstrap inside u[t] is gated by `terminated` alone.
-
-    Gymnasium users: pass `terminated` as `dones` and `truncated` as
-    `truncateds`.  Older single-done-flag APIs: pass the done flag as `dones`
-    and leave `truncateds=None`; the bootstrap is then zeroed on every boundary
-    (conservative, correct for purely episodic data).
-
-    Set RL_TRITON_CORRECTNESS_WARNINGS=1 to enable a runtime warning when
-    `truncateds` contains 1s that are not covered by `dones`, which is always
-    a caller error.
+    truncated IS traces applied only to the decay factor, not the TD error.
+    Discrete actions only — use compute_vtrace for continuous action spaces.
 
     Recurrence:
-      Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = 0
-      δ[t]     = r[t] + γ · E_π[Q(s_{t+1},a)] · (1-terminated[t]) - Q(s_t,a_t)
-      decay[t] = γ · c[t+1] · (1-done[t])
-      c[t]     = λ · min(c_bar, π(a_t|s_t) / μ(a_t|s_t))
 
-    Note: decay[T-1] is always zero because c[T] is out-of-bounds (no action
-    was taken beyond the trajectory end).  This stops trace continuation but
-    does not affect the one-step bootstrap already folded into δ[T-1].
+    - Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = 0
+    - δ[t]     = r[t] + γ · E_π[Q(s_{t+1},a)] · (1-terminated[t]) - Q(s_t,a_t)
+    - decay[t] = γ · c[t+1] · (1-done[t])
+    - c[t]     = λ · min(c_bar, π(a_t|s_t) / μ(a_t|s_t))
 
-    Q-value targets:
-      Q_ret[t] = Q(s_t, a_t) + Δ[t]
+    Q-value targets: Q_ret[t] = Q(s_t, a_t) + Δ[t]
 
-    Dispatches to the flat single-block kernel for seq_len <= 131072 and falls
-    back to the chunked kernel for longer sequences.
+    The Q-bootstrap γ·E_π[Q(s_{t+1},·)] is folded into δ[t] via
+    `next_q_values_all`, so no separate bootstrap_values argument is needed.
+    The `dones` flag stops trace propagation at any boundary; the bootstrap
+    inside δ[t] is gated by `terminated` alone.
+
+    Gymnasium users: pass `terminated` as `dones` and `truncated` as
+    `truncateds`.  With truncateds=None, every boundary is treated as a
+    termination (conservative but correct for purely episodic data).
+    Set RL_TRITON_CORRECTNESS_WARNINGS=1 to catch truncateds=1 / dones=0
+    mismatches at runtime.
 
     Args:
         action_probs_target:   Target policy probabilities over all actions,
@@ -163,6 +127,7 @@ def compute_retrace(
 
     num_envs, seq_len = rewards.shape
 
+    # Fused kernel for seq_len <= 131072; chunked fallback for longer sequences.
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         return compute_retrace_fused(
             action_probs_target, action_probs_behavior,

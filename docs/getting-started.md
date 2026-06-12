@@ -35,14 +35,14 @@ num_envs, seq_len = 64, 512
 device = "cuda"
 
 rewards          = torch.randn(num_envs, seq_len, device=device)
-values           = torch.randn(num_envs, seq_len + 1, device=device)
-dones            = torch.zeros(num_envs, seq_len, device=device)
-bootstrap_values = values[:, -1]  # V(s_T) for truncated episodes
+values           = torch.randn(num_envs, seq_len, device=device)
+terminateds      = torch.zeros(num_envs, seq_len, device=device)
+bootstrap_values = torch.zeros(num_envs, device=device)  # V(s_T) for truncated episodes
 
 advantages = compute_gae(
     rewards=rewards,
     values=values,
-    dones=dones,
+    terminateds=terminateds,
     gamma=0.99,
     lambda_=0.95,
     bootstrap_values=bootstrap_values,
@@ -62,7 +62,7 @@ vs, advantages = compute_vtrace(
     log_pi_behavior=log_pi_behavior,
     values=values,
     rewards=rewards,
-    dones=dones,
+    terminateds=terminateds,
     gamma=0.99,
     rho_bar=1.0,
     c_bar=1.0,
@@ -132,7 +132,11 @@ The accumulation resets to zero whenever `dones[t] == 1`, so each episode's cumu
 
 ## Tensor Layout
 
-All kernels expect `float32` tensors with shape `(num_envs, seq_len)`. Episode boundaries are encoded in `dones`: a value of `1.0` at timestep $t$ means the episode ended at $t$, zeroing out the carry into the next step.
+All kernels expect `float32` tensors with shape `(num_envs, seq_len)`.
+
+**`terminateds`** (used by `compute_gae` and `compute_vtrace`): pass only true episode terminations (`1.0`). Truncated episodes — where the rollout window ended but the environment continues — must be `0.0` here; supply `V(s_T)` via `bootstrap_values` instead.
+
+**`dones`** (used by `compute_retrace`, `compute_lambda_returns`, `compute_discounted_returns`, `compute_eligibility_traces`, `compute_episodic_prefix_sum`): pass `terminated | truncated`. `compute_retrace` additionally accepts an optional `truncateds` tensor to distinguish the two cases for correct bootstrap gating.
 
 `bootstrap_values` is a `(num_envs,)` tensor. Pass `V(s_T)` for truncated episodes and `0` for terminated ones. When omitted, it defaults to zero.
 

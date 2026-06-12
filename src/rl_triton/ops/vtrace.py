@@ -9,7 +9,7 @@ def compute_vtrace(
     log_pi_behavior: torch.Tensor,
     values: torch.Tensor,
     rewards: torch.Tensor,
-    dones: torch.Tensor,
+    terminateds: torch.Tensor,
     gamma: float,
     rho_bar: float = 1.0,
     c_bar: float = 1.0,
@@ -21,94 +21,52 @@ def compute_vtrace(
     V-Trace (Espeholt et al. 2018, IMPALA) corrects for off-policy data using
     clipped importance sampling ratios ρ and c.
 
-    Scan recurrence:
-      Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = bootstrap
-      δ[t]     = ρ[t] * (r[t] + γ * V(s_{t+1}) * (1 - done[t]) - V(s_t))
-      decay[t] = γ * c[t] * (1 - done[t])
-      ρ[t]     = min(ρ_bar, π_target[t] / π_behavior[t])
-      c[t]     = min(c_bar, π_target[t] / π_behavior[t])
+    Recurrence:
 
-    V-Trace targets (for critic loss):
-      v[t] = Δ[t] + V(s_t)
+    - Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = bootstrap
+    - δ[t]     = ρ[t] * (r[t] + γ * V(s_{t+1}) * (1 - terminated[t]) - V(s_t))
+    - decay[t] = γ * c[t] * (1 - terminated[t])
+    - ρ[t]     = min(ρ_bar, π_target[t] / π_behavior[t])
+    - c[t]     = min(c_bar, π_target[t] / π_behavior[t])
 
-    V-Trace advantages (for actor loss):
-      A[t] = ρ[t] * (r[t] + γ * v[t+1] * (1 - done[t]) - V(s_t))
+    Outputs:
 
-    V(s_{t+1}) is read directly from values[:, t+1] inside the kernel — the
-    caller does not need to pass a separate next_values tensor.  For the last
-    timestep, V(s_T) is taken from bootstrap_values.
+    - vs[t] = Δ[t] + V(s_t)   (critic targets)
+    - A[t]  = ρ[t] * (r[t] + γ * vs[t+1] * (1 - terminated[t]) - V(s_t))   (actor advantages)
 
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072
-    (IS ratios, scan, targets, and advantages in one GPU kernel), and falls back
-    to the chunked scan + PyTorch elementwise ops for longer sequences.
+    V(s_{t+1}) is read from values[:, t+1]; no separate next_values tensor needed.
 
-    Terminated vs. truncated episodes
-    ----------------------------------
-    Pass only true terminations in `dones` (not truncations).  For a terminated
-    step, `(1 - done[t])` zeroes V(s_{t+1}), reflecting that s_{t+1} has no
-    value.  For a truncated step, `done[t]` must be 0 so the bootstrap
-    V(s_{t+1}) = values[:, t+1] is kept.  If the truncation falls on the last
-    rollout step, pass V(s_T) via `bootstrap_values` instead.
-
-    Autoreset mode and loss masking (next-step mode only)
-    -----------------------------------------------------
-    With Gymnasium's next-step autoreset, `step()` returns the terminal
-    observation s_terminal as `next_obs` when `terminated=True`, and the actual
-    reset is deferred to the following `step()` call.  This means the rollout
-    buffer at position t+1 after termination contains s_terminal as the current
-    observation, while the action taken on it is silently ignored by the
-    environment.
-
-    Two consequences for the caller:
-
-    1. Terminated boundary — `obs[t+1] = s_terminal` is stale: the policy acted
-       on it but the env discarded that action.  The V-Trace advantage at
-       position t+1 is meaningless and must be masked from the actor and critic
-       losses:
-
-         episode_over = terminated | truncated
-         mask = ~episode_over  # shape [num_envs, seq_len], shift by rollout below
-         actor_loss  = (vtrace_advantages * mask).mean()
-         critic_loss = ((vtrace_targets - values) ** 2 * mask).mean()
-
-    2. Truncated boundary — `obs[t+1]` is the genuine continuation state, so
-       V(s_{t+1}) = values[:, t+1] is a valid bootstrap and no observation is
-       stale.  However, if the truncation falls on the last step of a rollout
-       window, the scan accumulator from the old window would bleed into the new
-       one.  Apply the same mask at rollout boundaries regardless:
-
-         mask = np.concatenate([initial_episode_over, ~episode_over[:-1]])
-
-    Same-step autoreset does not produce stale observations and needs no masking.
+    Pass only true terminations in `terminateds`.  For a terminated step,
+    terminated[t]=1 zeros the carry so no value bleeds across the episode
+    boundary.  For a truncated step, set terminated[t]=0 and supply V(s_T)
+    via `bootstrap_values`.
 
     Args:
         log_pi_target:    Log probabilities under target policy, [num_envs, seq_len], float32, CUDA.
-        log_pi_behavior:  Log probabilities under behavior policy, same shape.
-        values:           Value function predictions V(s_t), same shape.
-                          V(s_{t+1}) is read as values[:, t+1] inside the kernel.
-        rewards:          Per-step rewards, same shape.
-        dones:            True termination flags only (1.0 = terminated), same shape,
-                          float32.  Do NOT pass terminated | truncated here; pass
-                          truncated episodes with done=0 and supply V(s_T) via
-                          bootstrap_values instead.
+        log_pi_behavior:  Log probabilities under behavior policy, [num_envs, seq_len], float32, CUDA.
+        values:           V(s_t), [num_envs, seq_len], float32, CUDA.
+        rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
+        terminateds:      True termination flags only (1.0=terminated),
+                          [num_envs, seq_len], float32, CUDA.
+                          Do not pass (terminated | truncated) here — truncated steps
+                          must have terminated[t]=0 with V(s_T) in bootstrap_values.
         gamma:            Discount factor.
         rho_bar:          IS ratio clip for δ (default 1.0).
         c_bar:            IS ratio clip for decay (default 1.0).
-        bootstrap_values: Per-environment V(s_T) / boundary value Δ[T], shape [num_envs].
+        bootstrap_values: V(s_T) per environment, shape [num_envs].
                           Use V(s_T) for truncated episodes, 0 for terminated ones.
-                          Also used as V(s_{t+1}) at t=T-1 inside the kernel.
-                          Defaults to zeros (all episodes terminated).
+                          Defaults to zeros.
 
     Returns:
-        vtrace_targets:    shape [num_envs, seq_len], float32.
-        vtrace_advantages: shape [num_envs, seq_len], float32.
+        vtrace_targets:    vs[t], shape [num_envs, seq_len], float32.
+        vtrace_advantages: A[t],  shape [num_envs, seq_len], float32.
     """
     for name, t in [
         ("log_pi_target",   log_pi_target),
         ("log_pi_behavior", log_pi_behavior),
         ("values",          values),
         ("rewards",         rewards),
-        ("dones",           dones),
+        ("terminateds",     terminateds),
     ]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
@@ -120,7 +78,7 @@ def compute_vtrace(
     log_pi_behavior = log_pi_behavior.contiguous()
     values          = values.contiguous()
     rewards         = rewards.contiguous()
-    dones           = dones.contiguous()
+    terminateds     = terminateds.contiguous()
 
     if bootstrap_values is None:
         bootstrap_values = torch.zeros(num_envs, device=rewards.device, dtype=torch.float32)
@@ -130,10 +88,13 @@ def compute_vtrace(
         assert bootstrap_values.is_cuda, "bootstrap_values must be on CUDA"
         bootstrap_values = bootstrap_values.contiguous()
 
+    # Linear recurrence: u[t] = rho[t]*delta[t], v[t] = gamma*c[t]*(1-terminated[t]).
+    # Fused kernel for seq_len <= 131072 (IS ratios, scan, targets, advantages
+    # in one GPU kernel). Chunked scan + PyTorch elementwise ops for longer.
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         return compute_vtrace_fused(
             log_pi_target, log_pi_behavior,
-            values, rewards, dones,
+            values, rewards, terminateds,
             gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
             bootstrap_values=bootstrap_values,
         )
@@ -144,11 +105,12 @@ def compute_vtrace(
     next_values[:, :-1] = values[:, 1:]
     next_values[:, -1]  = bootstrap_values
 
-    is_ratios = torch.exp(log_pi_target - log_pi_behavior)
-    rho = torch.clamp(is_ratios, max=rho_bar)
-    c   = torch.clamp(is_ratios, max=c_bar)
-    u = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
-    v = gamma * c * (1.0 - dones)
+    is_ratios      = torch.exp(log_pi_target - log_pi_behavior)
+    rho            = torch.clamp(is_ratios, max=rho_bar)
+    c              = torch.clamp(is_ratios, max=c_bar)
+    not_terminated = 1.0 - terminateds
+    u = rho * (rewards + gamma * next_values * not_terminated - values)
+    v = gamma * c * not_terminated
 
     value_deltas   = _run_scan(u, v, bootstrap_values)
     vtrace_targets = value_deltas + values
@@ -157,5 +119,5 @@ def compute_vtrace(
     next_vtrace_targets[:, :-1] = vtrace_targets[:, 1:]
     next_vtrace_targets[:, -1]  = bootstrap_values
 
-    vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * (1.0 - dones) - values)
+    vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * not_terminated - values)
     return vtrace_targets, vtrace_advantages

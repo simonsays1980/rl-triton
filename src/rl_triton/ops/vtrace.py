@@ -42,13 +42,55 @@ def compute_vtrace(
     (IS ratios, scan, targets, and advantages in one GPU kernel), and falls back
     to the chunked scan + PyTorch elementwise ops for longer sequences.
 
+    Terminated vs. truncated episodes
+    ----------------------------------
+    Pass only true terminations in `dones` (not truncations).  For a terminated
+    step, `(1 - done[t])` zeroes V(s_{t+1}), reflecting that s_{t+1} has no
+    value.  For a truncated step, `done[t]` must be 0 so the bootstrap
+    V(s_{t+1}) = values[:, t+1] is kept.  If the truncation falls on the last
+    rollout step, pass V(s_T) via `bootstrap_values` instead.
+
+    Autoreset mode and loss masking (next-step mode only)
+    -----------------------------------------------------
+    With Gymnasium's next-step autoreset, `step()` returns the terminal
+    observation s_terminal as `next_obs` when `terminated=True`, and the actual
+    reset is deferred to the following `step()` call.  This means the rollout
+    buffer at position t+1 after termination contains s_terminal as the current
+    observation, while the action taken on it is silently ignored by the
+    environment.
+
+    Two consequences for the caller:
+
+    1. Terminated boundary — `obs[t+1] = s_terminal` is stale: the policy acted
+       on it but the env discarded that action.  The V-Trace advantage at
+       position t+1 is meaningless and must be masked from the actor and critic
+       losses:
+
+         episode_over = terminated | truncated
+         mask = ~episode_over  # shape [num_envs, seq_len], shift by rollout below
+         actor_loss  = (vtrace_advantages * mask).mean()
+         critic_loss = ((vtrace_targets - values) ** 2 * mask).mean()
+
+    2. Truncated boundary — `obs[t+1]` is the genuine continuation state, so
+       V(s_{t+1}) = values[:, t+1] is a valid bootstrap and no observation is
+       stale.  However, if the truncation falls on the last step of a rollout
+       window, the scan accumulator from the old window would bleed into the new
+       one.  Apply the same mask at rollout boundaries regardless:
+
+         mask = np.concatenate([initial_episode_over, ~episode_over[:-1]])
+
+    Same-step autoreset does not produce stale observations and needs no masking.
+
     Args:
         log_pi_target:    Log probabilities under target policy, [num_envs, seq_len], float32, CUDA.
         log_pi_behavior:  Log probabilities under behavior policy, same shape.
         values:           Value function predictions V(s_t), same shape.
                           V(s_{t+1}) is read as values[:, t+1] inside the kernel.
         rewards:          Per-step rewards, same shape.
-        dones:            Episode termination flags (1.0 = done), same shape, float32.
+        dones:            True termination flags only (1.0 = terminated), same shape,
+                          float32.  Do NOT pass terminated | truncated here; pass
+                          truncated episodes with done=0 and supply V(s_T) via
+                          bootstrap_values instead.
         gamma:            Discount factor.
         rho_bar:          IS ratio clip for δ (default 1.0).
         c_bar:            IS ratio clip for decay (default 1.0).

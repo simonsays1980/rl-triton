@@ -37,11 +37,51 @@ def compute_gae(
     and falls back to the chunked scan + PyTorch elementwise ops for longer
     sequences.
 
+    Terminated vs. truncated episodes
+    ----------------------------------
+    Pass only true terminations in `dones` (not truncations).  For a terminated
+    step, `(1 - done[t])` zeroes the bootstrap, reflecting that s_{t+1} has no
+    value.  For a truncated step, `done[t]` must be 0 so the bootstrap
+    V(s_{t+1}) = values[:, t+1] is kept.  If the truncation falls on the last
+    rollout step, pass V(s_T) via `bootstrap_values` instead.
+
+    Autoreset mode and loss masking (next-step mode only)
+    -----------------------------------------------------
+    With Gymnasium's next-step autoreset, `step()` returns the terminal
+    observation s_terminal as `next_obs` when `terminated=True`, and the actual
+    reset is deferred to the following `step()` call.  This means the rollout
+    buffer at position t+1 after termination contains s_terminal as the current
+    observation, while the action taken on it is silently ignored by the
+    environment.
+
+    Two consequences for the caller:
+
+    1. Terminated boundary — `obs[t+1] = s_terminal` is stale: the policy acted
+       on it but the env discarded that action.  The advantage at position t+1 is
+       meaningless and must be masked from the actor and critic losses:
+
+         episode_over = terminated | truncated
+         mask = ~episode_over  # shape [num_envs, seq_len], shift by rollout below
+         loss = (advantages * mask).mean()
+
+    2. Truncated boundary — `obs[t+1]` is the genuine continuation state, so
+       V(s_{t+1}) = values[:, t+1] is a valid bootstrap and no observation is
+       stale.  However, if the truncation falls on the last step of a rollout
+       window, the GAE accumulator from the old window would bleed into the new
+       one.  Apply the same mask at rollout boundaries regardless:
+
+         mask = np.concatenate([initial_episode_over, ~episode_over[:-1]])
+
+    Same-step autoreset does not produce stale observations and needs no masking.
+
     Args:
         rewards:          Per-step rewards, [num_envs, seq_len], float32, CUDA.
         values:           V(s_t), same shape, float32, CUDA.
                           V(s_{t+1}) is read as values[:, t+1] inside the kernel.
-        dones:            Episode termination flags (1.0=done), same shape, float32.
+        dones:            True termination flags only (1.0=terminated), same shape,
+                          float32.  Do NOT pass terminated | truncated here; pass
+                          truncated episodes with done=0 and supply V(s_T) via
+                          bootstrap_values instead.
         gamma:            Discount factor.
         lambda_:          GAE trace parameter in [0, 1].
         bootstrap_values: Per-environment V(s_T) / boundary value A[T], shape [num_envs].

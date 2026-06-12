@@ -136,6 +136,39 @@ All kernels expect `float32` tensors with shape `(num_envs, seq_len)`. Episode b
 
 `bootstrap_values` is a `(num_envs,)` tensor. Pass `V(s_T)` for truncated episodes and `0` for terminated ones. When omitted, it defaults to zero.
 
+## Environment Variables
+
+Both variables are read **once at import time**, so they must be set before
+`import rl_triton` (or before the first kernel call in a fresh process).
+
+### `RL_TRITON_PERF_WARNINGS`
+
+```bash
+RL_TRITON_PERF_WARNINGS=1 python train.py
+```
+
+Emits a `warnings.warn` whenever a non-contiguous input tensor triggers an
+implicit `.contiguous()` copy inside the scan dispatcher. Off by default to
+avoid noise in production training loops.
+
+**When to enable:** profiling or debugging unexpectedly high memory allocation
+rates. The warning points to the tensor (`u` or `v`) and recommends calling
+`.contiguous()` once before the hot loop rather than paying the copy cost on
+every step.
+
+### `RL_TRITON_CORRECTNESS_WARNINGS`
+
+```bash
+RL_TRITON_CORRECTNESS_WARNINGS=1 python train.py
+```
+
+Emits a `warnings.warn` when `compute_retrace` detects a step where
+`truncateds=1` but `dones=0` — which is always a caller error (a step cannot
+be truncated without also being marked done). Off by default.
+
+**When to enable:** integrating `compute_retrace` with a new environment or
+rollout buffer, especially when adapting from a single-done-flag API.
+
 ## Correctness Tests
 
 ```bash

@@ -7,12 +7,12 @@ title: Kernels
 All kernels in **rl-triton** share a single architectural idea: express the RL
 recurrence as a **linear recurrence** of the form
 
-$$A[t] = u[t] + v[t] \cdot A[t+1]$$
+$$A_t = u_t + v_t \cdot A_{t+1}$$
 
 and solve it in $O(\log N)$ parallel steps using an **associative scan** on the
 GPU, rather than the $O(N)$ sequential loop a naïve implementation requires.
 The scan runs entirely inside Streaming Multiprocessor SRAM, avoiding repeated
-round-trips to High Bandwidth Memory.
+round-trips to High Bandwidth Memory (HBM).
 
 For sequences that fit in a single thread block (`seq_len ≤ 131072`), a
 **fully-fused kernel** computes every intermediate quantity — TD errors, IS

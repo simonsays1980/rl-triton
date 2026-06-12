@@ -282,7 +282,10 @@ kernel.
 **Non-contiguous inputs** — Triton pointer arithmetic assumes row-major
 contiguous layout. Call `.contiguous()` in the wrapper before launching the
 kernel. Set `RL_TRITON_PERF_WARNINGS=1` at runtime to surface cases where the
-`.contiguous()` call is copying data inside a hot loop.
+`.contiguous()` call is copying data inside a hot loop. Both environment
+variables are read at import time — see
+[Environment Variables](getting-started.md#environment-variables) for full
+details.
 
 **Retrace and discrete actions** — `compute_retrace` requires the full
 action-probability vector over all actions to compute $\mathbb{E}_\pi[Q]$. It

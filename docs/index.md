@@ -17,15 +17,15 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 
 ## Kernels
 
-| Function | Algorithm | Description |
-|---|---|---|
-| `compute_gae` | GAE | Generalized Advantage Estimation — backward scan over `δ + γλ·A` |
-| `compute_vtrace` | V-Trace | IS-weighted targets and advantages — fused single-kernel for seq_len ≤ 131072 |
-| `compute_retrace` | Retrace(λ) | Off-policy return estimate with truncated IS ratios |
-| `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo |
-| `compute_discounted_returns` | Returns | Discounted reward-to-go |
-| `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d)e[t-1]` |
-| `compute_episodic_prefix_sum` | Prefix sum | Episodic cumulative sum with done-mask resets |
+| Function | Algorithm | Description | seq_len > 131072 |
+|---|---|---|---|
+| `compute_gae` | GAE | Generalized Advantage Estimation — backward scan over `δ + γλ·A` | chunked fallback |
+| `compute_vtrace` | V-Trace | IS-weighted targets and advantages | chunked fallback |
+| `compute_retrace` | Retrace(λ) | Off-policy Q-value targets with truncated IS ratios | chunked fallback |
+| `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo | chunked fallback |
+| `compute_discounted_returns` | Returns | Discounted reward-to-go | chunked fallback |
+| `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d)e[t-1]` | not supported |
+| `compute_episodic_prefix_sum` | Prefix sum | Episodic cumulative sum with done-mask resets | not supported |
 
 ## Installation
 

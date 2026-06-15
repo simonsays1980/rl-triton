@@ -1,10 +1,10 @@
-# Tutorial: Accelerating Retrace(λ) with Triton Associative Scans
+# Retrace(λ) with Triton Associative Scans
 
 ### Introduction
 
 Having successfully accelerated both Generalized Advantage Estimation (GAE) and V-Trace, we can now adapt our $O(\log N)$ parallel associative scan to evaluate action-values using **Retrace($\lambda$)**. 
 
-Retrace($\lambda$) (Munos et al., 2016) is a foundational off-policy algorithm that shares the same recursive DNA as V-Trace, but is designed for Q-learning rather than Actor-Critic state values. Because the underlying first-order recurrence remains identical, we do not need to change our Triton kernel at all. We only need to adjust our PyTorch inputs to account for an essential **index shift** in the importance sampling weights.
+Retrace($\lambda$) (Munos et al., 2016) is a foundational off-policy algorithm that shares the same recursive DNA as V-Trace, but is designed for Q-learning rather than Actor-Critic state values. Because the underlying first-order recurrence remains identical, the Triton kernel requires no changes - only the PyTorch inputs need adjustment to account for an essential **index shift** in the importance sampling weights.
 
 ---
 
@@ -40,7 +40,7 @@ The full Retrace target for state-action pair $(s_t, a_t)$ is:
 
 $$Q^{ret}_t = Q(s_t, a_t) + \sum_{k=t}^{T-1} \gamma^{k-t} \left( \prod_{i=t+1}^{k} c_i \right) \delta_k$$
 
-where the empty product for $k=t$ is defined as $1$. We define the **target delta**:
+where the empty product for $k=t$ is defined as $1$. The **target delta** is defined as:
 
 $$\Delta_t = Q^{ret}_t - Q(s_t, a_t) = \sum_{k=t}^{T-1} \gamma^{k-t} \left( \prod_{i=t+1}^{k} c_i \right) \delta_k$$
 
@@ -84,7 +84,7 @@ Before mapping to hardware it is worth clarifying what "bootstrap" means in Retr
 
 #### Why Retrace never needs a separate bootstrap tensor
 
-In GAE and V-Trace the bootstrap — the value estimate for the state just beyond the sequence window — must be passed in separately, because the recurrence accumulates raw TD errors and the terminal value is not otherwise accessible at the boundary.
+In GAE and V-Trace the bootstrap - the value estimate for the state just beyond the sequence window - must be passed in separately, because the recurrence accumulates raw TD errors and the terminal value is not otherwise accessible at the boundary.
 
 In Retrace the situation is different. The one-step Q-bootstrap
 
@@ -94,7 +94,7 @@ is **already embedded inside every TD error** $\delta_t$ via the `next_q_values_
 
 $$\delta_t = r_t + \gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$$
 
-At the last in-window step $t = T-1$, $s_T$ is the very next state — exactly the bootstrap state. Because $\delta_{T-1}$ already contains $\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)]$, no separate tensor needs to be passed. The caller only needs to supply the right boundary mask.
+At the last in-window step $t = T-1$, $s_T$ is the very next state - exactly the bootstrap state. Because $\delta_{T-1}$ already contains $\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)]$, no separate tensor needs to be passed. The caller only needs to supply the right boundary mask.
 
 #### Terminated vs. truncated
 
@@ -114,12 +114,12 @@ $$d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}} \qquad \text{(gates trace deca
 
 #### Mapping from common API conventions
 
-**Gymnasium** returns `terminated` and `truncated` separately — pass them directly:
+**Gymnasium** returns `terminated` and `truncated` separately - pass them directly:
 ```python
 compute_retrace(..., dones=terminated | truncated, truncateds=truncated)
 ```
 
-**Single done-flag APIs** (older Gym, most existing RL codebases) merge both into one flag. Pass it as `dones` and omit `truncateds`. The bootstrap is then zeroed on every boundary — correct for purely episodic data, conservative for windowed trajectories:
+**Single done-flag APIs** (older Gym, most existing RL codebases) merge both into one flag. Pass it as `dones` and omit `truncateds`. The bootstrap is then zeroed on every boundary - correct for purely episodic data, conservative for windowed trajectories:
 ```python
 compute_retrace(..., dones=done)   # truncateds defaults to None
 ```
@@ -130,7 +130,7 @@ compute_retrace(..., dones=done)   # truncateds defaults to None
 
 Despite the index shift, the mathematical structure is still a perfect first-order recurrence conforming to our kernel's expected $f(x) = u + vx$ transformation. 
 
-We map the inputs for our hardware tuples $(u, v)$ as follows:
+The inputs map to hardware tuples $(u, v)$ as follows:
 * **TD accumulation ($u_t$):** $u_t = \delta_t = r_t + \gamma(1-d_t^{\text{term}})\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$
 * **Trace Decay product ($v_t$):** $v_t = \gamma c_{t+1}(1-d_t)$
 
@@ -148,7 +148,7 @@ Substituting our chronological Retrace definitions (reversed index $k$ maps to t
 
 $$u_{1..4} = \delta_1 + (\gamma c_2)\delta_2 + (\gamma c_2)(\gamma c_3)\delta_3 + (\gamma c_2)(\gamma c_3)(\gamma c_4)\delta_4$$
 
-Notice that $c_1$ does not appear anywhere in this polynomial. This is the index shift in action: $c_1$ is the importance weight for the *last* chronological action in the trajectory. Because Retrace only begins correcting from the *next* step onward, the decay *into* the last TD error $\delta_1$ would require $c_0$ — a weight from one step before the trajectory starts, which does not exist. The implementation forces this out-of-bounds weight to zero (`c_next[:, -1] = 0.0`), so the last step always contributes $\delta_1$ unscaled. $c_1$ itself is simply never needed: no TD error to its left exists that it could weight.
+Notice that $c_1$ does not appear anywhere in this polynomial. This is the index shift in action: $c_1$ is the importance weight for the *last* chronological action in the trajectory. Because Retrace only begins correcting from the *next* step onward, the decay *into* the last TD error $\delta_1$ would require $c_0$ - a weight from one step before the trajectory starts, which does not exist. The implementation forces this out-of-bounds weight to zero (`c_next[:, -1] = 0.0`), so the last step always contributes $\delta_1$ unscaled. $c_1$ itself is simply never needed: no TD error to its left exists that it could weight.
 
 This is exactly $\Delta_1$ from the unrolled recurrence above: each TD error $\delta_k$ is multiplied by the product of $c$ weights starting at index $k$ (one step ahead of the originating state), precisely matching the $\prod_{i=t+1}^{k} c_i$ product in the Retrace target.
 
@@ -156,7 +156,7 @@ This is exactly $\Delta_1$ from the unrolled recurrence above: each TD error $\d
 
 ### 6. Reconstructing Targets and Advantages
 
-Once the $O(\log N)$ kernel finishes, every thread holds its correct $\Delta_t$. We step back out to PyTorch to reconstruct the final Retrace targets using highly parallel vector additions.
+Once the $O(\log N)$ kernel finishes, every thread holds its correct $\Delta_t$. The final Retrace targets are reconstructed in PyTorch using parallel vector additions.
 
 **1. Target Q-Value (for Critic Loss):**
 

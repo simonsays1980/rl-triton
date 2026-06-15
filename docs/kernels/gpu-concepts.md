@@ -58,7 +58,7 @@ working on its own lane.
 
 ---
 
-## `tl.arange(0, BLOCK_SIZE)` — giving each worker a unique index
+## `tl.arange(0, BLOCK_SIZE)` - giving each worker a unique index
 
 ```python
 offsets = tl.arange(0, BLOCK_SIZE)
@@ -67,12 +67,12 @@ offsets = tl.arange(0, BLOCK_SIZE)
 
 This hands each worker their own index number. All subsequent operations
 happen across all workers at once. Worker 0 holds 0, worker 1 holds 1, etc.
-Each worker uses its index to fetch a **different** element from memory —
+Each worker uses its index to fetch a **different** element from memory -
 all at the same time.
 
 ---
 
-## `rev_offsets` — loading the sequence backwards
+## `rev_offsets` - loading the sequence backwards
 
 GAE is a backward recurrence: `A[t] = δ[t] + decay[t] * A[t+1]`.
 We need to load the sequence from the last timestep down to the first.
@@ -91,13 +91,13 @@ rev_offsets:  [4,   3,   2,   1,   0,  -1,  -2,  -3]
 
 - Worker 0 fetches timestep 4 (the last one).
 - Worker 4 fetches timestep 0 (the first one).
-- Workers 5–7 get negative indices — out of bounds — and are masked out.
+- Workers 5–7 get negative indices - out of bounds - and are masked out.
 
 All 8 fetches happen simultaneously.
 
 ---
 
-## Mask — handling sequences shorter than BLOCK_SIZE
+## Mask - handling sequences shorter than BLOCK_SIZE
 
 ```python
 mask = offsets < seq_len
@@ -110,11 +110,11 @@ nothing to the result.
 
 ---
 
-## BLOCK_SIZE — how many workers to hire
+## BLOCK_SIZE - how many workers to hire
 
 `BLOCK_SIZE` must be:
-1. **A power of 2** — hardware requirement on NVIDIA GPUs.
-2. **At least `seq_len`** — so every timestep gets a worker.
+1. **A power of 2** - hardware requirement on NVIDIA GPUs.
+2. **At least `seq_len`** - so every timestep gets a worker.
 
 ```python
 BLOCK_SIZE = triton.next_power_of_2(seq_len)
@@ -124,7 +124,7 @@ BLOCK_SIZE = triton.next_power_of_2(seq_len)
 ```
 
 Workers covering positions beyond `seq_len` are masked out and do no useful
-work — they are the inevitable padding cost of requiring a power-of-2 size.
+work - they are the inevitable padding cost of requiring a power-of-2 size.
 
 ---
 
@@ -141,6 +141,6 @@ ptr:          [9,   8,   7,   6,   5,   ✗,   ✗,   ✗]   (base + rev_offsets
 loads:        [δ4, δ3,  δ2,  δ1,  δ0,  0,   0,   0]   (masked lanes get 0)
 ```
 
-The associative scan then runs left-to-right across the 8 workers —
-which is right-to-left in time — computing the GAE recurrence in parallel.
+The associative scan then runs left-to-right across the 8 workers -
+which is right-to-left in time - computing the GAE recurrence in parallel.
 Results are written back using the same `rev_offsets`, restoring time order.

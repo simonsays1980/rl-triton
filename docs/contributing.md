@@ -25,18 +25,18 @@ tests require CUDA.
 
 ```
 src/rl_triton/
-├── kernels/        # @triton.jit kernel definitions — no Python logic
+├── kernels/        # @triton.jit kernel definitions - no Python logic
 │   ├── gae.py
 │   ├── vtrace_fused.py
 │   └── ...
-└── ops/            # PyTorch wrappers — shape checks, dispatch, grid launch
+└── ops/            # PyTorch wrappers - shape checks, dispatch, grid launch
     ├── gae.py
     ├── vtrace.py
     └── _scan.py    # shared chunked scan infrastructure
 
 tests/
 ├── test_<name>.py          # correctness + vectorized baseline per kernel
-├── bench_safeguard.py      # PR perf gate — one config per kernel, ≥1.5× vs torch.compile
+├── bench_safeguard.py      # PR perf gate - one config per kernel, ≥1.5× vs torch.compile
 ├── bench_release.py        # full sweep across all (num_envs, seq_len) configs
 └── bench_utils.py          # shared timing helpers
 ```
@@ -52,11 +52,11 @@ code in an ops file.
 
 Follow these five steps in order.
 
-### 1. Kernel file — `src/rl_triton/kernels/<name>_fused.py`
+### 1. Kernel file - `src/rl_triton/kernels/<name>_fused.py`
 
 One `@triton.jit` function per file. Use `tl.constexpr` for `BLOCK_SIZE` and
 any other compile-time constants. Mask out-of-bounds accesses with range
-comparisons — never assume `seq_len` is a power of two at the call site.
+comparisons - never assume `seq_len` is a power of two at the call site.
 
 ```python
 import triton
@@ -82,7 +82,7 @@ def my_kernel(
 Add a short docstring explaining the algorithm, scan direction, and any
 non-obvious indexing decisions.
 
-### 2. Ops wrapper — `src/rl_triton/ops/<name>.py`
+### 2. Ops wrapper - `src/rl_triton/ops/<name>.py`
 
 One public function per file. The wrapper is responsible for:
 
@@ -139,20 +139,20 @@ def compute_my_kernel(
     return _run_scan(u, v)
 ```
 
-### 3. Export — `src/rl_triton/__init__.py`
+### 3. Export - `src/rl_triton/__init__.py`
 
 Add the new function to the imports and `__all__` list.
 
-### 4. Tests — `tests/test_<name>.py`
+### 4. Tests - `tests/test_<name>.py`
 
 Every test file must contain two things:
 
-**A reference implementation** — a plain PyTorch sequential loop with no
+**A reference implementation** - a plain PyTorch sequential loop with no
 tricks, used as the correctness ground truth:
 
 ```python
 def reference_my_kernel(inputs, dones, gamma):
-    """Sequential ground truth — never optimise this."""
+    """Sequential ground truth - never optimise this."""
     out   = torch.zeros_like(inputs)
     carry = torch.zeros(inputs.shape[0], device=inputs.device)
     for t in range(inputs.shape[1]):
@@ -161,13 +161,13 @@ def reference_my_kernel(inputs, dones, gamma):
     return out
 ```
 
-**A vectorized baseline** used by the PR performance gate — this is the
+**A vectorized baseline** used by the PR performance gate - this is the
 strongest `torch.compile` implementation, not the sequential loop:
 
 ```python
 @torch.compile
 def vectorized_my_kernel(inputs, dones, gamma):
-    # Vectorized PyTorch equivalent — the bar the Triton kernel must clear
+    # Vectorized PyTorch equivalent - the bar the Triton kernel must clear
     ...
 ```
 
@@ -188,7 +188,7 @@ def test_correctness(num_envs, seq_len):
 Test at least: a single environment, a typical batch size, the full fused
 range (`seq_len = 131072`), and episode boundaries (non-zero `dones`).
 
-### 5. Performance gate — `tests/bench_safeguard.py`
+### 5. Performance gate - `tests/bench_safeguard.py`
 
 Add one entry to `bench_safeguard.py` for the PR perf gate. It runs a single
 representative config (`128 envs × 1024 steps`) and asserts the Triton kernel
@@ -232,8 +232,8 @@ pytest -m slow -v
 All kernels require `float32` and will raise on any other dtype. This is
 intentional: the associative scan accumulates over thousands of timesteps and
 `bfloat16`'s 7 mantissa bits cause measurable drift at those sequence lengths.
-Unlike matrix multiplications — where bf16 errors average out across large
-inner products — a sequential scan chains rounding errors multiplicatively,
+Unlike matrix multiplications - where bf16 errors average out across large
+inner products - a sequential scan chains rounding errors multiplicatively,
 producing up to 6× relative error on individual advantage estimates at
 `T=1024, gamma=0.99`.
 
@@ -259,7 +259,7 @@ previous step is zeroed at `t`.
 
 Most gym-compatible environments (including Gymnasium) use the opposite
 **end-of-episode** convention where `done[t] = 1` marks the last step of the
-ending episode. Passing these flags directly is silently wrong — shift them
+ending episode. Passing these flags directly is silently wrong - shift them
 before use:
 
 ```python
@@ -275,32 +275,32 @@ for the full explanation.
 
 ## Common Pitfalls
 
-**Non-power-of-two `seq_len`** — always use `triton.next_power_of_2(seq_len)`
+**Non-power-of-two `seq_len`** - always use `triton.next_power_of_2(seq_len)`
 for `BLOCK_SIZE` and guard out-of-bounds loads with a range mask inside the
 kernel.
 
-**Non-contiguous inputs** — Triton pointer arithmetic assumes row-major
+**Non-contiguous inputs** - Triton pointer arithmetic assumes row-major
 contiguous layout. Call `.contiguous()` in the wrapper before launching the
 kernel. Set `RL_TRITON_PERF_WARNINGS=1` at runtime to surface cases where the
 `.contiguous()` call is copying data inside a hot loop. Both environment
-variables are read at import time — see
+variables are read at import time - see
 [Environment Variables](getting-started.md#environment-variables) for full
 details.
 
-**Retrace and discrete actions** — `compute_retrace` requires the full
+**Retrace and discrete actions** - `compute_retrace` requires the full
 action-probability vector over all actions to compute $\mathbb{E}_\pi[Q]$. It
 is not applicable to continuous action spaces; use `compute_vtrace` instead.
 
-**Terminated vs truncated episodes** — all value-estimating kernels require
+**Terminated vs truncated episodes** - all value-estimating kernels require
 the caller to handle this distinction, but they do so through different
 mechanisms:
 
-*GAE, V-Trace, lambda returns, discounted returns* — these kernels have no
+*GAE, V-Trace, lambda returns, discounted returns* - these kernels have no
 explicit `truncateds` parameter. The distinction is encoded entirely in
 `bootstrap_values`: pass `V(s_T)` for a truncated episode (the episode
 continues beyond the window, so the next state has real value) and `0` for a
-terminated episode (the episode ended, no future value). A mixed batch — some
-environments truncated, others terminated — is handled naturally by
+terminated episode (the episode ended, no future value). A mixed batch - some
+environments truncated, others terminated - is handled naturally by
 constructing `bootstrap_values` per-environment:
 
 ```python
@@ -310,25 +310,25 @@ advantages = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95,
                          bootstrap_values=bootstrap_values)
 ```
 
-*Retrace* — because the one-step Q-bootstrap is folded into each TD error
+*Retrace* - because the one-step Q-bootstrap is folded into each TD error
 $\delta[t]$ via `next_q_values_all`, the distinction must be resolved
 *inside* the kernel rather than at the boundary. Pass `terminated` (true
 episode ends only) as `dones` and the separate `truncated` flag as
 `truncateds`. When `truncateds=None`, every boundary is treated as a
-termination — correct for purely episodic data but suboptimal when truncation
+termination - correct for purely episodic data but suboptimal when truncation
 is common.
 
-*Eligibility traces, episodic prefix sum* — forward scans with no value
+*Eligibility traces, episodic prefix sum* - forward scans with no value
 bootstrapping; the terminated/truncated distinction is irrelevant.
 
 ---
 
 ## Pull Request Checklist
 
-- [ ] `src/rl_triton/kernels/<name>_fused.py` — kernel only, no Python logic
-- [ ] `src/rl_triton/ops/<name>.py` — wrapper with shape checks, dispatch, docstring
+- [ ] `src/rl_triton/kernels/<name>_fused.py` - kernel only, no Python logic
+- [ ] `src/rl_triton/ops/<name>.py` - wrapper with shape checks, dispatch, docstring
 - [ ] Exported from `src/rl_triton/__init__.py`
-- [ ] `tests/test_<name>.py` — reference impl, vectorized baseline, correctness tests
-- [ ] Entry added to `tests/bench_safeguard.py` — PR perf gate passes (`pytest -m perf`)
+- [ ] `tests/test_<name>.py` - reference impl, vectorized baseline, correctness tests
+- [ ] Entry added to `tests/bench_safeguard.py` - PR perf gate passes (`pytest -m perf`)
 - [ ] `pytest tests/ -v` passes (all correctness tests green)
 - [ ] Kernel documented in `docs/kernels/`

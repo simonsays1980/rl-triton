@@ -1,4 +1,4 @@
-# Tutorial: Accelerating V-Trace with Triton Associative Scans
+# V-Trace with Triton Associative Scans
 
 ### Introduction
 
@@ -62,9 +62,7 @@ V-Trace explicitly uses this TD-error format for two reasons:
 
 ### 3. The Mathematical Bridge: Reshaping to the Associative Scan
 
-Our foundational Triton kernel is designed to solve any sequence conforming to the linear transformation $f(x)=u+vx$. To align the V-Trace sum-of-products formula with this architecture, we isolate the summation. 
-
-We define a new variable, **$\Delta_t$** (the value delta), representing the summation of all future trace-decayed TD errors:
+The foundational Triton kernel solves any sequence conforming to the linear transformation $f(x)=u+vx$. To align the V-Trace sum-of-products formula with this structure, isolate the summation by defining a new variable **$\Delta_t$** (the value delta), representing the sum of all future trace-decayed TD errors:
 
 $$\Delta_t = v_t - V(s_t)$$
 
@@ -76,9 +74,9 @@ Factoring out $\gamma c_t$ from the second term onward reveals the exact same fi
 
 $$\Delta_t = \delta_t^V + \gamma c_t (1-d_t) \Delta_{t+1}$$
 
-*(Note: We append the binary "done" flag $d_t$ to ensure the trace does not bleed across episode boundaries).*
+*(The binary "done" flag $d_t$ prevents the trace from bleeding across episode boundaries.)*
 
-This perfectly matches the kernel's expected format. We map the inputs for our hardware tuples $(u, v)$ as follows:
+This perfectly matches the kernel's expected format. The inputs map to hardware tuples $(u, v)$ as follows:
 
 * **Value Delta accumulation ($u_t$):** $u_t = \delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$
 * **Trace Decay product ($v_t$):** $v_t = \gamma c_t(1-d_t)$ 
@@ -91,7 +89,7 @@ Because the mathematical structure is mapped to the same recurrence, the GPU thr
 
 $$(u_B,v_B)\oplus(u_A,v_A)=(u_B+v_B u_A,v_A v_B)$$
 
-The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly — only the definition of $u_t$ and $v_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
+The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly - only the definition of $u_t$ and $v_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
 
 #### Setup (Step 0)
 
@@ -138,7 +136,7 @@ This matches the V-Trace sum exactly. Thread 4 built its chunk $T_{3..4}$ in par
 
 ### 5. Reconstructing Targets and Advantages
 
-Once the $O(\log N)$ kernel finishes, every thread holds its correct $\Delta_t$. We step back out to PyTorch to reconstruct the final V-Trace targets and advantages using highly parallel vector additions.
+Once the $O(\log N)$ kernel finishes, every thread holds its correct $\Delta_t$. The final V-Trace targets and advantages are reconstructed in PyTorch using parallel vector additions.
 
 **1. Target Value (for Critic Loss):**
 
@@ -166,7 +164,7 @@ V-Trace was originally introduced as the core mathematical component of the IMPA
 
 ### 8. Autoreset Mode and Loss Masking
 
-With Gymnasium's **next-step autoreset**, position `t+1` after a termination holds a stale observation — the policy acted on it but the environment discarded that action. The V-Trace advantage and target at that position are meaningless and must be masked:
+With Gymnasium's **next-step autoreset**, position `t+1` after a termination holds a stale observation - the policy acted on it but the environment discarded that action. The V-Trace advantage and target at that position are meaningless and must be masked:
 
 ```python
 episode_over = terminated | truncated          # [num_envs, seq_len]

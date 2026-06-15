@@ -22,6 +22,7 @@ def compute_gae(
 
     - A[t] = delta[t] + gamma * lambda * (1 - terminated[t]) * A[t+1],  A[T] = bootstrap
     - delta[t] = r[t] + gamma * (1 - terminated[t]) * V(s_{t+1}) - V(s_t)
+    
     V(s_{t+1}) is read from values[:, t+1]; no separate next_values tensor needed.
 
     Pass only true terminations in `terminateds`.  For a terminated step,

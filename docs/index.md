@@ -19,7 +19,7 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 
 | Function | Algorithm | Description | seq_len > 131072 |
 |---|---|---|---|
-| `compute_gae` | GAE | Generalized Advantage Estimation — backward scan over `δ + γλ·A` | chunked fallback |
+| `compute_gae` | GAE | Generalized Advantage Estimation - backward scan over `δ + γλ·A` | chunked fallback |
 | `compute_vtrace` | V-Trace | IS-weighted targets and advantages | chunked fallback |
 | `compute_retrace` | Retrace(λ) | Off-policy Q-value targets with truncated IS ratios | chunked fallback |
 | `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo | chunked fallback |

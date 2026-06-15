@@ -1,10 +1,10 @@
-# Tutorial: Technical Deep Dive into the GAE Triton Kernel
+# Technical Deep Dive into the GAE Triton Kernel
 
 ## Introduction
 
 Generalized Advantage Estimation (GAE; Schulman et al., 2016) is a first-order linear recurrence: each timestep depends on the next. This sequential dependency prevents straightforward parallelization on GPUs, which are designed to execute the same operation across many independent elements simultaneously.
 
-For typical PPO (Schulman et al., 2017) rollout sizes (a few hundred to a few thousand steps), a well-written PyTorch loop is already fast and the overhead of a custom kernel can offset much of the gain. The Triton kernel described here targets workloads where sequence length or batch size is large enough that the parallel reduction pays off — for example, very long trajectories, continuous control tasks with fine time resolution, or research into scalable RL infrastructure.
+For typical PPO (Schulman et al., 2017) rollout sizes (a few hundred to a few thousand steps), a well-written PyTorch loop is already fast and the overhead of a custom kernel can offset much of the gain. The Triton kernel described here targets workloads where sequence length or batch size is large enough that the parallel reduction pays off - for example, very long trajectories, continuous control tasks with fine time resolution, or research into scalable RL infrastructure.
 
 This tutorial provides a precise, technical walkthrough of how this kernel uses a **Parallel Associative Scan** to restructure the $O(N)$ sequential recurrence into an $O(\log N)$ parallel tree reduction, and explains exactly when and why that matters. Readers unfamiliar with how Triton kernels map onto GPU hardware (memory layout, strides, BLOCK_SIZE, masking) may find the [GPU Concepts](gpu-concepts.md) reference page useful alongside this tutorial.
 
@@ -54,7 +54,7 @@ $$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B u_A, \,\, v_A v_B)$$
 
 ## 3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree
 
-We will now trace exactly what happens inside the GPU SRAM using a minimal sequence of 4 timesteps. Because GAE is a backward recurrence, we reverse the array before processing.
+The following trace covers exactly what happens inside the GPU SRAM using a minimal sequence of 4 timesteps. Because GAE is a backward recurrence, the array is reversed before processing.
 
 Let $T_1$ sit at array index $1$, representing the end of the episode ($t=3$).
 Let $T_4$ sit at array index $4$, representing the start of the episode ($t=0$).
@@ -177,9 +177,9 @@ By trapping the entire reduction loop inside Registers and SRAM, Triton complete
 
 ## 7. Autoreset Mode and Loss Masking
 
-With Gymnasium's **next-step autoreset**, `step()` returns the terminal observation `s_terminal` as `next_obs` when `terminated=True`, deferring the actual reset to the following step. This means position `t+1` in the rollout buffer holds a stale observation — the policy acted on it but the environment discarded that action.
+With Gymnasium's **next-step autoreset**, `step()` returns the terminal observation `s_terminal` as `next_obs` when `terminated=True`, deferring the actual reset to the following step. This means position `t+1` in the rollout buffer holds a stale observation - the policy acted on it but the environment discarded that action.
 
-**Terminated boundary** — mask the stale position from both actor and critic losses:
+**Terminated boundary** - mask the stale position from both actor and critic losses:
 
 ```python
 episode_over = terminated | truncated          # [num_envs, seq_len]
@@ -187,7 +187,7 @@ mask = ~episode_over
 loss = (advantages * mask).mean()
 ```
 
-**Truncated boundary** — `obs[t+1]` is the genuine continuation state, so no value is stale. However, if the truncation falls on the last step of a rollout window, the GAE accumulator from the old window would bleed into the new one. Apply the same mask at rollout boundaries:
+**Truncated boundary** - `obs[t+1]` is the genuine continuation state, so no value is stale. However, if the truncation falls on the last step of a rollout window, the GAE accumulator from the old window would bleed into the new one. Apply the same mask at rollout boundaries:
 
 ```python
 mask = torch.cat([initial_episode_over, ~episode_over[:, :-1]], dim=1)

@@ -15,8 +15,8 @@ The scan runs entirely inside Streaming Multiprocessor SRAM, avoiding repeated
 round-trips to High Bandwidth Memory (HBM).
 
 For sequences that fit in a single thread block (`seq_len ≤ 131072`), a
-**fully-fused kernel** computes every intermediate quantity — TD errors, IS
-ratios, decay products — without materialising any intermediate tensors.
+**fully-fused kernel** computes every intermediate quantity - TD errors, IS
+ratios, decay products - without materialising any intermediate tensors.
 Longer sequences fall back to a chunked scan that stitches results across
 blocks.
 

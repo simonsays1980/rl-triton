@@ -1,10 +1,10 @@
-# Tutorial: Episodic Prefix Sums (Segmented Scans) in AI Infrastructure
+# Episodic Prefix Sums (Segmented Scans)
 
 ## Introduction
 
 While algorithms like GAE and V-Trace accumulate values *backward* in time, many core infrastructure tasks in reinforcement learning and sequence modeling require accumulating values *forward* in time.
 
-The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but resets the sum whenever a boundary condition is met — such as an episode ending or a padding token appearing.
+The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but resets the sum whenever a boundary condition is met - such as an episode ending or a padding token appearing.
 
 By mapping this segmented logic into a Triton associative scan kernel, we avoid Python sequential loops and standard PyTorch masking overhead, enabling parallel computation for data loaders, memory buffers, and token packing pipelines.
 
@@ -30,7 +30,7 @@ This is a first-order linear recurrence $f(x) = u + vx$, using the same universa
 
 $$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B u_A, \,\, v_A v_B)$$
 
-We map the inputs for our hardware tuples $(u, v)$ as follows:
+The inputs map to hardware tuples $(u, v)$ as follows:
 
 * **Value to accumulate ($u_t$):** $u_t = x_t$
 * **Boundary reset mask ($v_t$):** $v_t = 1 - d_t$
@@ -59,7 +59,7 @@ Instead of tracking separate integer counters per environment in Python, a tenso
 
 To maximize GPU utilization during LLM pre-training, engineers use **sequence packing**: concatenating multiple independent documents into one long sequence separated by `<EOS>` tokens.
 
-The transformer's positional embeddings (e.g., RoPE) require per-document positions, not global sequence positions — the `position_ids` must reset at every `<EOS>`. Passing an array of $1.0$s through a segmented scan with `<EOS>` locations as the $d_t$ mask produces the correct resetting `position_ids` directly on the GPU.
+The transformer's positional embeddings (e.g., RoPE) require per-document positions, not global sequence positions - the `position_ids` must reset at every `<EOS>`. Passing an array of $1.0$s through a segmented scan with `<EOS>` locations as the $d_t$ mask produces the correct resetting `position_ids` directly on the GPU.
 
 ### D. Offline RL: Decision Transformers and Trajectory Packing
 
@@ -67,11 +67,11 @@ The Decision Transformer (Chen et al., 2021) treats RL as a sequence modeling pr
 
 ### E. State Space Models (Mamba)
 
-Mamba (Gu & Dao, 2023) replaces attention with an associative scan to achieve linear scaling. When training on packed sequences, the internal hidden state of one document must not bleed into the next. Mamba handles this by treating document boundaries as reset gates — structurally identical to the $d_t$ mask used here.
+Mamba (Gu & Dao, 2023) replaces attention with an associative scan to achieve linear scaling. When training on packed sequences, the internal hidden state of one document must not bleed into the next. Mamba handles this by treating document boundaries as reset gates - structurally identical to the $d_t$ mask used here.
 
 ### F. Prioritized Experience Replay (PER)
 
-To sample from a prioritized replay buffer entirely on the GPU, priorities can be represented as a flat array. A parallel prefix sum over this array produces a cumulative distribution function (CDF), which then supports parallel sampling via binary search — replacing CPU-bound sum trees (Schaul et al., 2016).
+To sample from a prioritized replay buffer entirely on the GPU, priorities can be represented as a flat array. A parallel prefix sum over this array produces a cumulative distribution function (CDF), which then supports parallel sampling via binary search - replacing CPU-bound sum trees (Schaul et al., 2016).
 
 ---
 

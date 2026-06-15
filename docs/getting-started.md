@@ -134,7 +134,7 @@ The accumulation resets to zero whenever `dones[t] == 1`, so each episode's cumu
 
 All kernels expect `float32` tensors with shape `(num_envs, seq_len)`.
 
-**`terminateds`** (used by `compute_gae` and `compute_vtrace`): pass only true episode terminations (`1.0`). Truncated episodes — where the rollout window ended but the environment continues — must be `0.0` here; supply `V(s_T)` via `bootstrap_values` instead.
+**`terminateds`** (used by `compute_gae` and `compute_vtrace`): pass only true episode terminations (`1.0`). Truncated episodes - where the rollout window ended but the environment continues - must be `0.0` here; supply `V(s_T)` via `bootstrap_values` instead.
 
 **`dones`** (used by `compute_retrace`, `compute_lambda_returns`, `compute_discounted_returns`, `compute_eligibility_traces`, `compute_episodic_prefix_sum`): pass `terminated | truncated`. `compute_retrace` additionally accepts an optional `truncateds` tensor to distinguish the two cases for correct bootstrap gating.
 
@@ -167,7 +167,7 @@ RL_TRITON_CORRECTNESS_WARNINGS=1 python train.py
 ```
 
 Emits a `warnings.warn` when `compute_retrace` detects a step where
-`truncateds=1` but `dones=0` — which is always a caller error (a step cannot
+`truncateds=1` but `dones=0` - which is always a caller error (a step cannot
 be truncated without also being marked done). Off by default.
 
 **When to enable:** integrating `compute_retrace` with a new environment or

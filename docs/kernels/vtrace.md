@@ -148,7 +148,11 @@ Once we have the target values $v_t$, we shift the tensor to obtain $v_{t+1}$ an
 
 $$A_t=\rho_t(r_t+\gamma v_{t+1}-V(s_t))$$
 
-*(Note: Truncated episodes are handled exactly as in GAE. We bootstrap the final TD error using the critic's estimate $V(s_{next})$, ensuring the carry-over $\Delta_{carry}=0.0$ for the kernel boundary).*
+For truncated episodes, `bootstrap_values` $= V(s_T)$ is passed as the out-of-window next-state value and is substituted into the TD error at the last step $t=T-1$:
+
+$$u_{T-1} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
+
+The scan carry is always $\Delta_T = 0$. This is safe because the trace decay at the boundary is $v_{T-1} = \gamma c_{T-1}(1-d_{T-1}) = 0$ — the done flag zeros it — so $\Delta_T$ multiplies out regardless of its value. The bootstrap enters only through $u_{T-1}$, not through the scan carry.
 
 ---
 

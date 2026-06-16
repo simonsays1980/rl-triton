@@ -54,7 +54,7 @@ $$\Delta_t = \delta_t + \gamma c_{t+1} \left( \delta_{t+1} + \gamma c_{t+2} \del
 
 The expression in parentheses is exactly $\Delta_{t+1}$, which yields the **first-order backward recurrence**:
 
-$$\boxed{\Delta_t = \delta_t + \gamma c_{t+1}(1-d_t)\Delta_{t+1}}$$
+$$\Delta_t = \delta_t + \gamma c_{t+1}(1-d_t)\Delta_{t+1}$$
 
 *(The binary done flag $d_t$ is appended to prevent the trace from bleeding across episode boundaries.)*
 
@@ -67,6 +67,7 @@ Notice the critical difference from V-Trace: the decay coefficient multiplying $
 If you look closely at the backward recurrence derived above, the trace weight applied to $\Delta_{t+1}$ is **$c_{t+1}$**, whereas in V-Trace the corresponding weight was **$c_t$**.
 
 This index shift is the defining mathematical difference between the two algorithms, and it exists for a very specific reason:
+
 * **V-Trace** evaluates a state $s_t$. It must correct for the very first action $a_t$ taken from that state, so it applies importance sampling immediately ($c_t$).
 * **Retrace** evaluates a state-action pair $(s_t, a_t)$. Because the action $a_t$ is already fixed as the subject of our evaluation, we do not reject or correct it. We only begin correcting for off-policy divergence on the *next* action taken in the trajectory ($a_{t+1}$).
 
@@ -82,19 +83,25 @@ Setting $\lambda = 1$ recovers the full importance sampling weight; setting $\la
 
 Before mapping to hardware it is worth clarifying what "bootstrap" means in Retrace and how the two boundary-flag conventions map onto the implementation.
 
-#### Why Retrace never needs a separate bootstrap tensor
+#### How the bootstrap enters the TD error, not the scan carry
 
-In GAE and V-Trace the bootstrap - the value estimate for the state just beyond the sequence window - must be passed in separately, because the recurrence accumulates raw TD errors and the terminal value is not otherwise accessible at the boundary.
+All three algorithms — GAE, V-Trace, and Retrace — handle truncated boundaries the same way at the scan level: the scan carry into the kernel is $\Delta_T = 0$. This is safe because the trace decay at the last step $v_{T-1}$ is zeroed by the done flag, so $\Delta_T$ multiplies out regardless of its value.
 
-In Retrace the situation is different. The one-step Q-bootstrap
+The difference is how the **bootstrap value** enters the TD error $u_{T-1}$.
 
-$$\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)]$$
+In GAE and V-Trace the TD error at $t=T-1$ requires the scalar $V(s_T)$:
 
-is **already embedded inside every TD error** $\delta_t$ via the `next_q_values_all` tensor:
+$$u_{T-1}^{\text{V-Trace}} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
 
-$$\delta_t = r_t + \gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$$
+$V(s_T)$ is out of window and not present in any existing input tensor, so it must be passed as a dedicated `bootstrap_values` argument $\in \mathbb{R}^{N_{\text{env}}}$.
 
-At the last in-window step $t = T-1$, $s_T$ is the very next state - exactly the bootstrap state. Because $\delta_{T-1}$ already contains $\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)]$, no separate tensor needs to be passed. The caller only needs to supply the right boundary mask.
+In Retrace the TD error at $t=T-1$ requires $\mathbb{E}_{a \sim \pi}[Q(s_T, a)]$ — an expectation over the full action distribution:
+
+$$u_{T-1}^{\text{Retrace}} = r_{T-1} + \gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)](1-d_{T-1}^{\text{term}}) - Q(s_{T-1}, a_{T-1})$$
+
+This expectation requires the full action-probability vector $\pi(\cdot|s_T)$ and the Q-values for all actions at $s_T$. The `next_q_values_all` tensor $\in \mathbb{R}^{N_{\text{env}} \times T \times |\mathcal{A}|}$ is therefore unavoidable for every step anyway (each $u_t$ needs it). The boundary value $\mathbb{E}_\pi[Q(s_T, a)]$ is simply read from `next_q_values_all[:, T-1, :]` — already present, no separate argument needed.
+
+The reason Retrace takes no `bootstrap_values` argument is therefore not algorithmic but structural: a state value function $V(s)$ is a scalar that requires a separate boundary argument, whereas a Q-function expectation $\mathbb{E}_\pi[Q(s,a)]$ requires a full action-distribution tensor that is present for all steps, including the boundary.
 
 #### Terminated vs. truncated
 

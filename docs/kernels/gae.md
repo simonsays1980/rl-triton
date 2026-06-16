@@ -23,6 +23,8 @@ Where:
 * $\gamma, \lambda$: Scalars (discount/smoothing factors).
 * $d_t$: Binary "done" flag (1 if episode ended).
 
+Throughout this document $T$ denotes the **sequence length** (the number of steps in the rollout buffer), not necessarily an episode termination. A single sequence may contain multiple complete episodes separated by done flags, or end mid-episode at a truncation boundary.
+
 **Why this resists parallelization:** In a trajectory of 1024 steps, a standard implementation creates a strict sequential dependency chain. Timestep 100 cannot be computed until timestep 101 finishes, which waited for 102, all the way to 1024. GPU cores that could be working on independent data are instead stalled waiting on this chain. Additionally, a naive loop issues a separate HBM read/write per step rather than loading the whole sequence once.
 
 ---
@@ -147,11 +149,11 @@ $$A_{final}=u_i+v_i A_{carry}$$
 
 In a PPO pipeline, a non-zero $A_{carry}$ occurs in two scenarios:
 
-**Rollout Buffer Truncation (Value Function Bootstrap):** If a fixed buffer ends at step 2048 while the agent is alive, we estimate future rewards using the Critic network ($V(s_{next})$). This prediction is baked into the final TD error before Triton runs:
+**Rollout Buffer Truncation (Value Function Bootstrap):** If a fixed buffer ends at step $T-1$ while the episode is still running, `bootstrap_values` $= V(s_T)$ is passed as the out-of-window next-state value and substituted into the TD error at the last step:
 
-$$\delta_{last}=r_{last}+\gamma V(s_{next})-V(s_{last})$$
+$$\delta_{T-1}=r_{T-1}+\gamma V(s_T)-V(s_{T-1})$$
 
-Because the future value is already inside $\delta_{last}$, we safely pass $A_{carry}=0.0$ into the kernel.
+The bootstrap is absorbed directly into $u_{T-1}$. The scan carry is $A_{carry}=0.0$. This is safe because the decay at the boundary is $v_{T-1}=\gamma\lambda(1-d_{T-1})=0$ — the truncation flag zeros it — so $A_{carry}$ multiplies out regardless of its value.
 
 **Infinite Horizon Chunking (Inside Triton):** If processing massive trajectories that exceed a single block, we chunk them inside the kernel. The final calculated advantage of a chronologically "future" chunk becomes the exact $A_{carry}$ passed into the $x$ of the chronologically "previous" chunk.
 

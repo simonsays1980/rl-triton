@@ -167,7 +167,7 @@ def compute_eligibility_traces(
 
     Recurrence:
 
-    - z[t] = g[t] + gamma * lambda * (1 - done[t]) * z[t-1],  z[-1] = seed
+    - z[t] = g[t] + γ·λ·(1 - done[t]) * z[t-1],  z[-1] = seed
 
 
     g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t) for

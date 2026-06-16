@@ -20,9 +20,9 @@ def compute_gae(
 
     Recurrence:
 
-    - A[t] = delta[t] + gamma * lambda * (1 - terminated[t]) * A[t+1],  A[T] = bootstrap
-    - delta[t] = r[t] + gamma * (1 - terminated[t]) * V(s_{t+1}) - V(s_t)
-    
+    - A[t] = δ[t] + γ·λ·(1-terminated[t]) * A[t+1],  A[T] = bootstrap
+    - δ[t] = r[t] + γ·(1-terminated[t]) * V(s_{t+1}) - V(s_t)
+
     V(s_{t+1}) is read from values[:, t+1]; no separate next_values tensor needed.
 
     Pass only true terminations in `terminateds`.  For a terminated step,
@@ -68,7 +68,7 @@ def compute_gae(
 
     out = torch.empty_like(rewards)
 
-    # Linear recurrence: u[t] = delta[t], v[t] = gamma * lambda * (1 - terminated[t]).
+    # Linear recurrence: a[t] = δ[t], b[t] = γ·λ·(1 - terminated[t]).
     # Fused kernel for seq_len <= 131072 (computes delta and decay inside the
     # kernel, no intermediate tensors). Chunked scan + PyTorch ops for longer.
     if seq_len <= _FLAT_MAX_SEQ_LEN:

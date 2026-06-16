@@ -7,7 +7,7 @@ title: Kernels
 All kernels in **rl-triton** share a single architectural idea: express the RL
 recurrence as a **linear recurrence** of the form
 
-$$A_t = u_t + v_t \cdot A_{t+1}$$
+$$A_t = a_t + b_t \cdot A_{t+1}$$
 
 and solve it in $O(\log N)$ parallel steps using an **associative scan** on the
 GPU, rather than the $O(N)$ sequential loop a naïve implementation requires.

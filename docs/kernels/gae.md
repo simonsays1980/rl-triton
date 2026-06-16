@@ -40,12 +40,12 @@ If we want to find the accumulated advantage over two adjacent steps, $A$ and $B
 
 $$f_B(f_A(x)) = \delta_B + \beta_B(\delta_A + \beta_A x) = (\delta_B + \beta_B \delta_A) + (\beta_B \beta_A)x$$
 
-This algebraic composition defines a custom **associative operator ($\oplus$)** that operates on tuples of $(u, v)$, where $u_t = \delta_t$ and $v_t = \beta_t = \gamma\lambda(1-d_t)$:
+This algebraic composition defines a custom **associative operator ($\oplus$)** that operates on tuples of $(a, b)$, where $a_t = \delta_t$ and $b_t = \beta_t = \gamma\lambda(1-d_t)$:
 
 
-$$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B u_A, \,\, v_A v_B)$$
+$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B a_A, \,\, b_A b_B)$$
 
-* **TD accumulation:** New error is the later error $u_B$ plus the weighted earlier error $v_B u_A$.
+* **TD accumulation:** New error is the later error $a_B$ plus the weighted earlier error $b_B a_A$.
 * **Decay product:** The decay terms just multiply.
 
 **Why this works:** Function composition is associative: $(C \circ B) \circ A = C \circ (B \circ A)$. Since the grouping doesn't matter, we don't have to compute them strictly left-to-right (sequentially). We can group them as chunks and snap the chunks together.
@@ -65,12 +65,12 @@ This trace uses the standard scan algorithm where threads pull data from their '
 
 ### Setup (Step 0)
 
-The entire trajectory is loaded once into SM SRAM. We assign one GPU Thread ($Ti$) to each timestep index $i$. Each thread prepares its initial associative tuple $(u_i, v_i)$ sitting in local registers:
+The entire trajectory is loaded once into SM SRAM. We assign one GPU Thread ($Ti$) to each timestep index $i$. Each thread prepares its initial associative tuple $(a_i, b_i)$ sitting in local registers:
 
-* $T1$ holds: $T_1 = (u_1, v_1)$
-* $T2$ holds: $T_2 = (u_2, v_2)$
-* $T3$ holds: $T_3 = (u_3, v_3)$
-* $T4$ holds: $T_4 = (u_4, v_4)$
+* $T1$ holds: $T_1 = (a_1, b_1)$
+* $T2$ holds: $T_2 = (a_2, b_2)$
+* $T3$ holds: $T_3 = (a_3, b_3)$
+* $T4$ holds: $T_4 = (a_4, b_4)$
 
 ### Hardware Loop 1: Parallel Pairs (Distance = 1)
 
@@ -109,43 +109,43 @@ The associative scan produces intermediate cumulative results for *every single 
 ### T=1 (End of Episode) Base Case
 
 Thread 1 holds tuple $T_1$. For GAE, we assume the base case: the advantage after the end of an episode (step $t+1=0$) is $0.0$.
-If we apply our linear function $f(x) = \delta + \beta x$ to $x=0$, we get $u + v(0) = u$.
+If we apply our linear function $f(x) = \delta + \beta x$ to $x=0$, we get $a + b(0) = a$.
 
-* Thread 1 advantage: Just the $u$ term of $T_1$. This is $\delta_1$. Correct.
+* Thread 1 advantage: Just the $a$ term of $T_1$. This is $\delta_1$. Correct.
 
 ### T=4 Final State and Verification
 
-Thread 4 is holding the final composed tuple $T_{1..4}$. Its advantage is just the $u$ term of that tuple: $u_{1..4}$.
+Thread 4 is holding the final composed tuple $T_{1..4}$. Its advantage is just the $a$ term of that tuple: $a_{1..4}$.
 
-Let's verify $u_{1..4}$ against sequential GAE, substituting back $u_i = \delta_i$ and $v_i = \beta_i$. Sequential PPO calculates:
+Let's verify $a_{1..4}$ against sequential GAE, substituting back $a_i = \delta_i$ and $b_i = \beta_i$. Sequential PPO calculates:
 
-* $A_1 = u_1$
-* $A_2 = u_2 + v_2 A_1 = u_2 + v_2 u_1$
-* $A_3 = u_3 + v_3 A_2 = u_3 + v_3 u_2 + v_3 v_2 u_1$
-* $A_4 = u_4 + v_4 A_3 = \mathbf{u_4 + v_4 u_3 + v_4 v_3 u_2 + v_4 v_3 v_2 u_1}$
+* $A_1 = a_1$
+* $A_2 = a_2 + b_2 A_1 = a_2 + b_2 a_1$
+* $A_3 = a_3 + b_3 A_2 = a_3 + b_3 a_2 + b_3 b_2 a_1$
+* $A_4 = a_4 + b_4 A_3 = \mathbf{a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1}$
 
 The algebra from the composition of chunks in Loop 2 (T4 grabbing $T_{1..2}$ and combining with $T_{3..4}$):
 
 
-$$u_{1..4} = u_{3..4} + v_{3..4}u_{1..2}$$
+$$a_{1..4} = a_{3..4} + b_{3..4}a_{1..2}$$
 
-$$u_{1..4} = (u_4 + v_4 u_3) + (v_3 v_4)(u_2 + v_2 u_1)$$
+$$a_{1..4} = (a_4 + b_4 a_3) + (b_3 b_4)(a_2 + b_2 a_1)$$
 
-$$u_{1..4} = \mathbf{u_4 + v_4 u_3 + v_4 v_3 u_2 + v_4 v_3 v_2 u_1}$$
+$$a_{1..4} = \mathbf{a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1}$$
 
 **The polynomial sitting in Thread 4's SRAM register is identical to the sequential calculation.** Thread 4 did not wait linearly for Thread 3. It built its own mini-chunk $T_{3..4}$ simultaneously while Thread 2 built $T_{1..2}$.
 
-Every thread knows its full history by snapping pre-computed chunks together logarithmically, touching HBM only twice: once to load all $(u, v)$ pairs and once to write all advantages.
+Every thread knows its full history by snapping pre-computed chunks together logarithmically, touching HBM only twice: once to load all $(a, b)$ pairs and once to write all advantages.
 
 ---
 
 ## 5. Handling Truncated Episodes
 
-During the scan, the GPU only calculates the $u$ and $v$ terms of the function $f_i(x)=u_i+v_i x$. It does not need to know the starting base case ($x$) to build the tree.
+During the scan, the GPU only calculates the $a$ and $b$ terms of the function $f_i(x)=a_i+b_i x$. It does not need to know the starting base case ($x$) to build the tree.
 
 If an episode is truncated, $x$ is not $0$, but rather some carry-over advantage $A_{carry}$. To resolve this, the kernel executes exactly one additional parallel instruction at the very end:
 
-$$A_{final}=u_i+v_i A_{carry}$$
+$$A_{final}=a_i+b_i A_{carry}$$
 
 In a PPO pipeline, a non-zero $A_{carry}$ occurs in two scenarios:
 
@@ -153,7 +153,7 @@ In a PPO pipeline, a non-zero $A_{carry}$ occurs in two scenarios:
 
 $$\delta_{T-1}=r_{T-1}+\gamma V(s_T)-V(s_{T-1})$$
 
-The bootstrap is absorbed directly into $u_{T-1}$. The scan carry is $A_{carry}=0.0$. This is safe because the decay at the boundary is $v_{T-1}=\gamma\lambda(1-d_{T-1})=0$ — the truncation flag zeros it — so $A_{carry}$ multiplies out regardless of its value.
+The bootstrap is absorbed directly into $a_{T-1}$. The scan carry is $A_{carry}=0.0$. This is safe because the decay at the boundary is $b_{T-1}=\gamma\lambda(1-d_{T-1})=0$ — the truncation flag zeros it — so $A_{carry}$ multiplies out regardless of its value.
 
 **Infinite Horizon Chunking (Inside Triton):** If processing massive trajectories that exceed a single block, we chunk them inside the kernel. The final calculated advantage of a chronologically "future" chunk becomes the exact $A_{carry}$ passed into the $x$ of the chronologically "previous" chunk.
 

@@ -62,7 +62,7 @@ V-Trace explicitly uses this TD-error format for two reasons:
 
 ### 3. The Mathematical Bridge: Reshaping to the Associative Scan
 
-The foundational Triton kernel solves any sequence conforming to the linear transformation $f(x)=u+vx$. To align the V-Trace sum-of-products formula with this structure, isolate the summation by defining a new variable **$\Delta_t$** (the value delta), representing the sum of all future trace-decayed TD errors:
+The foundational Triton kernel solves any sequence conforming to the linear transformation $f(x)=a+bx$. To align the V-Trace sum-of-products formula with this structure, isolate the summation by defining a new variable **$\Delta_t$** (the value delta), representing the sum of all future trace-decayed TD errors:
 
 $$\Delta_t = v_t - V(s_t)$$
 
@@ -76,10 +76,10 @@ $$\Delta_t = \delta_t^V + \gamma c_t (1-d_t) \Delta_{t+1}$$
 
 *(The binary "done" flag $d_t$ prevents the trace from bleeding across episode boundaries.)*
 
-This perfectly matches the kernel's expected format. The inputs map to hardware tuples $(u, v)$ as follows:
+This perfectly matches the kernel's expected format. The inputs map to hardware tuples $(a, b)$ as follows:
 
-* **Value Delta accumulation ($u_t$):** $u_t = \delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$
-* **Trace Decay product ($v_t$):** $v_t = \gamma c_t(1-d_t)$ 
+* **Value Delta accumulation ($a_t$):** $a_t = \delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$
+* **Trace Decay product ($b_t$):** $b_t = \gamma c_t(1-d_t)$ 
 
 ---
 
@@ -87,18 +87,18 @@ This perfectly matches the kernel's expected format. The inputs map to hardware 
 
 Because the mathematical structure is mapped to the same recurrence, the GPU threads execute the same associative combination using our operator $\oplus$:
 
-$$(u_B,v_B)\oplus(u_A,v_A)=(u_B+v_B u_A,v_A v_B)$$
+$$(a_B,b_B)\oplus(a_A,b_A)=(a_B+b_B a_A,b_A b_B)$$
 
-The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly - only the definition of $u_t$ and $v_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
+The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly - only the definition of $a_t$ and $b_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
 
 #### Setup (Step 0)
 
-Each thread loads its initial tuple $(u_i, v_i)$ into local registers:
+Each thread loads its initial tuple $(a_i, b_i)$ into local registers:
 
-* **T1** (index 1, $t=3$): holds $T_1=(u_1, v_1)$
-* **T2** (index 2, $t=2$): holds $T_2=(u_2, v_2)$
-* **T3** (index 3, $t=1$): holds $T_3=(u_3, v_3)$
-* **T4** (index 4, $t=0$): holds $T_4=(u_4, v_4)$
+* **T1** (index 1, $t=3$): holds $T_1=(a_1, b_1)$
+* **T2** (index 2, $t=2$): holds $T_2=(a_2, b_2)$
+* **T3** (index 3, $t=1$): holds $T_3=(a_3, b_3)$
+* **T4** (index 4, $t=0$): holds $T_4=(a_4, b_4)$
 
 #### Hardware Loop 1: Parallel Pairs (Distance = 1)
 
@@ -120,15 +120,15 @@ Every thread simultaneously looks 2 steps to their "left":
 
 #### Verification
 
-The accumulated $u$ value in T4's register after the scan:
+The accumulated $a$ value in T4's register after the scan:
 
-$$u_{1..4}=(u_4+v_4 u_3)+(v_3 v_4)(u_2+v_2 u_1)$$
+$$a_{1..4}=(a_4+b_4 a_3)+(b_3 b_4)(a_2+b_2 a_1)$$
 
-$$u_{1..4}=u_4+v_4 u_3+v_4 v_3 u_2+v_4 v_3 v_2 u_1$$
+$$a_{1..4}=a_4+b_4 a_3+b_4 b_3 a_2+b_4 b_3 b_2 a_1$$
 
-Substituting back the V-Trace definitions ($u_i = \delta_i^V$, $v_i = \gamma c_i$) and remembering the reversed index mapping ($u_4$ is chronological $t=1$, etc.):
+Substituting back the V-Trace definitions ($a_i = \delta_i^V$, $b_i = \gamma c_i$) and remembering the reversed index mapping ($a_4$ is chronological $t=1$, etc.):
 
-$$u_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V$$
+$$a_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V$$
 
 This matches the V-Trace sum exactly. Thread 4 built its chunk $T_{3..4}$ in parallel with Thread 2 building $T_{1..2}$, with no sequential wait between them.
 
@@ -150,15 +150,15 @@ $$A_t=\rho_t(r_t+\gamma v_{t+1}-V(s_t))$$
 
 For truncated episodes, `bootstrap_values` $= V(s_T)$ is passed as the out-of-window next-state value and is substituted into the TD error at the last step $t=T-1$:
 
-$$u_{T-1} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
+$$a_{T-1} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
 
-The scan carry is always $\Delta_T = 0$. This is safe because the trace decay at the boundary is $v_{T-1} = \gamma c_{T-1}(1-d_{T-1}) = 0$ — the done flag zeros it — so $\Delta_T$ multiplies out regardless of its value. The bootstrap enters only through $u_{T-1}$, not through the scan carry.
+The scan carry is always $\Delta_T = 0$. This is safe because the trace decay at the boundary is $b_{T-1} = \gamma c_{T-1}(1-d_{T-1}) = 0$ — the done flag zeros it — so $\Delta_T$ multiplies out regardless of its value. The bootstrap enters only through $a_{T-1}$, not through the scan carry.
 
 ---
 
 ### 6. Hardware Execution
 
-V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all $u_t$ and $v_t$ arrays into SRAM, the $O(\log N)$ reduction entirely within registers and SRAM, and a single synchronized HBM store of the $\Delta_t$ results. See the [GAE hardware section](gae.md#6-the-hardware-reality-what-triton-actually-does) for the full breakdown.
+V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all $a_t$ and $b_t$ arrays into SRAM, the $O(\log N)$ reduction entirely within registers and SRAM, and a single synchronized HBM store of the $\Delta_t$ results. See the [GAE hardware section](gae.md#6-the-hardware-reality-what-triton-actually-does) for the full breakdown.
 
 ### 7. V-Trace Applications
 

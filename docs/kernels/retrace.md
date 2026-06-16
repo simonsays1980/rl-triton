@@ -87,19 +87,19 @@ Before mapping to hardware it is worth clarifying what "bootstrap" means in Retr
 
 All three algorithms — GAE, V-Trace, and Retrace — handle truncated boundaries the same way at the scan level: the scan carry into the kernel is $\Delta_T = 0$. This is safe because the trace decay at the last step $v_{T-1}$ is zeroed by the done flag, so $\Delta_T$ multiplies out regardless of its value.
 
-The difference is how the **bootstrap value** enters the TD error $u_{T-1}$.
+The difference is how the **bootstrap value** enters the TD error $a_{T-1}$.
 
 In GAE and V-Trace the TD error at $t=T-1$ requires the scalar $V(s_T)$:
 
-$$u_{T-1}^{\text{V-Trace}} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
+$$a_{T-1}^{\text{V-Trace}} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
 
 $V(s_T)$ is out of window and not present in any existing input tensor, so it must be passed as a dedicated `bootstrap_values` argument $\in \mathbb{R}^{N_{\text{env}}}$.
 
 In Retrace the TD error at $t=T-1$ requires $\mathbb{E}_{a \sim \pi}[Q(s_T, a)]$ — an expectation over the full action distribution:
 
-$$u_{T-1}^{\text{Retrace}} = r_{T-1} + \gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)](1-d_{T-1}^{\text{term}}) - Q(s_{T-1}, a_{T-1})$$
+$$a_{T-1}^{\text{Retrace}} = r_{T-1} + \gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_T, a)](1-d_{T-1}^{\text{term}}) - Q(s_{T-1}, a_{T-1})$$
 
-This expectation requires the full action-probability vector $\pi(\cdot|s_T)$ and the Q-values for all actions at $s_T$. The `next_q_values_all` tensor $\in \mathbb{R}^{N_{\text{env}} \times T \times |\mathcal{A}|}$ is therefore unavoidable for every step anyway (each $u_t$ needs it). The boundary value $\mathbb{E}_\pi[Q(s_T, a)]$ is simply read from `next_q_values_all[:, T-1, :]` — already present, no separate argument needed.
+This expectation requires the full action-probability vector $\pi(\cdot|s_T)$ and the Q-values for all actions at $s_T$. The `next_q_values_all` tensor $\in \mathbb{R}^{N_{\text{env}} \times T \times |\mathcal{A}|}$ is therefore unavoidable for every step anyway (each $a_t$ needs it). The boundary value $\mathbb{E}_\pi[Q(s_T, a)]$ is simply read from `next_q_values_all[:, T-1, :]` — already present, no separate argument needed.
 
 The reason Retrace takes no `bootstrap_values` argument is therefore not algorithmic but structural: a state value function $V(s)$ is a scalar that requires a separate boundary argument, whereas a Q-function expectation $\mathbb{E}_\pi[Q(s,a)]$ requires a full action-distribution tensor that is present for all steps, including the boundary.
 
@@ -116,7 +116,7 @@ In both cases the **trace decay** $v_t = \gamma c_{t+1}(1 - d_t)$ is zeroed at t
 
 The two quantities the implementation therefore uses are:
 
-$$d_t^{\text{term}} = d_t - d_t^{\text{trunc}} \qquad \text{(gates the bootstrap in } u_t\text{)}$$
+$$d_t^{\text{term}} = d_t - d_t^{\text{trunc}} \qquad \text{(gates the bootstrap in } a_t\text{)}$$
 $$d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}} \qquad \text{(gates trace decay in } v_t\text{)}$$
 
 #### Mapping from common API conventions
@@ -135,11 +135,11 @@ compute_retrace(..., dones=done)   # truncateds defaults to None
 
 ### 5. Mapping to the Associative Scan
 
-Despite the index shift, the mathematical structure is still a perfect first-order recurrence conforming to our kernel's expected $f(x) = u + vx$ transformation. 
+Despite the index shift, the mathematical structure is still a perfect first-order recurrence conforming to our kernel's expected $f(x) = a + bx$ transformation. 
 
-The inputs map to hardware tuples $(u, v)$ as follows:
-* **TD accumulation ($u_t$):** $u_t = \delta_t = r_t + \gamma(1-d_t^{\text{term}})\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$
-* **Trace Decay product ($v_t$):** $v_t = \gamma c_{t+1}(1-d_t)$
+The inputs map to hardware tuples $(a, b)$ as follows:
+* **TD accumulation ($a_t$):** $a_t = \delta_t = r_t + \gamma(1-d_t^{\text{term}})\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$
+* **Trace Decay product ($b_t$):** $b_t = \gamma c_{t+1}(1-d_t)$
 
 Because $c_{t+1}$ requires looking one step into the future, we simply shift the $c$ array in PyTorch using `torch.roll` before passing it to the Triton kernel.
 
@@ -147,13 +147,13 @@ Because $c_{t+1}$ requires looking one step into the future, we simply shift the
 
 The reduction tree mechanics are identical to those described in the [GAE tutorial](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree). The following verifies only what is specific to Retrace: how the index shift manifests in the accumulated polynomial. As with GAE and V-Trace, the array is reversed so that threads look "left" to reach chronologically later data.
 
-After the $O(\log N)$ scan, Thread 4 (at reversed index 4, chronological $t=1$) holds the accumulated result $u_{1..4}$. Applying the $\oplus$ operator:
+After the $O(\log N)$ scan, Thread 4 (at reversed index 4, chronological $t=1$) holds the accumulated result $a_{1..4}$. Applying the $\oplus$ operator:
 
-$$u_{1..4} = u_4 + v_4 u_3 + v_4 v_3 u_2 + v_4 v_3 v_2 u_1$$
+$$a_{1..4} = a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1$$
 
 Substituting our chronological Retrace definitions (reversed index $k$ maps to time $t = k$):
 
-$$u_{1..4} = \delta_1 + (\gamma c_2)\delta_2 + (\gamma c_2)(\gamma c_3)\delta_3 + (\gamma c_2)(\gamma c_3)(\gamma c_4)\delta_4$$
+$$a_{1..4} = \delta_1 + (\gamma c_2)\delta_2 + (\gamma c_2)(\gamma c_3)\delta_3 + (\gamma c_2)(\gamma c_3)(\gamma c_4)\delta_4$$
 
 Notice that $c_1$ does not appear anywhere in this polynomial. This is the index shift in action: $c_1$ is the importance weight for the *last* chronological action in the trajectory. Because Retrace only begins correcting from the *next* step onward, the decay *into* the last TD error $\delta_1$ would require $c_0$ - a weight from one step before the trajectory starts, which does not exist. The implementation forces this out-of-bounds weight to zero (`c_next[:, -1] = 0.0`), so the last step always contributes $\delta_1$ unscaled. $c_1$ itself is simply never needed: no TD error to its left exists that it could weight.
 

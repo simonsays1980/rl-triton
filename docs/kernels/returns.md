@@ -8,9 +8,9 @@ Despite their apparent simplicity, all three share the same first-order linear r
 
 The shared kernel solves the backward recurrence
 
-$$A_t = u_t + v_t \cdot A_{t+1}, \qquad A_T = \text{bootstrap}$$
+$$A_t = a_t + b_t \cdot A_{t+1}, \qquad A_T = \text{bootstrap}$$
 
-for any choice of $u$ and $v$. Each estimator below specifies its own $u_t$ and $v_t$; the kernel is unaware of the difference.
+for any choice of $a$ and $b$. Each estimator below specifies its own $a_t$ and $b_t$; the kernel is unaware of the difference.
 
 ---
 
@@ -36,9 +36,9 @@ Each reward $r_k$ is discounted by $\gamma^{k-t}$ and masked by the product of a
 
 #### Mapping to the associative scan
 
-$$u_t = r_t, \qquad v_t = \gamma(1-d_t)$$
+$$a_t = r_t, \qquad b_t = \gamma(1-d_t)$$
 
-This is the simplest possible instantiation of $A_t = u_t + v_t \cdot A_{t+1}$. No derived quantities, no additional tensors.
+This is the simplest possible instantiation of $A_t = a_t + b_t \cdot A_{t+1}$. No derived quantities, no additional tensors.
 
 #### Bootstrap at truncated boundaries
 
@@ -67,15 +67,15 @@ At λ=1 the value function terms drop out entirely and `compute_lambda_returns` 
 
 #### Mapping to the associative scan
 
-Expanding and grouping the recurrence into $u + v \cdot G^\lambda_{t+1}$ form:
+Expanding and grouping the recurrence into $a + b \cdot G^\lambda_{t+1}$ form:
 
-$$u_t = r_t + \gamma(1-\lambda)(1-d_t)V(s_{t+1}), \qquad v_t = \gamma\lambda(1-d_t)$$
+$$a_t = r_t + \gamma(1-\lambda)(1-d_t)V(s_{t+1}), \qquad b_t = \gamma\lambda(1-d_t)$$
 
-The value function is absorbed directly into the additive term $u_t$ at every step. This means `next_values` acts as a per-step bootstrap that is always available - no separate boundary tensor is needed for on-policy truncated episodes as long as `next_values[:, -1]` contains $V(s_T)$.
+The value function is absorbed directly into the additive term $a_t$ at every step. This means `next_values` acts as a per-step bootstrap that is always available - no separate boundary tensor is needed for on-policy truncated episodes as long as `next_values[:, -1]` contains $V(s_T)$.
 
 #### Bootstrap at truncated boundaries
 
-Because $V(s_{t+1})$ is mixed into $u_t$ at every step, the recurrence already carries value information up to (but not including) the boundary. Pass `bootstrap_values = next_values[:, -1]` for truncated windows; omit it (defaults to zero) for terminated episodes where $d_{T-1}=1$.
+Because $V(s_{t+1})$ is mixed into $a_t$ at every step, the recurrence already carries value information up to (but not including) the boundary. Pass `bootstrap_values = next_values[:, -1]` for truncated windows; omit it (defaults to zero) for terminated episodes where $d_{T-1}=1$.
 
 ---
 
@@ -125,7 +125,7 @@ The field responded to staleness by preferring the forward view: compute the λ-
 
 #### Mapping to the associative scan
 
-$$u_t = \mathbf{g}_t, \qquad v_t = \gamma\lambda(1-d_t)$$
+$$a_t = \mathbf{g}_t, \qquad b_t = \gamma\lambda(1-d_t)$$
 
 The form is structurally identical to discounted returns, but processed left-to-right via `_run_scan_forward` instead of right-to-left via `_run_scan`. The forward kernel reads `u` and `v` in natural time order; no reversal is needed.
 
@@ -137,18 +137,18 @@ The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_t)\,\mathbf{z}_{
 
 The combine function is identical to the backward case:
 
-$$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B\,u_A,\; v_A v_B)$$
+$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B\,a_A,\; b_A b_B)$$
 
 One thread block per environment loads the entire sequence $(\mathbf{g}_0, \gamma\lambda(1-d_0)), \ldots, (\mathbf{g}_{T-1}, \gamma\lambda(1-d_{T-1}))$ in natural order. `tl.associative_scan` then computes the prefix reduction in $O(\log T)$ parallel steps across SIMD lanes within the block.
 
-After the scan, position $t$ holds the pair $(u_{0..t},\, v_{0..t})$ where:
+After the scan, position $t$ holds the pair $(a_{0..t},\, b_{0..t})$ where:
 
-$$u_{0..t} = \mathbf{g}_t + \gamma\lambda\,\mathbf{g}_{t-1} + (\gamma\lambda)^2\mathbf{g}_{t-2} + \cdots + (\gamma\lambda)^t\,\mathbf{g}_0$$
-$$v_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_k)$$
+$$a_{0..t} = \mathbf{g}_t + \gamma\lambda\,\mathbf{g}_{t-1} + (\gamma\lambda)^2\mathbf{g}_{t-2} + \cdots + (\gamma\lambda)^t\,\mathbf{g}_0$$
+$$b_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_k)$$
 
 The seed $\mathbf{z}_{-1}$ is then folded in with a single fused addition:
 
-$$\mathbf{z}_t = u_{0..t} + v_{0..t} \cdot \mathbf{z}_{-1}$$
+$$\mathbf{z}_t = a_{0..t} + b_{0..t} \cdot \mathbf{z}_{-1}$$
 
 Done flags collapse any $v$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary - exactly the correct trace reset.
 
@@ -168,27 +168,27 @@ The forward scan uses the flat single-block kernel only. Sequences longer than 1
 
 All three estimators use the same associative operator $\oplus$:
 
-$$(u_B, v_B) \oplus (u_A, v_A) = (u_B + v_B u_A,\; v_A v_B)$$
+$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B a_A,\; b_A b_B)$$
 
 Each mapping is verified over a 4-step sequence with no done flags and scalar inputs ($\gamma < 1$, $\lambda \in (0,1)$). The array is reversed for the backward scan so that index 4 corresponds to chronological $t=1$.
 
 After the $O(\log N)$ scan, the accumulated result at position 4 is:
 
-$$u_{1..4} = u_4 + v_4 u_3 + v_4 v_3 u_2 + v_4 v_3 v_2 u_1$$
+$$a_{1..4} = a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1$$
 
 #### Discounted returns
 
-Substituting $u_k = r_k$ and $v_k = \gamma$:
+Substituting $a_k = r_k$ and $b_k = \gamma$:
 
-$$u_{1..4} = r_1 + \gamma r_2 + \gamma^2 r_3 + \gamma^3 r_4$$
+$$a_{1..4} = r_1 + \gamma r_2 + \gamma^2 r_3 + \gamma^3 r_4$$
 
 This is exactly $G_1$, the discounted sum of all rewards from $t=1$ onward.
 
 #### TD(λ) returns
 
-Substituting $u_k = r_k + \gamma(1-\lambda)V(s_{k+1})$ and $v_k = \gamma\lambda$:
+Substituting $a_k = r_k + \gamma(1-\lambda)V(s_{k+1})$ and $b_k = \gamma\lambda$:
 
-$$u_{1..4} = \bigl[r_1 + \gamma(1{-}\lambda)V_2\bigr]
+$$a_{1..4} = \bigl[r_1 + \gamma(1{-}\lambda)V_2\bigr]
            + \gamma\lambda\bigl[r_2 + \gamma(1{-}\lambda)V_3\bigr]
            + (\gamma\lambda)^2\bigl[r_3 + \gamma(1{-}\lambda)V_4\bigr]
            + (\gamma\lambda)^3\bigl[r_4 + \gamma(1{-}\lambda)V_5\bigr]$$
@@ -201,7 +201,7 @@ This is the λ-weighted mixture of 1- through 4-step returns truncated at $t=4$,
 
 #### Eligibility traces
 
-For the forward scan, the array is processed left-to-right. At position $t=4$ (the last step), substituting $u_k = \mathbf{g}_k$ (the per-step input - a value gradient, or a feature vector in the linear special case) and $v_k = \gamma\lambda$:
+For the forward scan, the array is processed left-to-right. At position $t=4$ (the last step), substituting $a_k = \mathbf{g}_k$ (the per-step input - a value gradient, or a feature vector in the linear special case) and $b_k = \gamma\lambda$:
 
 $$\mathbf{z}_4 = \mathbf{g}_4 + \gamma\lambda\, \mathbf{g}_3 + (\gamma\lambda)^2 \mathbf{g}_2 + (\gamma\lambda)^3 \mathbf{g}_1$$
 
@@ -217,7 +217,7 @@ $$G_t = A_t \quad \text{(discounted returns)}$$
 $$G^\lambda_t = A_t \quad \text{(λ-returns)}$$
 $$\mathbf{z}_t = A_t \quad \text{(eligibility traces)}$$
 
-This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $u_t$ already encodes the full additive term, so $A_t$ is the target directly.
+This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $a_t$ already encodes the full additive term, so $A_t$ is the target directly.
 
 ---
 

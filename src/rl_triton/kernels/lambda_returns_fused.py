@@ -21,9 +21,9 @@ def lambda_returns_fused_kernel(
     Recurrence:
       G[t] = r[t] + γ(1-d[t]) * [(1-λ)*V(s_{t+1}) + λ*G[t+1]],  G[T] = bootstrap
 
-    Maps to A[t] = u[t] + v[t] * A[t+1] with:
-      u[t] = r[t] + γ*(1-λ)*(1-d[t])*V(s_{t+1})
-      v[t] = γ*λ*(1-d[t])
+    Maps to A[t] = a[t] + b[t] * A[t+1] with:
+      a[t] = r[t] + γ*(1-λ)*(1-d[t])*V(s_{t+1})
+      b[t] = γ*λ*(1-d[t])
 
     next_values_ptr holds V(s_{t+1}) pre-aligned: next_values_ptr[env, t] = V(s_{t+1}).
     The caller is responsible for setting next_values[:, T-1] to the appropriate

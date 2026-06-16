@@ -21,12 +21,12 @@ def eligibility_traces_fused_kernel(
     Recurrence (forward, left-to-right):
       z[t] = g[t] + γ*λ*(1-d[t])*z[t-1],  z[-1] = seed
 
-    Maps to A[t] = u[t] + v[t] * A[t-1] with:
-      u[t] = g[t]
-      v[t] = γ*λ*(1-d[t])
+    Maps to A[t] = a[t] + b[t] * A[t-1] with:
+      a[t] = g[t]
+      b[t] = γ*λ*(1-d[t])
 
     Unlike all other kernels in this package this scan runs forward in time.
-    Padding lanes use u=0, v=1 (identity) to leave the scan result unchanged.
+    Padding lanes use a=0, b=1 (identity) to leave the scan result unchanged.
 
     Indexing (natural order):
       offs = 0, 1, …, BLOCK_SIZE-1   (real time order: offs=0 → t=0)

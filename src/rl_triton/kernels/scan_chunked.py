@@ -12,7 +12,7 @@ def chunked_backward_scan_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Chunked backward scan: A[t] = u[t] + v[t] * A[t+1], A[T] = bootstrap.
+    Chunked backward scan: A[t] = a[t] + b[t] * A[t+1], A[T] = bootstrap.
 
     Shared fallback for all estimators (GAE, V-Trace, Retrace, discounted
     returns, lambda returns) when seq_len > 131072, where the flat single-block
@@ -23,9 +23,9 @@ def chunked_backward_scan_kernel(
     Two-pass algorithm per chunk (standard chunked associative scan):
       1. Local scan  — tl.associative_scan within the chunk produces within-chunk
                        outputs as if A[chunk_end+1] = 0.
-      2. Carry fixup — add v_prod * carry to every element, where carry is
-                       A[chunk_end+1] from the previous (right) chunk and v_prod
-                       is the cumulative product of v from each position to the
+      2. Carry fixup — add b_prod * carry to every element, where carry is
+                       A[chunk_end+1] from the previous (right) chunk and b_prod
+                       is the cumulative product of b from each position to the
                        chunk boundary.
 
     The initial carry is the per-environment bootstrap value A[T], loaded from

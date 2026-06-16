@@ -20,9 +20,9 @@ def discounted_returns_fused_kernel(
     Recurrence:
       G[t] = r[t] + γ*(1-d[t])*G[t+1],  G[T] = bootstrap
 
-    Maps to A[t] = u[t] + v[t] * A[t+1] with:
-      u[t] = r[t]
-      v[t] = γ*(1-d[t])
+    Maps to A[t] = a[t] + b[t] * A[t+1] with:
+      a[t] = r[t]
+      b[t] = γ*(1-d[t])
 
     No next_values needed. The simplest of the three return kernels.
 

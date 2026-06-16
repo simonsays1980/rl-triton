@@ -28,7 +28,7 @@ def retrace_fused_kernel(
     """
     Fully-fused Retrace(λ) kernel: one program per environment.
 
-    Eliminates all intermediate tensors (expected_next_q, pi_a, u, v, c_next)
+    Eliminates all intermediate tensors (expected_next_q, pi_a, a, b, c_next)
     by computing E_π[Q(s_{t+1},a)] and the IS ratios in registers per timestep,
     then running the backward associative scan before writing only the final
     Q-value targets to HBM.
@@ -49,7 +49,7 @@ def retrace_fused_kernel(
 
     Decay convention
     ----------------
-    v[t] = γ · c[t+1] · (1 - done[t])
+    b[t] = γ · c[t+1] · (1 - done[t])
 
     c[t+1] at reversed position offs is the IS ratio clip at t+1, which lives at
     real array index rev+1 (since rev = seq_len-1-offs, rev+1 = t+1).
@@ -58,7 +58,7 @@ def retrace_fused_kernel(
     To compute c[t+1] we load action_probs_target[rev+1, :] and action[rev+1] from
     the next real timestep (rev = seq_len-1-offs, so rev+1 is real index t+1).
     This costs an extra read of the 3D probs array per timestep.  The tradeoff:
-    we save writing and re-reading the full intermediate u, v, c_next tensors.
+    we save writing and re-reading the full intermediate a, b, c_next tensors.
 
     Args:
         action_probs_target_ptr:   [num_envs, seq_len, num_actions], float32.

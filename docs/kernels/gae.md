@@ -149,11 +149,17 @@ $$A_{final}=a_i+b_i A_{carry}$$
 
 In a PPO pipeline, a non-zero $A_{carry}$ occurs in two scenarios:
 
-**Rollout Buffer Truncation (Value Function Bootstrap):** If a fixed buffer ends at step $T-1$ while the episode is still running, `bootstrap_values` $= V(s_T)$ is passed as the out-of-window next-state value and substituted into the TD error at the last step:
+**Rollout Buffer Truncation (Value Function Bootstrap):** Each environment in the batch is scanned independently over its own window of length $T$ and supplies its own scalar `bootstrap_values[env]` $= V(s_T)$, the value of the state one step beyond that environment's window — regardless of whether the underlying episode actually ends there. This bootstrap is used in *two* places, not one.
+
+First, it stands in for the missing $V(s_T)$ inside the last TD error:
 
 $$\delta_{T-1}=r_{T-1}+\gamma V(s_T)-V(s_{T-1})$$
 
-The bootstrap is absorbed directly into $a_{T-1}$. The scan carry is $A_{carry}=0.0$. This is safe because the decay at the boundary is $b_{T-1}=\gamma\lambda(1-d_{T-1})=0$ — the truncation flag zeros it — so $A_{carry}$ multiplies out regardless of its value.
+Second, it is *also* the scan carry: $A_{carry}=V(s_T)$, added on top of the local scan result at every position via $A_{final}=a_i+b_iA_{carry}$. These two uses are independent — the bootstrap is not absorbed into $a_{T-1}$ with a zero carry; it appears once inside $\delta_{T-1}$ (and hence inside $a_{T-1}$) *and* once more as $A_{carry}$ itself.
+
+The double use is necessary, not redundant: $\delta_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual at the boundary, while $A_{carry}$ stands in for the true (but unobservable) advantage $A_T$ beyond the window, since $A_{T-1}=\delta_{T-1}+b_{T-1}A_T$ and the windowed scan alone can only ever produce $\delta_{T-1}$.
+
+The done flag still gates this correctly. For a **termination** ($d_{T-1}=1$), $b_{T-1}=\gamma\lambda(1-d_{T-1})=0$, so $A_{carry}$ contributes nothing at $T-1$, and the convention `bootstrap_values=0` is used since no real next state exists. For a **truncation** ($d_{T-1}=0$), $b_{T-1}\neq0$ and the nonzero bootstrap correctly propagates backward through the whole window via the decay product, exactly as $A_T$ would have.
 
 **Infinite Horizon Chunking (Inside Triton):** If processing massive trajectories that exceed a single block, we chunk them inside the kernel. The final calculated advantage of a chronologically "future" chunk becomes the exact $A_{carry}$ passed into the $x$ of the chronologically "previous" chunk.
 

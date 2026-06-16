@@ -27,9 +27,9 @@ def gae_fused_kernel(
     offs=0 (real time t=T-1), V(s_T) comes from bootstrap_ptr; for all other
     positions load values[rev_offsets + 1] = values[t+1].
 
-      u[t] = delta[t] = r[t] + gamma * (1 - done[t]) * V(s_{t+1}) - V(s_t)
-      v[t] = decay[t] = gamma * lambda * (1 - done[t])
-      A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap
+      a[t] = delta[t] = r[t] + gamma * (1 - done[t]) * V(s_{t+1}) - V(s_t)
+      b[t] = decay[t] = gamma * lambda * (1 - done[t])
+      A[t] = a[t] + b[t] * A[t+1],  A[T] = bootstrap
 
     Args:
         rewards_ptr:   Per-step rewards [num_envs, seq_len], float32.

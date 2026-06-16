@@ -19,11 +19,11 @@ def prefix_sum_fused_kernel(
     Recurrence (forward, left-to-right):
       C[t] = x[t] + (1-d[t]) * C[t-1],  C[-1] = seed
 
-    Maps to A[t] = u[t] + v[t] * A[t-1] with:
-      u[t] = inputs[t]
-      v[t] = 1 - dones[t]
+    Maps to A[t] = a[t] + b[t] * A[t-1] with:
+      a[t] = inputs[t]
+      b[t] = 1 - dones[t]
 
-    Fuses the intermediate v = (1-dones) tensor computation into the kernel,
+    Fuses the intermediate b = (1-dones) tensor computation into the kernel,
     eliminating one full read-write pass over the [num_envs, seq_len] data.
 
     Indexing (natural forward order):

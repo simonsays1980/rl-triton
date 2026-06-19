@@ -83,11 +83,11 @@ Setting $\lambda = 1$ recovers the full importance sampling weight; setting $\la
 
 Before mapping to hardware it is worth clarifying what "bootstrap" means in Retrace and how the two boundary-flag conventions map onto the implementation.
 
-#### How the bootstrap enters the TD error, not the scan carry
+#### How the bootstrap enters the TD error, and the scan carry
 
-All three algorithms — GAE, V-Trace, and Retrace — handle truncated boundaries the same way at the scan level: the scan carry into the kernel is $\Delta_T = 0$. This is safe because the trace decay at the last step $v_{T-1}$ is zeroed by the done flag, so $\Delta_T$ multiplies out regardless of its value.
+Retrace has no dedicated `bootstrap_values` argument: the scan carry into the kernel is discarded entirely (`Δ_T = 0`), which is safe because the trace decay coefficient at the last step, $b_{T-1} = \gamma c_T (1-d_{T-1})$, is always zero — independent of the done flag. $c_T = c_{t+1}$ at $t=T-1$ is out-of-bounds (one step past the window) and is hardcoded to $0$ in the implementation (`c_next[:, -1] = 0.0`). This structural zero holds whether the boundary is a termination, a truncation, or neither, so a nonzero carry would have multiplied out regardless of $d_{T-1}$.
 
-The difference is how the **bootstrap value** enters the TD error $a_{T-1}$.
+GAE and V-Trace differ here: their scalar `bootstrap_values` $= V(s_T)$ enters in *two* places, not one — once inside the TD error $a_{T-1}$, and again as the scan carry itself ($\Delta_T = V(s_T)$, added on top of the local scan result at every position). See [GAE §5](gae.md#5-handling-truncated-episodes) and [V-Trace §5](vtrace.md#5-reconstructing-targets-and-advantages) for the full derivation.
 
 In GAE and V-Trace the TD error at $t=T-1$ requires the scalar $V(s_T)$:
 
@@ -112,12 +112,14 @@ Two distinct reasons a trajectory can end mid-sequence require different treatme
 | **terminated** $d_t^{\text{term}} = 1$ | Environment signalled a true episode end. $s_{t+1}$ is a reset state with no meaningful value. | Zero the bootstrap: multiply $\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)]$ by $(1 - d_t^{\text{term}})$. |
 | **truncated** $d_t^{\text{trunc}} = 1$ | Window or time-limit cutoff; the episode continues. $s_{t+1}$ is a real state. | Keep the bootstrap: leave $\gamma \cdot \mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)]$ untouched. |
 
-In both cases the **trace decay** $v_t = \gamma c_{t+1}(1 - d_t)$ is zeroed at the boundary (where $d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$), stopping the backward scan from propagating $\Delta_{t+1}$ into $\Delta_t$ across episode or window edges.
+In both cases the **trace decay** $b_t = \gamma c_{t+1}(1 - d_t)$ is zeroed at the boundary (where $d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$), stopping the backward scan from propagating $\Delta_{t+1}$ into $\Delta_t$ across episode or window edges.
+
+This means a **truncated** rollout window introduces a small bias that is structurally different from GAE/V-Trace's. There, the carry $A_T = V(s_T)$ supplies a value-based estimate of everything beyond the window. In Retrace, $c_{t+1}$ at $t=T-1$ would need $c_T$, which does not exist and is fixed to $0$ — so the windowed estimator drops the entire $\gamma c_T \Delta_T$ tail rather than approximating it. The one-step bootstrap $\mathbb{E}_\pi[Q(s_T,\cdot)]$ inside $a_{T-1}$ still corrects the *last* TD error, but nothing beyond it is estimated. This is a known limitation of windowed Retrace, not a kernel defect, and shrinks as the window grows relative to $1/(1-\gamma c)$.
 
 The two quantities the implementation therefore uses are:
 
 $$d_t^{\text{term}} = d_t - d_t^{\text{trunc}} \qquad \text{(gates the bootstrap in } a_t\text{)}$$
-$$d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}} \qquad \text{(gates trace decay in } v_t\text{)}$$
+$$d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}} \qquad \text{(gates trace decay in } b_t\text{)}$$
 
 #### Mapping from common API conventions
 
@@ -139,7 +141,7 @@ Despite the index shift, the mathematical structure is still a perfect first-ord
 
 The inputs map to hardware tuples $(a, b)$ as follows:
 * **TD accumulation ($a_t$):** $a_t = \delta_t = r_t + \gamma(1-d_t^{\text{term}})\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)$
-* **Trace Decay product ($b_t$):** $b_t = \gamma c_{t+1}(1-d_t)$
+* **Trace Decay coefficient ($b_t$):** $b_t = \gamma c_{t+1}(1-d_t)$
 
 Because $c_{t+1}$ requires looking one step into the future, we simply shift the $c$ array in PyTorch using `torch.roll` before passing it to the Triton kernel.
 

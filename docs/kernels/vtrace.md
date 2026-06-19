@@ -148,11 +148,15 @@ Once we have the target values $v_t$, we shift the tensor to obtain $v_{t+1}$ an
 
 $$A_t=\rho_t(r_t+\gamma v_{t+1}-V(s_t))$$
 
-For truncated episodes, `bootstrap_values` $= V(s_T)$ is passed as the out-of-window next-state value and is substituted into the TD error at the last step $t=T-1$:
+Each environment in the batch supplies its own scalar `bootstrap_values[env]` $= V(s_T)$, the value of the state one step beyond that environment's window. This bootstrap is used in *two* places, not one.
+
+First, it is substituted into the TD error at the last step $t=T-1$:
 
 $$a_{T-1} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
 
-The scan carry is always $\Delta_T = 0$. This is safe because the trace decay at the boundary is $b_{T-1} = \gamma c_{T-1}(1-d_{T-1}) = 0$ — the done flag zeros it — so $\Delta_T$ multiplies out regardless of its value. The bootstrap enters only through $a_{T-1}$, not through the scan carry.
+Second, it is *also* the scan carry: $\Delta_T = V(s_T)$, added on top of the local scan result at every position via $\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot \Delta_T$. These two uses are independent — the bootstrap is not absorbed into $a_{T-1}$ alone with a zero carry; it appears once inside $a_{T-1}$ *and* once more as $\Delta_T$ itself.
+
+The done flag still gates this correctly. For a **termination** ($d_{T-1}=1$), both the bootstrap's contribution to $a_{T-1}$ (via the $not\_done$ factor on $\gamma V(s_T)$) and the trace decay at the boundary $b_{T-1} = \gamma c_{T-1}(1-d_{T-1})$ vanish, so $\Delta_T$'s contribution at $T-1$ disappears too, matching the convention `bootstrap_values=0` since no real next state exists. For a **truncation** ($d_{T-1}=0$), both terms are active: the bootstrap enters $a_{T-1}$ directly, and $\Delta_T$ propagates backward through the whole window via the decay product.
 
 ---
 

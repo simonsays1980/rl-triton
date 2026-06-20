@@ -55,7 +55,7 @@ The intermediate terms telescope and collapse, leaving exactly the 2-step reward
 $$= r_t + \gamma r_{t+1} + \gamma^2 V(s_{t+2})$$
 
 V-Trace explicitly uses this TD-error format for two reasons:
-1. **Importance Sampling:** It is algebraically much cleaner to multiply a specific step's error ($\delta_t$) by a trace weight ($c_t$) than to try and isolate off-policy penalties inside a raw block of summed rewards.
+1. **Importance Sampling:** Correcting a raw $n$-step reward sum for off-policy data requires multiplying by the full trajectory ratio $\prod_{i=t}^{t+n-1} \frac{\pi(a_i|s_i)}{\mu(a_i|s_i)}$, which grows or shrinks exponentially with $n$ and causes severe variance. The telescoping structure of TD errors allows a separate clipped weight $c_t$ to be applied at each step independently, keeping variance bounded regardless of trace length.
 2. **Recursion:** It creates a perfect recursive loop that maps flawlessly to hardware acceleration.
 
 ---
@@ -167,6 +167,14 @@ Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` s
 
 For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
 
+### Boundary summary
+
+| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\alpha_t$ | Decay $\beta_t$ |
+|---|---|---|---|---|
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ — scan stops |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ — scan stops |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $\Delta_T$ | $0$ — carry absorbed |
+
 ---
 
 ## 6. Reconstructing Targets and Advantages
@@ -195,3 +203,7 @@ V-Trace was originally introduced as the core mathematical component of the IMPA
 
 * Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., ... & Kavukcuoglu, K. (2018). *IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures.* ICML 2018. arXiv:1802.01561.
 * Berner, C., Brockman, G., Chan, B., Cheung, V., Dębiak, P., Dennison, C., ... & Zoph, B. (2019). *Dota 2 with Large Scale Deep Reinforcement Learning.* arXiv:1912.06680.
+
+## Further Reading
+
+* [Off-Policy Correction](https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/) — A visual explanation of off-policy correction methods, covering the importance sampling rationale behind V-Trace and related algorithms.

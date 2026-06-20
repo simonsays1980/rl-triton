@@ -19,12 +19,14 @@ def compute_retrace_fused(
     gamma: float,
     lambda_: float = 1.0,
     c_bar: float = 1.0,
-) -> torch.Tensor:
+    rho_bar: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Fully-fused Retrace(λ) via a single Triton kernel.
 
-    Computes E_π[Q(s_{t+1},a)], IS ratios, u[t], v[t], and the backward
-    associative scan all in one kernel — no intermediate tensor allocations.
+    Computes E_π[Q(s_{t+1},a)], IS ratios, u[t], v[t], the backward
+    associative scan, Q-value targets, and advantages all in one kernel —
+    no intermediate tensor allocations.
 
     Only valid for seq_len <= 131072.  Use compute_retrace for longer
     sequences (it auto-dispatches here for short sequences and falls back to
@@ -44,9 +46,11 @@ def compute_retrace_fused(
         gamma:                 Discount factor.
         lambda_:               Trace decay parameter.
         c_bar:                 IS ratio clip for trace weights.
+        rho_bar:               IS ratio clip for advantage scaling.
 
     Returns:
         retrace_targets: Q_ret[t], shape [num_envs, seq_len], float32.
+        advantages:      A[t],     shape [num_envs, seq_len], float32.
     """
     num_envs, seq_len = rewards.shape
     num_actions = action_probs_target.shape[2]
@@ -55,7 +59,8 @@ def compute_retrace_fused(
         f"seq_len={seq_len} exceeds flat kernel limit {_FLAT_MAX_SEQ_LEN}."
     )
 
-    out = torch.empty_like(rewards)
+    out        = torch.empty_like(rewards)
+    advantages = torch.empty_like(rewards)
 
     BLOCK_SIZE   = triton.next_power_of_2(seq_len)
     ACTION_BLOCK = triton.next_power_of_2(num_actions)
@@ -72,6 +77,7 @@ def compute_retrace_fused(
         dones,
         terminated,
         out,
+        advantages,
         seq_len,
         num_actions,
         rewards.stride(0),
@@ -79,9 +85,10 @@ def compute_retrace_fused(
         gamma=gamma,
         lambda_=lambda_,
         c_bar=c_bar,
+        rho_bar=rho_bar,
         BLOCK_SIZE=BLOCK_SIZE,
         ACTION_BLOCK=ACTION_BLOCK,
         num_warps=num_warps,
         num_stages=num_stages,
     )
-    return out
+    return out, advantages

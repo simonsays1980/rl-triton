@@ -176,6 +176,14 @@ For the common case where no interior truncations occur, the `last_value` argume
 
 **Infinite-horizon chunking:** For sequences longer than the flat kernel limit, the scan is chunked. The final advantage of a chronologically later chunk becomes the carry $A_T$ passed into the earlier chunk.
 
+#### Boundary summary
+
+| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\delta_t$ | Decay $\beta_t$ |
+|---|---|---|---|---|
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ — scan stops |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ — scan stops |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $A_T$ | $0$ — carry absorbed |
+
 ---
 
 ## 6. The Hardware Reality: What Triton Actually Does
@@ -200,3 +208,7 @@ By trapping the entire reduction loop inside Registers and SRAM, Triton complete
 
 * Schulman, J., Moritz, P., Levine, S., Jordan, M., & Abbeel, P. (2016). *High-Dimensional Continuous Control Using Generalized Advantage Estimation.* ICLR 2016. arXiv:1506.02438.
 * Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal Policy Optimization Algorithms.* arXiv:1707.06347.
+
+## Further Reading
+
+* [Visualising GAE](https://pseudo-rnd-thoughts.github.io/blog/visualising-gae/) — A visual walkthrough of GAE's recurrence structure and how advantages accumulate across timesteps.

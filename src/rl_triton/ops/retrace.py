@@ -11,14 +11,15 @@ def compute_retrace(
     next_q_values_all: torch.Tensor,
     actions: torch.Tensor,
     rewards: torch.Tensor,
-    dones: torch.Tensor,
+    terminateds: torch.Tensor,
+    truncateds: torch.Tensor,
     gamma: float,
     lambda_: float = 1.0,
     c_bar: float = 1.0,
-    truncateds: torch.Tensor | None = None,
-) -> torch.Tensor:
+    rho_bar: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute Retrace(λ) Q-value targets via a backward associative scan.
+    Compute Retrace(λ) Q-value targets and advantages via a backward associative scan.
 
     Retrace(λ) (Munos et al. 2016) corrects off-policy Q-value estimates using
     truncated IS traces applied only to the decay factor, not the TD error.
@@ -28,21 +29,17 @@ def compute_retrace(
 
     - Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = 0
     - δ[t]     = r[t] + γ · E_π[Q(s_{t+1},a)] · (1-terminated[t]) - Q(s_t,a_t)
-    - decay[t] = γ · c[t+1] · (1-done[t])
+    - decay[t] = γ · c[t+1] · (1-done[t]),  done[t] = terminated[t] | truncated[t]
     - c[t]     = λ · min(c_bar, π(a_t|s_t) / μ(a_t|s_t))
 
     Q-value targets: Q_ret[t] = Q(s_t, a_t) + Δ[t]
+    Advantages:      A[t]     = ρ[t] · (r[t] + γ · Q_ret[t+1] · (1-terminated[t]) - Q(s_t,a_t))
+                     ρ[t]     = min(rho_bar, π(a_t|s_t) / μ(a_t|s_t))
 
     The Q-bootstrap γ·E_π[Q(s_{t+1},·)] is folded into δ[t] via
     `next_q_values_all`, so no separate bootstrap_values argument is needed.
-    The `dones` flag stops trace propagation at any boundary; the bootstrap
-    inside δ[t] is gated by `terminated` alone.
-
-    Gymnasium users: pass `terminated` as `dones` and `truncated` as
-    `truncateds`.  With truncateds=None, every boundary is treated as a
-    termination (conservative but correct for purely episodic data).
-    Set RL_TRITON_CORRECTNESS_WARNINGS=1 to catch truncateds=1 / dones=0
-    mismatches at runtime.
+    `terminated` gates the one-step bootstrap in δ[t]; `terminated | truncated`
+    gates trace decay in β[t].
 
     Args:
         action_probs_target:   Target policy probabilities over all actions,
@@ -56,27 +53,27 @@ def compute_retrace(
         actions:               Indices of the taken action,
                                [num_envs, seq_len], int64, CUDA.
         rewards:               Per-step rewards, [num_envs, seq_len], float32, CUDA.
-        dones:                 Episode boundary flags (1.0 = terminated OR truncated).
-                               Gates trace decay: v[t]=0 when done[t]=1.
+        terminateds:           True termination flags (1.0 = terminated).
+                               Zeros the bootstrap γ·E_π[Q(s_{t+1},·)] in δ[t].
+                               [num_envs, seq_len], float32, CUDA.
+        truncateds:            Time-limit truncation flags (1.0 = truncated).
+                               Keeps the bootstrap in δ[t] but severs the trace.
                                [num_envs, seq_len], float32, CUDA.
         gamma:                 Discount factor.
         lambda_:               Trace decay parameter (default 1.0).
         c_bar:                 IS ratio clip for trace weights (default 1.0).
-        truncateds:            Optional time-limit truncation flags (1.0 = truncated,
-                               not truly terminal).  When provided, the one-step
-                               bootstrap γ·E_π[Q(s_{t+1},·)] is kept for truncated
-                               steps and zeroed only for true terminations.
-                               Shape [num_envs, seq_len], float32, CUDA.
-                               If None, dones is treated as pure termination.
+        rho_bar:               IS ratio clip for advantage scaling (default 1.0).
 
     Returns:
         retrace_targets: Q_ret[t], shape [num_envs, seq_len], float32.
+        advantages:      A[t],     shape [num_envs, seq_len], float32.
     """
     for name, t in [
         ("action_probs_behavior", action_probs_behavior),
         ("q_values",              q_values),
         ("rewards",               rewards),
-        ("dones",                 dones),
+        ("terminateds",           terminateds),
+        ("truncateds",            truncateds),
     ]:
         assert t.is_cuda,                 f"{name} must be on CUDA"
         assert t.dtype == torch.float32,  f"{name}: expected float32, got {t.dtype}"
@@ -97,14 +94,8 @@ def compute_retrace(
     assert actions.shape == rewards.shape, \
         f"actions shape {actions.shape} != rewards shape {rewards.shape}"
 
-    if truncateds is not None:
-        assert truncateds.is_cuda,                "truncateds must be on CUDA"
-        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-        assert truncateds.shape == rewards.shape, \
-            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
-        truncateds = truncateds.contiguous()
-        assert not (truncateds.bool() & ~dones.bool()).any(), \
-            "truncateds=1 requires dones=1: a truncated step must also be marked done"
+    assert not (terminateds.bool() & truncateds.bool()).any(), \
+        "terminated and truncated are mutually exclusive: a step cannot be both"
 
     action_probs_target   = action_probs_target.contiguous()
     action_probs_behavior = action_probs_behavior.contiguous()
@@ -112,15 +103,10 @@ def compute_retrace(
     next_q_values_all     = next_q_values_all.contiguous()
     actions               = actions.contiguous()
     rewards               = rewards.contiguous()
-    dones                 = dones.contiguous()
+    terminateds           = terminateds.contiguous()
+    truncateds            = truncateds.contiguous()
 
-    # terminated[t]=1 only for true episode ends; bootstrap is zeroed there.
-    # For truncations the episode continues so the bootstrap is kept.
-    # When truncateds is not supplied dones is treated as pure termination.
-    if truncateds is not None:
-        terminated = (dones - truncateds).clamp(min=0.0)
-    else:
-        terminated = dones
+    dones = (terminateds + truncateds).clamp(max=1.0)
 
     num_envs, seq_len = rewards.shape
 
@@ -129,13 +115,13 @@ def compute_retrace(
         return compute_retrace_fused(
             action_probs_target, action_probs_behavior,
             q_values, next_q_values_all, actions,
-            rewards, dones, terminated,
-            gamma=gamma, lambda_=lambda_, c_bar=c_bar,
+            rewards, dones, terminateds,
+            gamma=gamma, lambda_=lambda_, c_bar=c_bar, rho_bar=rho_bar,
         )
 
-    # Chunked fallback for seq_len > 131072: build u and v in PyTorch, scan via _run_scan.
+    # Chunked fallback for seq_len > 131072.
     expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
-    u = rewards + gamma * expected_next_q * (1.0 - terminated) - q_values
+    u = rewards + gamma * expected_next_q * (1.0 - terminateds) - q_values
 
     pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
     c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
@@ -144,4 +130,12 @@ def compute_retrace(
     c_next[:, -1]  = 0.0
     v = gamma * c_next * (1.0 - dones)
 
-    return _run_scan(u, v) + q_values
+    retrace_targets = _run_scan(u, v) + q_values
+
+    rho = torch.clamp(pi_a / action_probs_behavior, max=rho_bar)
+    next_q_ret = torch.empty_like(retrace_targets)
+    next_q_ret[:, :-1] = retrace_targets[:, 1:]
+    next_q_ret[:, -1]  = 0.0
+    advantages = rho * (rewards + gamma * next_q_ret * (1.0 - terminateds) - q_values)
+
+    return retrace_targets, advantages

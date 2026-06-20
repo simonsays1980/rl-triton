@@ -61,9 +61,14 @@ def gae_fused_kernel(
         bootstrap = tl.load(bootstrap_ptr  + base + rev, mask=mask, other=0.0)
         done      = tl.minimum(terminated + truncated, 1.0)
 
+        # v_next[t] = values[t+1] at non-truncated interior steps.
+        # At truncated interior steps or at the boundary (offs==0, t=T-1):
+        # bootstrap provides the true continuation value.
+        # bootstrap[T-1] is also the scan boundary A[T]; it appears in both
+        # delta[T-1] and via decay_prod*carry below (correct for GAE recurrence).
         v_next_raw = tl.load(values_ptr + base + rev + 1,
                              mask=mask & (offs > 0) & (truncated == 0.0), other=0.0)
-        v_next = v_next_raw + bootstrap
+        v_next = tl.where((offs == 0) | (truncated == 1.0), bootstrap, v_next_raw)
 
         not_terminated = 1.0 - terminated
         not_done       = 1.0 - done
@@ -75,14 +80,18 @@ def gae_fused_kernel(
         carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
         tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
     else:
-        not_done   = 1.0 - terminated
-        bootstrap  = tl.load(bootstrap_ptr + env_idx)
+        not_terminated = 1.0 - terminated
+        bootstrap      = tl.load(bootstrap_ptr + env_idx)
+        # Load values[t+1] for interior steps; boundary step (offs==0) gets bootstrap
+        # injected as the next-state value so delta[T-1] = r + gamma*(1-term)*bootstrap - v.
+        # The scan boundary A[T]=bootstrap is then applied via decay_prod*bootstrap below,
+        # giving the full GAE recurrence at the window edge.
         v_next_raw = tl.load(values_ptr + base + rev + 1,
                              mask=mask & (offs > 0), other=0.0)
-        v_next = tl.where(offs == 0, bootstrap, v_next_raw) * not_done
+        v_next = tl.where(offs == 0, bootstrap, v_next_raw)
 
-        delta = r + gamma * v_next - v
-        decay = gamma * lambda_ * not_done
+        delta = r + gamma * v_next * not_terminated - v
+        decay = gamma * lambda_ * not_terminated
 
         out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
         tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)

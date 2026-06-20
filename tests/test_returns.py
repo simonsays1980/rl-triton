@@ -29,7 +29,7 @@ def reference_lambda_returns(
     out     = torch.zeros_like(rewards)
     carry   = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
     if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
+        carry = bootstrap_values[:, -1].clone()
     for t in reversed(range(T)):
         not_done  = 1.0 - dones[:, t]
         carry     = (rewards[:, t]
@@ -50,7 +50,7 @@ def reference_discounted_returns(
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
     if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
+        carry = bootstrap_values[:, -1].clone()
     for t in reversed(range(T)):
         carry     = rewards[:, t] + gamma * (1.0 - dones[:, t]) * carry
         out[:, t] = carry
@@ -238,7 +238,7 @@ def test_lambda_returns_known_values_bootstrap():
     rewards     = torch.tensor([[1.0, 2.0]], device="cuda")
     next_values = torch.tensor([[99.0, 99.0]], device="cuda")
     dones       = torch.zeros(1, 2, device="cuda")
-    bootstrap   = torch.tensor([5.0], device="cuda")
+    bootstrap   = torch.tensor([[0.0, 5.0]], device="cuda")  # [num_envs, seq_len], value at last step
     out = compute_lambda_returns(rewards, next_values, dones, gamma=1.0, lambda_=1.0,
                                   bootstrap_values=bootstrap)
     torch.testing.assert_close(out, torch.tensor([[8.0, 7.0]], device="cuda"), atol=1e-5, rtol=1e-5)
@@ -266,7 +266,8 @@ def test_lambda_returns_correctness(num_envs, seq_len, lambda_):
 @cuda_only
 def test_lambda_returns_correctness_bootstrap():
     rewards, next_values, dones = _make_inputs(32, 512, seed=3)
-    bootstrap = torch.rand(32, device="cuda")
+    bootstrap = torch.zeros(32, 512, device="cuda")
+    bootstrap[:, -1] = torch.rand(32, device="cuda")
     expected  = reference_lambda_returns(rewards, next_values, dones, gamma=0.99, lambda_=0.95,
                                           bootstrap_values=bootstrap)
     actual    = compute_lambda_returns(rewards, next_values, dones, gamma=0.99, lambda_=0.95,
@@ -278,7 +279,8 @@ def test_lambda_returns_correctness_bootstrap():
 def test_lambda_returns_lambda1_matches_discounted_returns():
     """lambda=1 must produce identical output to compute_discounted_returns."""
     rewards, next_values, dones = _make_inputs(32, 512, seed=4)
-    bootstrap = torch.rand(32, device="cuda")
+    bootstrap = torch.zeros(32, 512, device="cuda")
+    bootstrap[:, -1] = torch.rand(32, device="cuda")
     lambda1 = compute_lambda_returns(rewards, next_values, dones, gamma=0.99, lambda_=1.0,
                                       bootstrap_values=bootstrap)
     disc    = compute_discounted_returns(rewards, dones, gamma=0.99,

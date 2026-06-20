@@ -1,5 +1,9 @@
 # GPU Concepts for Triton Kernels
 
+This page explains the low-level GPU and Triton concepts used throughout the kernel tutorials. It is referenced from the [GAE tutorial](gae.md) and covers only what is needed to read the kernel code: memory layout, strides, SIMD lanes, index arithmetic, and masking. No prior GPU programming experience is assumed.
+
+---
+
 ## Memory layout: how a 2D tensor lives in RAM
 
 PyTorch stores a 2D tensor as a single flat block of memory, row by row.

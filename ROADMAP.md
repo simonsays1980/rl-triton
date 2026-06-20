@@ -38,15 +38,22 @@ at production batch sizes (128+ envs, 1024+ steps):
 
 ## v0.3 - Modern RL Coverage
 
-- [ ] **PPO clipped surrogate loss** (fused; avoids separate `exp` +
-      `clamp` + `multiply` chain over the full batch)
-- [ ] **GRPO** - Group Relative Policy Optimisation loss kernel, used in
-      recent LLM reasoning model training (DeepSeek-R1, Qwen)
-- [ ] **KL divergence estimators** - k1, k2, k3 (Schulman estimator)
-      for PPO and RLHF KL penalty terms
-- [ ] **n-step returns** as a complement to Lambda Returns for shorter
-      horizons
+Unlike the forward-only scan kernels above, the loss kernels in this
+section sit in the gradient path and require hand-written backward passes
+(via `torch.autograd.Function`). They will ship only where fusion delivers
+a measurable win over autograd-handled PyTorch, which profiling will decide
+per kernel.
 
+- [ ] **PPO clipped surrogate loss** (differentiable; fused `exp` + `clamp`
+      + `multiply` over the full batch, with a hand-written backward)
+- [ ] **GRPO** - Group Relative Policy Optimisation loss kernel
+      (differentiable), used in recent LLM reasoning model training
+      (DeepSeek-R1, Qwen)
+- [ ] **KL divergence estimators** - k1, k2, k3 (Schulman estimator) for
+      PPO and RLHF KL penalty terms (differentiable when fused into the loss)
+- [ ] **n-step returns** as a complement to Lambda Returns for shorter
+      horizons (forward-only, like the existing scan kernels)
+      
 ---
 
 ## v0.4 - Multi-GPU Compatibility

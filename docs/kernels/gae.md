@@ -204,9 +204,16 @@ By trapping the entire reduction loop inside Registers and SRAM, Triton complete
 
 ---
 
+## 7. Applications
+
+GAE was introduced as the advantage estimator for Proximal Policy Optimization (Schulman et al., 2017), where low-variance advantage estimates are critical for stable policy gradient updates under the clipped surrogate objective. It remains the default advantage estimator in virtually all modern on-policy deep RL algorithms, including implementations of PPO for large-scale training such as those used in reinforcement learning from human feedback (RLHF) pipelines for language model alignment. The $\lambda$ parameter gives practitioners direct control over the bias–variance tradeoff: $\lambda = 0$ reduces GAE to a one-step TD advantage with low variance but high bias, while $\lambda = 1$ recovers the full Monte Carlo return with low bias but high variance. This flexibility, combined with the $O(\log N)$ parallel scan that makes it efficient at large sequence lengths, makes GAE the natural choice wherever long rollouts or many parallel environments are required.
+
+---
+
 ## References
 
 * Schulman, J., Moritz, P., Levine, S., Jordan, M., & Abbeel, P. (2016). *High-Dimensional Continuous Control Using Generalized Advantage Estimation.* ICLR 2016. arXiv:1506.02438.
+* Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal Policy Optimization Algorithms.* arXiv:1707.06347.
 * Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017). *Proximal Policy Optimization Algorithms.* arXiv:1707.06347.
 
 ## Further Reading

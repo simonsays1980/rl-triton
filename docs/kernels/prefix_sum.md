@@ -4,7 +4,7 @@
 
 While algorithms like GAE and V-Trace accumulate values *backward* in time, many core infrastructure tasks in reinforcement learning and sequence modeling require accumulating values *forward* in time.
 
-The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but resets the sum whenever a boundary condition is met - such as an episode ending or a padding token appearing.
+The **Episodic Prefix Sum** (known in computer science literature as a **Segmented Scan**) computes a running total across an array, but resets the sum whenever a boundary condition is met — such as an episode ending or a padding token appearing.
 
 By mapping this segmented logic into a Triton associative scan kernel, we avoid Python sequential loops and standard PyTorch masking overhead, enabling parallel computation for data loaders, memory buffers, and token packing pipelines.
 
@@ -12,15 +12,17 @@ By mapping this segmented logic into a Triton associative scan kernel, we avoid 
 
 ## 1. The Mathematical Recurrence
 
-A standard prefix sum computes a running total: $C_t = x_t + C_{t-1}$.
+A standard prefix sum computes a running total:
 
-To make it *episodic* (segmented), we introduce a binary terminal flag $d_t$, where $1$ indicates a boundary (e.g., the end of an episode or a document).
+$$C_t = x_t + C_{t-1}$$
 
-The recurrence becomes:
+The sum naturally resets at an episode boundary because $x_t = 0$ and $C_t = 0$ beyond it. In a rollout buffer containing multiple episodes, the kernel introduces a binary boundary flag $d_t$ to make this explicit:
 
-$$C_t = x_t + (1 - d_t) C_{t-1}$$
+$$C_t = x_t + (1 - d_t)\, C_{t-1}, \qquad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
 
-If the previous step was a terminal state ($d_{t-1} = 1$), the $(1-d_t)$ mask evaluates to $0$, multiplying the entire historical sum by zero and restarting the count with just the current $x_t$.
+When $d_t = 1$, the factor $(1 - d_t)$ evaluates to $0$, multiplying the entire accumulated sum by zero and restarting the count with just the current $x_t$.
+
+Unlike the backward algorithms (GAE, V-Trace, Retrace), the distinction between terminated and truncated steps does not matter here — neither carries a bootstrap value that must enter the recurrence. Both cases reset $C_t$ identically.
 
 ---
 
@@ -30,7 +32,7 @@ This is a first-order linear recurrence $f(x) = \alpha + \beta x$, using the sam
 
 $$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B \alpha_A, \,\, \beta_A \beta_B)$$
 
-The inputs map to hardware tuples $(\alpha, \beta)$ as follows:
+The inputs map to hardware tuples $(\alpha_t, \beta_t)$ as follows:
 
 * **Value to accumulate ($\alpha_t$):** $\alpha_t = x_t$
 * **Boundary reset mask ($\beta_t$):** $\beta_t = 1 - d_t$
@@ -39,44 +41,13 @@ Unlike the backward recurrence in GAE or Retrace, this is a **forward** accumula
 
 ---
 
-## 3. Production Use Cases
+## 3. Applications
 
-Segmented scans appear wherever large contiguous memory blocks must be processed while respecting logical boundaries within that memory.
-
-### A. Vectorized Logging (Total Episodic Return)
-
-When environments stack data from multiple episodes together, computing the total episodic return naively requires tracking which rewards belong to which episode. Because environments reset at unpredictable times, a simple `torch.sum(rewards)` is insufficient.
-
-A forward episodic prefix sum over the rewards tensor creates a running tally of the score. The value of the prefix sum at each index where `done == 1` is the final episodic return for that episode. This computes individual episode scores across all parallel environments in a single kernel launch.
-
-### B. Time-Aware RL (State Augmentation)
-
-In environments with strict time limits, the Markov property is violated unless the agent knows how much time it has left. Standard practice is to append the current timestep to the observation.
-
-Instead of tracking separate integer counters per environment in Python, a tensor of $1.0$s passed through an episodic prefix sum produces the correct per-step timestep index for every environment simultaneously, resetting to $1$ at each episode boundary.
-
-### C. LLM Training: Sequence Packing and `position_ids`
-
-To maximize GPU utilization during LLM pre-training, engineers use **sequence packing**: concatenating multiple independent documents into one long sequence separated by `<EOS>` tokens.
-
-The transformer's positional embeddings (e.g., RoPE) require per-document positions, not global sequence positions - the `position_ids` must reset at every `<EOS>`. Passing an array of $1.0$s through a segmented scan with `<EOS>` locations as the $d_t$ mask produces the correct resetting `position_ids` directly on the GPU.
-
-### D. Offline RL: Decision Transformers and Trajectory Packing
-
-The Decision Transformer (Chen et al., 2021) treats RL as a sequence modeling problem, feeding the model a sequence of `(Return, State, Action)` tokens. Like LLM sequence packing, multiple short trajectories are packed into a single context window and the model requires a per-step timestep embedding that resets at trajectory boundaries. A segmented prefix sum produces these embeddings without CPU-side bookkeeping.
-
-### E. State Space Models (Mamba)
-
-Mamba (Gu & Dao, 2023) replaces attention with an associative scan to achieve linear scaling. When training on packed sequences, the internal hidden state of one document must not bleed into the next. Mamba handles this by treating document boundaries as reset gates - structurally identical to the $d_t$ mask used here.
-
-### F. Prioritized Experience Replay (PER)
-
-To sample from a prioritized replay buffer entirely on the GPU, priorities can be represented as a flat array. A parallel prefix sum over this array produces a cumulative distribution function (CDF), which then supports parallel sampling via binary search - replacing CPU-bound sum trees (Schaul et al., 2016).
+The episodic prefix sum appears wherever a running accumulation must reset at logical boundaries within a packed array. In vectorized RL logging, environments stack rewards from multiple episodes into one buffer; passing this through the scan with `terminateds | truncateds` as $d_t$ recovers each episode's total return — the scan value at every boundary step — without any Python-side episode tracking. For time-aware RL (see Pardo et al. (2018)), a tensor of $1.0$s passed through the scan produces correct per-step timestep indices that reset to $1$ at each episode boundary, replacing per-environment integer counters in Python. For prioritized experience replay (Schaul et al., 2016), a prefix sum over a flat priority array produces the cumulative distribution function needed for GPU-side parallel sampling via binary search, replacing the CPU-bound sum-tree entirely. The same reset structure also underlies sequence packing in LLM pre-training (resetting `position_ids` at `<EOS>` tokens for RoPE embeddings), Decision Transformer trajectory packing (Chen et al., 2021), and Mamba's document-boundary reset gates (Gu & Dao, 2023) — all structurally identical to the $d_t$ mask used here.
 
 ---
 
 ## References
 
-* Chen, L., Lu, K., Rajeswaran, A., Lee, K., Grover, A., Laskin, M., ... & Mordatch, I. (2021). *Decision Transformer: Reinforcement Learning via Sequence Modeling.* NeurIPS 2021. arXiv:2106.01345.
-* Gu, A., & Dao, T. (2023). *Mamba: Linear-Time Sequence Modeling with Selective State Spaces.* arXiv:2312.00752.
+* Pardo, F., Tavakoli, A., Levdik, V., & Kormushev, P. (2018). *Time Limits in Reinforcement Learning.* ICML 2018. arXiv:1712.00378.
 * Schaul, T., Quan, J., Antonoglou, I., & Silver, D. (2016). *Prioritized Experience Replay.* ICLR 2016. arXiv:1511.05952.

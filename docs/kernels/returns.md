@@ -294,7 +294,7 @@ This contrasts with GAE ($A_t = \Delta_t + V(s_t)$) and Retrace ($Q^{ret}_t = \D
 
 ---
 
-## 6. Applications in AI
+## 6. Applications
 
 **Discounted Returns in Policy Gradient Methods**
 Discounted returns form the direct reward signal in REINFORCE and its variants. In group-relative policy optimization (GRPO), reward-to-go is used as the advantage signal across a group of sampled responses, providing variance reduction without a learned critic (Shao et al., 2024).

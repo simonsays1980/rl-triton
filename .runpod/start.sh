@@ -33,13 +33,12 @@ apt-get update -qq
 apt-get install -y --no-install-recommends gh
 
 # ---------------------------------------------------------------------------
-# 2. Install package + dev deps
-#    The repo is already at REPO_DIR — cloned by the Container Start Command
-#    one-liner before this script was invoked.
+# 2. Clone repo and install package + dev deps
 #    --no-deps skips torch/triton so the pre-installed CUDA build is preserved.
 #    The individual dev extras (pytest, pytest-benchmark, numpy) don't pull
 #    torch, so a plain install of those is safe.
 # ---------------------------------------------------------------------------
+git clone --depth=1 "${REPO_URL}" "${REPO_DIR}"
 pip install --quiet --no-deps -e "${REPO_DIR}"
 pip install --quiet pytest pytest-benchmark numpy
 

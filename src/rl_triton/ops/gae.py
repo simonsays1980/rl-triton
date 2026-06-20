@@ -123,7 +123,7 @@ def compute_gae(
         bootstrap_values = None
     elif bootstrap_values is not None:
         bootstrap_values = bootstrap_values.contiguous()
-        scalar_bootstrap = None
+        scalar_bootstrap = bootstrap_values[:, -1].contiguous()
     else:
         scalar_bootstrap = None
 

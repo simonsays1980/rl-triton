@@ -102,12 +102,9 @@ def compute_retrace(
         assert truncateds.dtype == torch.float32, "truncateds: expected float32"
         assert truncateds.shape == rewards.shape, \
             f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
-        if (truncateds > dones).any():
-            _correctness_warn(
-                "truncateds has entries where truncateds=1 but dones=0. "
-                "A step can only be truncated if it is also marked done; "
-                "the trace decay will not be stopped at those steps."
-            )
+        truncateds = truncateds.contiguous()
+        assert not (truncateds.bool() & ~dones.bool()).any(), \
+            "truncateds=1 requires dones=1: a truncated step must also be marked done"
 
     action_probs_target   = action_probs_target.contiguous()
     action_probs_behavior = action_probs_behavior.contiguous()
@@ -121,7 +118,7 @@ def compute_retrace(
     # For truncations the episode continues so the bootstrap is kept.
     # When truncateds is not supplied dones is treated as pure termination.
     if truncateds is not None:
-        terminated = (dones - truncateds.contiguous()).clamp(min=0.0)
+        terminated = (dones - truncateds).clamp(min=0.0)
     else:
         terminated = dones
 

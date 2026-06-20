@@ -49,7 +49,7 @@ def retrace_fused_kernel(
 
     Decay convention
     ----------------
-    b[t] = γ · c[t+1] · (1 - done[t])
+    β[t] = γ · c[t+1] · (1 - done[t])
 
     c[t+1] at reversed position offs is the IS ratio clip at t+1, which lives at
     real array index rev+1 (since rev = seq_len-1-offs, rev+1 = t+1).

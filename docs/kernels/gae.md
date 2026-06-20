@@ -12,40 +12,45 @@ This tutorial provides a precise, technical walkthrough of how this kernel uses 
 
 ## 1. The Sequential Dependency in GAE
 
-The definition of GAE defines the advantage at timestep $t$ using the advantage of the next timestep $t+1$:
+The definition of GAE (Schulman et al., 2016) computes the advantage at timestep $t$ from the TD error and all future advantages within the same episode:
 
-$$A_t = \delta_t + (\gamma \lambda(1-d_t)) \cdot A_{t+1}$$
+$$\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$$
 
-Where:
+$$A_t = \sum_{k=0}^{\infty} (\gamma\lambda)^k \delta_{t+k} = \delta_t + \gamma\lambda \cdot A_{t+1}$$
 
-* $A_t$: Advantage at timestep $t$.
-* $\delta_t$: Temporal Difference (TD) error.
-* $\gamma, \lambda$: Scalars (discount/smoothing factors).
-* $d_t$: Binary "done" flag (1 if episode ended).
+This is a pure mathematical recurrence with no done flags. The sum naturally terminates at the episode end because $\delta_t = 0$ and $A_t = 0$ for all $t$ beyond termination.
 
-Throughout this document $T$ denotes the **sequence length** (the number of steps in the rollout buffer), not necessarily an episode termination. A single sequence may contain multiple complete episodes separated by done flags, or end mid-episode at a truncation boundary.
+In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent advantages from summing across episode boundaries, the kernel replaces the pure mathematical $\delta_t$ and $\beta_t$ with masked versions that depend on two mutually exclusive flags, $d_t^{\text{term}}$ and $d_t^{\text{trunc}}$:
 
-**Why this resists parallelization:** In a trajectory of 1024 steps, a standard implementation creates a strict sequential dependency chain. Timestep 100 cannot be computed until timestep 101 finishes, which waited for 102, all the way to 1024. GPU cores that could be working on independent data are instead stalled waiting on this chain. Additionally, a naive loop issues a separate HBM read/write per step rather than loading the whole sequence once.
+$$\delta_t = r_t + \gamma\,(1 - d_t^{\text{term}})\,V(s_{t+1}) - V(s_t)$$
+
+$$\beta_t = \gamma\lambda(1 - d_t), \quad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
+
+Here $V(s_{t+1})$ is taken from `values[t+1]` at continuing steps and from `bootstrap_values[env, t]` at truncated steps; $d_t^{\text{term}}$ zeros it entirely at termination. Section 5 details what this means for the caller.
+
+Throughout this document $T$ denotes the **sequence length** (the number of steps in the rollout buffer), not necessarily an episode termination.
 
 ---
 
 ## 2. Associative Scan via Function Composition
 
+The recurrence $A_t = \delta_t + \beta_t A_{t+1}$ creates a strict sequential dependency chain: timestep 100 cannot be computed until timestep 101 finishes, which waited for 102, all the way to 1024. GPU cores that could be working on independent data are instead stalled waiting on this chain. Additionally, a naive loop issues a separate HBM read/write per step rather than loading the whole sequence once.
+
 We can solve this linear recurrence in parallel by rethinking the math not as calculating *numbers* sequentially, but as composing linear *functions* simultaneously.
 
-Any timestep $t$ in GAE is a linear transformation: $f_t(x) = \delta_t + \beta_t x$ (where $\beta_t = \gamma\lambda(1-d_t)$).
+Any timestep $t$ in GAE is a linear transformation: $f_t(x) = \delta_t + \beta_t x$ (where $\beta_t = \gamma\lambda$ mathematically, and $\beta_t = \gamma\lambda(1-d_t)$ is the kernel implementation to stop propagation at episode boundaries).
 
 If we want to find the accumulated advantage over two adjacent steps, $A$ and $B$, we don't need the final starting number. We can just compose the two linear functions algebraically:
 
 
 $$f_B(f_A(x)) = \delta_B + \beta_B(\delta_A + \beta_A x) = (\delta_B + \beta_B \delta_A) + (\beta_B \beta_A)x$$
 
-This algebraic composition defines a custom **associative operator ($\oplus$)** that operates on tuples of $(a, b)$, where $a_t = \delta_t$ and $b_t = \beta_t = \gamma\lambda(1-d_t)$:
+This algebraic composition defines a custom **associative operator ($\oplus$)** that operates on tuples of $(\alpha, \beta)$, where $\alpha_t = \delta_t$ and $\beta_t = \gamma\lambda(1-d_t)$ (the implementation value, as defined in Section 1):
 
 
-$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B a_A, \,\, b_A b_B)$$
+$$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B \alpha_A, \,\, \beta_A \beta_B)$$
 
-* **TD accumulation:** New error is the later error $a_B$ plus the weighted earlier error $b_B a_A$.
+* **TD accumulation:** New error is the later error $\alpha_B$ plus the weighted earlier error $\beta_B \alpha_A$.
 * **Decay product:** The decay terms just multiply.
 
 **Why this works:** Function composition is associative: $(C \circ B) \circ A = C \circ (B \circ A)$. Since the grouping doesn't matter, we don't have to compute them strictly left-to-right (sequentially). We can group them as chunks and snap the chunks together.
@@ -65,12 +70,12 @@ This trace uses the standard scan algorithm where threads pull data from their '
 
 ### Setup (Step 0)
 
-The entire trajectory is loaded once into SM SRAM. We assign one GPU Thread ($Ti$) to each timestep index $i$. Each thread prepares its initial associative tuple $(a_i, b_i)$ sitting in local registers:
+The entire trajectory is loaded once into the Streaming Multiprocessor's (SM) Shared Memory (SRAM). We assign one GPU Thread ($Ti$) to each timestep index $i$. Each thread prepares its initial associative tuple $(\alpha_i, \beta_i)$ sitting in local registers:
 
-* $T1$ holds: $T_1 = (a_1, b_1)$
-* $T2$ holds: $T_2 = (a_2, b_2)$
-* $T3$ holds: $T_3 = (a_3, b_3)$
-* $T4$ holds: $T_4 = (a_4, b_4)$
+* $T1$ holds: $T_1 = (\alpha_1, \beta_1)$
+* $T2$ holds: $T_2 = (\alpha_2, \beta_2)$
+* $T3$ holds: $T_3 = (\alpha_3, \beta_3)$
+* $T4$ holds: $T_4 = (\alpha_4, \beta_4)$
 
 ### Hardware Loop 1: Parallel Pairs (Distance = 1)
 
@@ -109,59 +114,67 @@ The associative scan produces intermediate cumulative results for *every single 
 ### T=1 (End of Episode) Base Case
 
 Thread 1 holds tuple $T_1$. For GAE, we assume the base case: the advantage after the end of an episode (step $t+1=0$) is $0.0$.
-If we apply our linear function $f(x) = \delta + \beta x$ to $x=0$, we get $a + b(0) = a$.
+If we apply our linear function $f(x) = \delta + \beta x$ to $x=0$, we get $\alpha + \beta(0) = \alpha$.
 
-* Thread 1 advantage: Just the $a$ term of $T_1$. This is $\delta_1$. Correct.
+* Thread 1 advantage: Just the $\alpha$ term of $T_1$. This is $\delta_1$. Correct.
 
 ### T=4 Final State and Verification
 
-Thread 4 is holding the final composed tuple $T_{1..4}$. Its advantage is just the $a$ term of that tuple: $a_{1..4}$.
+Thread 4 is holding the final composed tuple $T_{1..4}$. Its advantage is just the $\alpha$ term of that tuple: $\alpha_{1..4}$.
 
-Let's verify $a_{1..4}$ against sequential GAE, substituting back $a_i = \delta_i$ and $b_i = \beta_i$. Sequential PPO calculates:
+Let's verify $\alpha_{1..4}$ against sequential GAE, substituting back $\alpha_i = \delta_i$ and $\beta_i = \gamma\lambda(1-d_i)$. Sequential PPO calculates:
 
-* $A_1 = a_1$
-* $A_2 = a_2 + b_2 A_1 = a_2 + b_2 a_1$
-* $A_3 = a_3 + b_3 A_2 = a_3 + b_3 a_2 + b_3 b_2 a_1$
-* $A_4 = a_4 + b_4 A_3 = \mathbf{a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1}$
+* $A_1 = \alpha_1$
+* $A_2 = \alpha_2 + \beta_2 A_1 = \alpha_2 + \beta_2 \alpha_1$
+* $A_3 = \alpha_3 + \beta_3 A_2 = \alpha_3 + \beta_3 \alpha_2 + \beta_3 \beta_2 \alpha_1$
+* $A_4 = \alpha_4 + \beta_4 A_3 = \mathbf{\alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1}$
 
 The algebra from the composition of chunks in Loop 2 (T4 grabbing $T_{1..2}$ and combining with $T_{3..4}$):
 
 
-$$a_{1..4} = a_{3..4} + b_{3..4}a_{1..2}$$
+$$\alpha_{1..4} = \alpha_{3..4} + \beta_{3..4}\,\alpha_{1..2}$$
 
-$$a_{1..4} = (a_4 + b_4 a_3) + (b_3 b_4)(a_2 + b_2 a_1)$$
+$$\alpha_{1..4} = (\alpha_4 + \beta_4 \alpha_3) + (\beta_3 \beta_4)(\alpha_2 + \beta_2 \alpha_1)$$
 
-$$a_{1..4} = \mathbf{a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1}$$
+$$\alpha_{1..4} = \mathbf{\alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1}$$
 
 **The polynomial sitting in Thread 4's SRAM register is identical to the sequential calculation.** Thread 4 did not wait linearly for Thread 3. It built its own mini-chunk $T_{3..4}$ simultaneously while Thread 2 built $T_{1..2}$.
 
-Every thread knows its full history by snapping pre-computed chunks together logarithmically, touching HBM only twice: once to load all $(a, b)$ pairs and once to write all advantages.
+Every thread knows its full history by snapping pre-computed chunks together logarithmically, touching HBM only twice: once to load all $(\alpha, \beta)$ pairs and once to write all advantages.
 
 ---
 
-## 5. Handling Truncated Episodes
+## 5. Handling Episode Boundaries and the Window Bootstrap
 
-During the scan, the GPU only calculates the $a$ and $b$ terms of the function $f_i(x)=a_i+b_i x$. It does not need to know the starting base case ($x$) to build the tree.
+During the scan, the GPU only calculates the $\alpha$ and $\beta$ terms of the function $f_i(x)=\alpha_i+\beta_i x$. It does not need to know the starting base case ($x$) to build the tree. The equations for $\delta_t$ and $\beta_t$ were established in Section 1; this section describes the caller's responsibility for preparing the input arrays correctly.
 
-If an episode is truncated, $x$ is not $0$, but rather some carry-over advantage $A_{carry}$. To resolve this, the kernel executes exactly one additional parallel instruction at the very end:
+The kernel consumes `values`, `terminateds`, `truncateds`, and `bootstrap_values`, all of shape `[num_envs, seq_len]`. It never sees observations. The three step types from Section 1 translate directly into array requirements.
 
-$$A_{final}=a_i+b_i A_{carry}$$
+#### Terminated steps
 
-In a PPO pipeline, a non-zero $A_{carry}$ occurs in two scenarios:
+At a terminated step $t$, `terminateds[t] = 1` zeros $\gamma V(s_{t+1})$ inside $\delta_t$ and sets $\beta_t = 0$, stopping advantage propagation into the previous episode. `values[t+1]` belongs to the next episode but is harmless: the carry is already severed. No entry in `bootstrap_values` is needed at terminated steps; the kernel ignores it there.
 
-**Rollout Buffer Truncation (Value Function Bootstrap):** Each environment in the batch is scanned independently over its own window of length $T$ and supplies its own scalar `bootstrap_values[env]` $= V(s_T)$, the value of the state one step beyond that environment's window — regardless of whether the underlying episode actually ends there. This bootstrap is used in *two* places, not one.
+#### Truncated steps
 
-First, it stands in for the missing $V(s_T)$ inside the last TD error:
+At a truncated step $t$, the episode continues, so $\delta_t$ still needs the true continuation value $V(s_{t+1})$. The stored `values[t+1]` belongs to a different episode and must not be used. The caller supplies the correct value as `bootstrap_values[env, t]`, which the Section 1 bracket selects automatically. The carry is still severed ($\beta_t = 0$) so no advantage propagates across the boundary.
 
-$$\delta_{T-1}=r_{T-1}+\gamma V(s_T)-V(s_{T-1})$$
+#### Window boundary at $t = T-1$
 
-Second, it is *also* the scan carry: $A_{carry}=V(s_T)$, added on top of the local scan result at every position via $A_{final}=a_i+b_iA_{carry}$. These two uses are independent — the bootstrap is not absorbed into $a_{T-1}$ with a zero carry; it appears once inside $\delta_{T-1}$ (and hence inside $a_{T-1}$) *and* once more as $A_{carry}$ itself.
+At the last step of the window, $V(s_T)$ lies one step past the end of the `values` tensor. The caller supplies it as `bootstrap_values[env, T-1]` when the episode continues past the window, or leaves it zero if the episode terminated at $T-1$.
 
-The double use is necessary, not redundant: $\delta_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual at the boundary, while $A_{carry}$ stands in for the true (but unobservable) advantage $A_T$ beyond the window, since $A_{T-1}=\delta_{T-1}+b_{T-1}A_T$ and the windowed scan alone can only ever produce $\delta_{T-1}$.
+This value serves two roles at once. It enters $\delta_{T-1}$ as the next-state value, and it is the scan carry $A_T$ added to every position's local scan result:
 
-The done flag still gates this correctly. For a **termination** ($d_{T-1}=1$), $b_{T-1}=\gamma\lambda(1-d_{T-1})=0$, so $A_{carry}$ contributes nothing at $T-1$, and the convention `bootstrap_values=0` is used since no real next state exists. For a **truncation** ($d_{T-1}=0$), $b_{T-1}\neq0$ and the nonzero bootstrap correctly propagates backward through the whole window via the decay product, exactly as $A_T$ would have.
+$$A_t = (\text{local scan result})_t + (\text{decay product})_t \cdot A_T$$
 
-**Infinite Horizon Chunking (Inside Triton):** If processing massive trajectories that exceed a single block, we chunk them inside the kernel. The final calculated advantage of a chronologically "future" chunk becomes the exact $A_{carry}$ passed into the $x$ of the chronologically "previous" chunk.
+Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` satisfies both. The double use is necessary: $\delta_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual, while $A_T$ stands in for the true advantage beyond the window, since $A_{T-1} = \delta_{T-1} + \beta_{T-1} A_T$ and the windowed scan alone can only produce $\delta_{T-1}$.
+
+#### The unifying rule
+
+`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`. Setting `RL_TRITON_CORRECTNESS_WARNINGS=1` activates a debug assertion that catches stray nonzero entries.
+
+For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
+
+**Infinite-horizon chunking:** For sequences longer than the flat kernel limit, the scan is chunked. The final advantage of a chronologically later chunk becomes the carry $A_T$ passed into the earlier chunk.
 
 ---
 
@@ -180,28 +193,6 @@ The ultimate performance gain comes from eliminating trips to the slow High Band
 **The Single Store (Registers $\rightarrow$ HBM):** In one massive, synchronized write instruction (`tl.store`), all threads flush their final advantages directly back to HBM.
 
 By trapping the entire reduction loop inside Registers and SRAM, Triton completely bypasses the memory thrashing that plagues standard PyTorch implementations.
-
----
-
-## 7. Autoreset Mode and Loss Masking
-
-With Gymnasium's **next-step autoreset**, `step()` returns the terminal observation `s_terminal` as `next_obs` when `terminated=True`, deferring the actual reset to the following step. This means position `t+1` in the rollout buffer holds a stale observation - the policy acted on it but the environment discarded that action.
-
-**Terminated boundary** - mask the stale position from both actor and critic losses:
-
-```python
-episode_over = terminated | truncated          # [num_envs, seq_len]
-mask = ~episode_over
-loss = (advantages * mask).mean()
-```
-
-**Truncated boundary** - `obs[t+1]` is the genuine continuation state, so no value is stale. However, if the truncation falls on the last step of a rollout window, the GAE accumulator from the old window would bleed into the new one. Apply the same mask at rollout boundaries:
-
-```python
-mask = torch.cat([initial_episode_over, ~episode_over[:, :-1]], dim=1)
-```
-
-**Same-step autoreset** does not produce stale observations and needs no masking.
 
 ---
 

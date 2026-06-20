@@ -26,14 +26,14 @@ If the previous step was a terminal state ($d_{t-1} = 1$), the $(1-d_t)$ mask ev
 
 ## 2. Mapping to the Associative Scan
 
-This is a first-order linear recurrence $f(x) = a + bx$, using the same universal associative operator ($\oplus$) as the advantage estimators:
+This is a first-order linear recurrence $f(x) = \alpha + \beta x$, using the same universal associative operator ($\oplus$) as the advantage estimators:
 
-$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B a_A, \,\, b_A b_B)$$
+$$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B \alpha_A, \,\, \beta_A \beta_B)$$
 
-The inputs map to hardware tuples $(a, b)$ as follows:
+The inputs map to hardware tuples $(\alpha, \beta)$ as follows:
 
-* **Value to accumulate ($a_t$):** $a_t = x_t$
-* **Boundary reset mask ($b_t$):** $b_t = 1 - d_t$
+* **Value to accumulate ($\alpha_t$):** $\alpha_t = x_t$
+* **Boundary reset mask ($\beta_t$):** $\beta_t = 1 - d_t$
 
 Unlike the backward recurrence in GAE or Retrace, this is a **forward** accumulation. Threads pull data from lower memory indices (the chronological past), executing the scan strictly left-to-right. The reduction tree mechanics are identical to those described in the [GAE tutorial](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree); only the scan direction differs.
 

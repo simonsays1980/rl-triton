@@ -1,6 +1,6 @@
 # V-Trace with Triton Associative Scans
 
-### Introduction
+## Introduction
 
 The [GAE tutorial](gae.md) established how a Parallel Associative Scan restructures a first-order linear recurrence into an $O(\log N)$ parallel tree reduction. This tutorial applies the same technique to **V-Trace** (the off-policy target correction algorithm introduced in IMPALA; Espeholt et al., 2018).
 
@@ -8,7 +8,7 @@ Because V-Trace relies on the exact same recurrence structure as GAE, no new har
 
 ---
 
-### 1. The V-Trace Architecture and the Off-Policy Bottleneck
+## 1. The V-Trace Architecture and the Off-Policy Bottleneck
 
 Unlike GAE, which assumes data is strictly on-policy, V-Trace allows agents to learn from off-policy trajectories. This was originally designed for the IMPALA distributed architecture (Espeholt et al., 2018), where dozens of "Actor" CPUs collect data for a single "Learner" GPU. Because the Learner continuously updates the network, the policy that generated the data (the **behavior policy, $\mu$**) is often older than the policy being trained (the **target policy, $\pi$**).
 
@@ -18,23 +18,23 @@ If we apply standard on-policy math to off-policy data, the value estimates dive
 
     $$\rho_t = \min\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
 
-* **$c_t$:** Used to cut or scale the trace decay parameter for future steps. If the old policy took an action that the new policy completely disagrees with, $c_t$ drops to $0$, stopping any further off-policy future rewards from corrupting the current state's value.
+* **$c_t$:** Used to cut or scale the trace decay parameter for future steps. It is the importance sampling ratio clipped at $\bar{c}$: large when $\pi$ and $\mu$ agree, small when they diverge, and $0$ only when $\pi(a_t|s_t) = 0$.
 
     $$c_t = \min\left(\bar{c}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$$
 
 The standard V-Trace formula calculates the corrected $n$-step value target ($v_s$) for a state $s$:
 
-$$v_s = V(s) + \sum_{t=s}^{s+n-1} \gamma^{t-s} \left( \prod_{i=s}^{t-1} c_i \right) \delta_t^V$$
+$$v_s = V(s_s) + \sum_{t=s}^{s+n-1} \gamma^{t-s} \left( \prod_{i=s}^{t-1} c_i \right) \delta_t^V$$
 
 Where the TD error for the value function is scaled by $\rho$:
 
-$$\delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$$
+$$\delta_t^V = \rho_t(r_t + \gamma(1 - d_t^{\text{term}}) V(s_{t+1}) - V(s_t))$$
 
 ---
 
-### 2. Why Accumulate TD Errors? The Telescoping Sum
+## 2. Why Accumulate TD Errors? The Telescoping Sum
 
-Looking at the V-Trace summation formula above, a common question arises: *Why does V-Trace accumulate future TD errors instead of simply accumulating discounted rewards?* Standard $n$-step returns sum up rewards and bootstrap at the end. 
+Looking at the V-Trace summation formula above, a common question arises: *Why does V-Trace accumulate future TD errors instead of simply accumulating discounted rewards?* Standard $n$-step returns sum up rewards and bootstrap at the end.
 
 The answer lies in a mathematical property called a **Telescoping Sum**. Adding a sum of discounted TD errors to a baseline value estimate perfectly reconstructs the $n$-step reward return because the intermediate value estimates cancel each other out.
 
@@ -60,7 +60,7 @@ V-Trace explicitly uses this TD-error format for two reasons:
 
 ---
 
-### 3. The Mathematical Bridge: Reshaping to the Associative Scan
+## 3. The Mathematical Bridge: Reshaping to the Associative Scan
 
 The foundational Triton kernel solves any sequence conforming to the linear transformation $f(x)=a+bx$. To align the V-Trace sum-of-products formula with this structure, isolate the summation by defining a new variable **$\Delta_t$** (the value delta), representing the sum of all future trace-decayed TD errors:
 
@@ -70,37 +70,42 @@ If we unroll the summation for $\Delta_t$, we get:
 
 $$\Delta_t = \delta_t^V + \gamma c_t \delta_{t+1}^V + \gamma^2 c_t c_{t+1} \delta_{t+2}^V + \dots$$
 
-Factoring out $\gamma c_t$ from the second term onward reveals the exact same first-order backward recurrence used for GAE:
+Factoring out $\gamma c_t$ from the second term onward reveals the first-order backward recurrence:
 
-$$\Delta_t = \delta_t^V + \gamma c_t (1-d_t) \Delta_{t+1}$$
+$$\Delta_t = \delta_t^V + \gamma c_t \cdot \Delta_{t+1}$$
 
-*(The binary "done" flag $d_t$ prevents the trace from bleeding across episode boundaries.)*
+This is the mathematically exact recurrence within a single episode. No done flags appear — the sum in the original V-Trace definition naturally terminates at the episode boundary.
 
-This perfectly matches the kernel's expected format. The inputs map to hardware tuples $(a, b)$ as follows:
+In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent accumulation from crossing episode boundaries, the kernel introduces masked versions of $\alpha_t$ and $\beta_t$ that depend on two mutually exclusive flags, $d_t^{\text{term}}$ and $d_t^{\text{trunc}}$:
 
-* **Value Delta accumulation ($a_t$):** $a_t = \delta_t^V = \rho_t(r_t + \gamma V(s_{t+1}) - V(s_t))$
-* **Trace Decay product ($b_t$):** $b_t = \gamma c_t(1-d_t)$ 
+$$\alpha_t = \delta_t^V = \rho_t\!\left(r_t + \gamma\,(1 - d_t^{\text{term}})\,V(s_{t+1}) - V(s_t)\right)$$
+
+$$\beta_t = \gamma c_t(1 - d_t), \quad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
+
+Because `terminated` and `truncated` are mutually exclusive, $(1 - d_t^{\text{term}})$ zeros $V(s_{t+1})$ in $\alpha_t$ at termination, and $(1 - d_t)$ zeros $\beta_t$ at any boundary. Section 5 details what this means for the caller.
+
+Throughout this document $T$ denotes the **sequence length** (the number of steps in the rollout buffer), not necessarily an episode termination.
 
 ---
 
-### 4. Thread-Level Execution: Computing V-Trace in Hardware
+## 4. Thread-Level Execution: Computing V-Trace in Hardware
 
 Because the mathematical structure is mapped to the same recurrence, the GPU threads execute the same associative combination using our operator $\oplus$:
 
-$$(a_B,b_B)\oplus(a_A,b_A)=(a_B+b_B a_A,b_A b_B)$$
+$$(\alpha_B,\beta_B)\oplus(\alpha_A,\beta_A)=(\alpha_B+\beta_B \alpha_A,\beta_A \beta_B)$$
 
-The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly - only the definition of $a_t$ and $b_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
+The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly — only the definition of $\alpha_t$ and $\beta_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
 
-#### Setup (Step 0)
+### Setup (Step 0)
 
-Each thread loads its initial tuple $(a_i, b_i)$ into local registers:
+Each thread loads its initial tuple $(\alpha_i, \beta_i)$ into local registers:
 
-* **T1** (index 1, $t=3$): holds $T_1=(a_1, b_1)$
-* **T2** (index 2, $t=2$): holds $T_2=(a_2, b_2)$
-* **T3** (index 3, $t=1$): holds $T_3=(a_3, b_3)$
-* **T4** (index 4, $t=0$): holds $T_4=(a_4, b_4)$
+* **T1** (index 1, $t=3$): holds $T_1=(\alpha_1, \beta_1)$
+* **T2** (index 2, $t=2$): holds $T_2=(\alpha_2, \beta_2)$
+* **T3** (index 3, $t=1$): holds $T_3=(\alpha_3, \beta_3)$
+* **T4** (index 4, $t=0$): holds $T_4=(\alpha_4, \beta_4)$
 
-#### Hardware Loop 1: Parallel Pairs (Distance = 1)
+### Hardware Loop 1: Parallel Pairs (Distance = 1)
 
 Every thread simultaneously looks 1 step to their "left" and combines using $\oplus$:
 
@@ -109,7 +114,7 @@ Every thread simultaneously looks 1 step to their "left" and combines using $\op
 * **T3**: grabs $T_2$, computes $T_{2..3}=T_3\oplus T_2$.
 * **T4**: grabs $T_3$, computes $T_{3..4}=T_4\oplus T_3$.
 
-#### Hardware Loop 2: Tree Merge (Distance = 2)
+### Hardware Loop 2: Tree Merge (Distance = 2)
 
 Every thread simultaneously looks 2 steps to their "left":
 
@@ -118,80 +123,75 @@ Every thread simultaneously looks 2 steps to their "left":
 * **T3**: grabs $T_1$ from T1, computes $T_{1..3}=T_{2..3}\oplus T_1$.
 * **T4**: grabs $T_{1..2}$ from T2, computes $T_{1..4}=T_{3..4}\oplus T_{1..2}$.
 
-#### Verification
+### Verification
 
-The accumulated $a$ value in T4's register after the scan:
+The accumulated $\alpha$ value in T4's register after the scan:
 
-$$a_{1..4}=(a_4+b_4 a_3)+(b_3 b_4)(a_2+b_2 a_1)$$
+$$\alpha_{1..4}=(\alpha_4+\beta_4 \alpha_3)+(\beta_3 \beta_4)(\alpha_2+\beta_2 \alpha_1)$$
 
-$$a_{1..4}=a_4+b_4 a_3+b_4 b_3 a_2+b_4 b_3 b_2 a_1$$
+$$\alpha_{1..4}=\alpha_4+\beta_4 \alpha_3+\beta_4 \beta_3 \alpha_2+\beta_4 \beta_3 \beta_2 \alpha_1$$
 
-Substituting back the V-Trace definitions ($a_i = \delta_i^V$, $b_i = \gamma c_i$) and remembering the reversed index mapping ($a_4$ is chronological $t=1$, etc.):
+Substituting back the V-Trace definitions ($\alpha_i = \delta_i^V$, $\beta_i = \gamma c_i$) and remembering the reversed index mapping ($\alpha_4$ is chronological $t=1$, etc.):
 
-$$a_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V$$
+$$\alpha_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V$$
 
 This matches the V-Trace sum exactly. Thread 4 built its chunk $T_{3..4}$ in parallel with Thread 2 building $T_{1..2}$, with no sequential wait between them.
 
 ---
 
-### 5. Reconstructing Targets and Advantages
+## 5. Handling Episode Boundaries and the Window Bootstrap
 
-Once the $O(\log N)$ kernel finishes, every thread holds its correct $\Delta_t$. The final V-Trace targets and advantages are reconstructed in PyTorch using parallel vector additions.
+The kernel consumes `values`, `terminateds`, `truncateds`, and `bootstrap_values`, all of shape `[num_envs, seq_len]`. It never sees observations. The equations for $\alpha_t$ and $\beta_t$ were established in Section 3; this section describes the caller's responsibility for preparing the input arrays correctly.
 
-**1. Target Value (for Critic Loss):**
+### Terminated steps
 
-$$v_t=\Delta_t+V(s_t)$$
+At a terminated step $t$, `terminateds[t] = 1` zeros $\gamma V(s_{t+1})$ inside $\alpha_t$ and sets $\beta_t = 0$, stopping trace propagation into the previous episode. `values[t+1]` belongs to the next episode but is harmless: the carry is already severed. No entry in `bootstrap_values` is needed at terminated steps; the kernel ignores it there.
 
-**2. Target Advantage (for Actor Policy Gradient):**
+### Truncated steps
 
-Once we have the target values $v_t$, we shift the tensor to obtain $v_{t+1}$ and calculate the final advantage:
+At a truncated step $t$, the episode continues, so $\alpha_t$ still needs the true continuation value $V(s_{t+1})$. The stored `values[t+1]` belongs to a different episode and must not be used. The caller supplies the correct value as `bootstrap_values[env, t]`, which the Section 3 formula selects automatically. The carry is still severed ($\beta_t = 0$) so no accumulation propagates across the boundary.
 
-$$A_t=\rho_t(r_t+\gamma v_{t+1}-V(s_t))$$
+### Window boundary at $t = T-1$
 
-Each environment in the batch supplies its own scalar `bootstrap_values[env]` $= V(s_T)$, the value of the state one step beyond that environment's window. This bootstrap is used in *two* places, not one.
+At the last step of the window, $V(s_T)$ lies one step past the end of the `values` tensor. The caller supplies it as `bootstrap_values[env, T-1]` when the episode continues past the window, or leaves it zero if the episode terminated at $T-1$.
 
-First, it is substituted into the TD error at the last step $t=T-1$:
+This value serves two roles at once. It enters $\alpha_{T-1}$ as the next-state value, and it is the scan carry $\Delta_T$ added to every position's local scan result:
 
-$$a_{T-1} = \rho_{T-1}\!\left(r_{T-1} + \gamma V(s_T) - V(s_{T-1})\right)$$
+$$\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot \Delta_T$$
 
-Second, it is *also* the scan carry: $\Delta_T = V(s_T)$, added on top of the local scan result at every position via $\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot \Delta_T$. These two uses are independent — the bootstrap is not absorbed into $a_{T-1}$ alone with a zero carry; it appears once inside $a_{T-1}$ *and* once more as $\Delta_T$ itself.
+Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` satisfies both. The double use is necessary: $\alpha_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual, while $\Delta_T$ stands in for the true value delta beyond the window, since $\Delta_{T-1} = \alpha_{T-1} + \beta_{T-1} \Delta_T$ and the windowed scan alone can only produce $\alpha_{T-1}$.
 
-The done flag still gates this correctly. For a **termination** ($d_{T-1}=1$), both the bootstrap's contribution to $a_{T-1}$ (via the $not\_done$ factor on $\gamma V(s_T)$) and the trace decay at the boundary $b_{T-1} = \gamma c_{T-1}(1-d_{T-1})$ vanish, so $\Delta_T$'s contribution at $T-1$ disappears too, matching the convention `bootstrap_values=0` since no real next state exists. For a **truncation** ($d_{T-1}=0$), both terms are active: the bootstrap enters $a_{T-1}$ directly, and $\Delta_T$ propagates backward through the whole window via the decay product.
+### The unifying rule
+
+`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`.
+
+For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
 
 ---
 
-### 6. Hardware Execution
+## 6. Reconstructing Targets and Advantages
 
-V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all $a_t$ and $b_t$ arrays into SRAM, the $O(\log N)$ reduction entirely within registers and SRAM, and a single synchronized HBM store of the $\Delta_t$ results. See the [GAE hardware section](gae.md#6-the-hardware-reality-what-triton-actually-does) for the full breakdown.
+Once the $O(\log N)$ scan finishes, the fused kernel computes targets and advantages in the same Triton program before returning to the host. Targets are formed as $v_t = \Delta_t + V(s_t)$ directly in registers and written to HBM, then a second pass over the stored targets computes the advantages:
 
-### 7. V-Trace Applications
+$$v_t = \Delta_t + V(s_t)$$
+
+$$A_t = \rho_t(r_t + \gamma v_{t+1} - V(s_t))$$
+
+For sequences exceeding the flat kernel limit, the chunked path performs the equivalent additions in PyTorch after the scan.
+
+---
+
+## 7. Hardware Execution
+
+V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all $\alpha_t$ and $\beta_t$ arrays into SRAM, the $O(\log N)$ reduction entirely within registers and SRAM, and a single synchronized HBM store of the $\Delta_t$ results. See the [GAE hardware section](gae.md#6-the-hardware-reality-what-triton-actually-does) for the full breakdown.
+
+## 8. V-Trace Applications
 
 V-Trace was originally introduced as the core mathematical component of the IMPALA architecture to correct the "policy lag" that occurs when massively distributed CPU actors generate trajectories asynchronously for a centralized GPU learner (Espeholt et al., 2018). Because of this stability, algorithms like Asynchronous Proximal Policy Optimization (APPO; Berner et al., 2019) rely directly on V-Trace targets to safely optimize policies using stale trajectories collected by out-of-sync workers.
 
 ---
 
-### 8. Autoreset Mode and Loss Masking
-
-With Gymnasium's **next-step autoreset**, position `t+1` after a termination holds a stale observation - the policy acted on it but the environment discarded that action. The V-Trace advantage and target at that position are meaningless and must be masked:
-
-```python
-episode_over = terminated | truncated          # [num_envs, seq_len]
-mask = ~episode_over
-actor_loss  = (vtrace_advantages * mask).mean()
-critic_loss = ((vtrace_targets - values) ** 2 * mask).mean()
-```
-
-For truncated boundaries `obs[t+1]` is the genuine continuation state, but a rollout-window truncation on the last step would cause the scan accumulator from the old window to bleed into the new one. Apply the same mask at rollout boundaries regardless:
-
-```python
-mask = torch.cat([initial_episode_over, ~episode_over[:, :-1]], dim=1)
-```
-
-**Same-step autoreset** does not produce stale observations and needs no masking.
-
----
-
-### References
+## References
 
 * Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., ... & Kavukcuoglu, K. (2018). *IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures.* ICML 2018. arXiv:1802.01561.
 * Berner, C., Brockman, G., Chan, B., Cheung, V., Dębiak, P., Dennison, C., ... & Zoph, B. (2019). *Dota 2 with Large Scale Deep Reinforcement Learning.* arXiv:1912.06680.

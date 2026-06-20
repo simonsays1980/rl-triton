@@ -1,8 +1,8 @@
 """
 Triton kernels for the backward and forward linear recurrence:
 
-    Backward:  A[t] = a[t] + b[t] * A[t+1],  A[T] = bootstrap   (right-to-left)
-    Forward:   e[t] = a[t] + b[t] * e[t-1],  e[-1] = seed       (left-to-right)
+    Backward:  A[t] = α[t] + β[t] * A[t+1],  A[T] = bootstrap   (right-to-left)
+    Forward:   e[t] = α[t] + β[t] * e[t-1],  e[-1] = seed       (left-to-right)
 
 Both directions share the same associative structure and the same combine
 function.  The only difference between the two kernels is data layout: the
@@ -23,9 +23,9 @@ import triton.language as tl
 @triton.jit
 def _combine(u_a, v_a, u_b, v_b):
     """
-    Associative combine for the linear recurrence A[t] = a[t] + b[t]*A[prev].
+    Associative combine for the linear recurrence A[t] = α[t] + β[t]*A[prev].
 
-    Represents affine map x -> a + b*x.  Composing f_B after f_A (A is the
+    Represents affine map x -> α + β*x.  Composing f_B after f_A (A is the
     earlier/left element whose output feeds into f_B):
       f_B(f_A(x)) = u_B + v_B*(u_A + v_A*x) = (u_B + v_B*u_A) + (v_A*v_B)*x
     """
@@ -45,13 +45,13 @@ def backward_scan_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Backward scan: A[t] = a[t] + b[t] * A[t+1], A[T] = bootstrap.
+    Backward scan: A[t] = α[t] + β[t] * A[t+1], A[T] = bootstrap.
 
-    Loads a (u_ptr) and b (v_ptr) in reverse time order so tl.associative_scan
+    Loads α (u_ptr) and β (v_ptr) in reverse time order so tl.associative_scan
     sweeps left-to-right over the reversed axis, then applies the bootstrap
     boundary condition and writes results back in original order.
 
-    Padding lanes (offsets >= seq_len) use a=0, b=1 (identity) so they do not
+    Padding lanes (offsets >= seq_len) use α=0, β=1 (identity) so they do not
     corrupt valid positions.  BLOCK_SIZE must be >= seq_len and a power of 2.
 
     Args:
@@ -91,12 +91,12 @@ def forward_scan_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Forward scan: e[t] = a[t] + b[t] * e[t-1], e[-1] = seed.
+    Forward scan: e[t] = α[t] + β[t] * e[t-1], e[-1] = seed.
 
-    Loads a (u_ptr) and b (v_ptr) in natural (left-to-right) order and applies
+    Loads α (u_ptr) and β (v_ptr) in natural (left-to-right) order and applies
     the seed boundary condition after the scan.
 
-    Padding lanes (offsets >= seq_len) use a=0, b=1 (identity).
+    Padding lanes (offsets >= seq_len) use α=0, β=1 (identity).
     BLOCK_SIZE must be >= seq_len and a power of 2.
 
     Args:

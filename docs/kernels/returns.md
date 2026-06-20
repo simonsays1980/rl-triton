@@ -10,7 +10,7 @@ The shared kernel solves the backward recurrence
 
 $$A_t = a_t + b_t \cdot A_{t+1}, \qquad A_T = \text{bootstrap}$$
 
-for any choice of $a$ and $b$. Each estimator below specifies its own $a_t$ and $b_t$; the kernel is unaware of the difference.
+for any choice of $\alpha$ and $\beta$. Each estimator below specifies its own $\alpha_t$ and $\beta_t$; the kernel is unaware of the difference.
 
 ---
 
@@ -20,29 +20,31 @@ for any choice of $a$ and $b$. Each estimator below specifies its own $a_t$ and 
 
 The discounted return (reward-to-go) accumulates future rewards with exponential discounting:
 
-$$G_t = r_t + \gamma(1-d_t) G_{t+1}, \qquad G_T = 0$$
+$$G_t = r_t + \gamma(1-\text{done}_t) G_{t+1} + \gamma\,\text{truncated}_t\,\text{bootstrap}_t, \qquad G_T = \text{bootstrap}_{T-1}$$
 
-where $d_t \in \{0, 1\}$ is an episode boundary flag that zeros the carry when the episode ends.
+where $\text{done}_t = \text{terminated}_t \mid \text{truncated}_t$ is an episode boundary flag that stops the carry.
 
-This is the purest form of the backward recurrence. There is no value function, no importance sampling correction, no eligibility weight - just rewards compounded by $\gamma$.
+This is the purest form of the backward recurrence. There is no value function, no importance sampling correction, no eligibility weight — just rewards compounded by $\gamma$.
 
 #### Telescoping interpretation
 
 The closed-form sum makes the structure explicit:
 
-$$G_t = \sum_{k=t}^{T-1} \gamma^{k-t} \left(\prod_{i=t}^{k-1}(1-d_i)\right) r_k$$
+$$G_t = \sum_{k=t}^{T-1} \gamma^{k-t} \left(\prod_{i=t}^{k-1}(1-\text{done}_i)\right) \left(r_k + \gamma\,\text{truncated}_k\,\text{bootstrap}_k\right)$$
 
-Each reward $r_k$ is discounted by $\gamma^{k-t}$ and masked by the product of all done-flags between $t$ and $k$: once any boundary is hit the product drops to zero and no further rewards contribute.
+Each reward $r_k$ is discounted by $\gamma^{k-t}$ and masked by the product of all done flags between $t$ and $k$. A `terminated` step zeros the carry permanently; a `truncated` step stops propagation but injects the true continuation value $V(s_{k+1}^{\text{true}})$ from `bootstrap_values` as an additive term at that step.
 
 #### Mapping to the associative scan
 
-$$a_t = r_t, \qquad b_t = \gamma(1-d_t)$$
+$$\alpha_t = r_t + \gamma\,\text{truncated}_t\,\text{bootstrap}_t, \qquad \beta_t = \gamma(1-\text{done}_t)$$
 
-This is the simplest possible instantiation of $A_t = a_t + b_t \cdot A_{t+1}$. No derived quantities, no additional tensors.
+The truncation bootstrap is absorbed into the additive term $\alpha_t$ at the truncated step, so the recurrence structure is unchanged.
 
-#### Bootstrap at truncated boundaries
+#### Terminated vs. truncated boundaries
 
-The default boundary value is $G_T = 0$, which is correct when $d_{T-1} = 1$ (true episode end). For truncated windows where the episode continues beyond the sequence, pass `bootstrap_values = V(s_T)` to avoid discarding the tail of the trajectory.
+`terminated[t] = 1` means the episode ended — $G_{t+1} = 0$, so no continuation value is needed.  `truncated[t] = 1` means the time limit was reached while the episode was still running. In this case, $G_{t+1}$ should equal $V(s_{t+1}^{\text{true}})$, but under Gymnasium next-step autoreset `values[t+1]` already holds the stale reset observation. Pass `bootstrap_values[env, t] = V(s_{t+1}^{\text{true}})` to inject the correct continuation value.
+
+For the window boundary at $t = T-1$ where the episode continues beyond the rollout, set `bootstrap_values[env, T-1] = V(s_T)`. Zero it if the episode terminated at that step.
 
 ---
 
@@ -52,16 +54,16 @@ The default boundary value is $G_T = 0$, which is correct when $d_{T-1} = 1$ (tr
 
 The TD(λ) return interpolates between one-step TD (λ=0) and full Monte Carlo (λ=1):
 
-$$G^\lambda_t = r_t + \gamma(1-d_t)\left[(1-\lambda)V(s_{t+1}) + \lambda G^\lambda_{t+1}\right], \qquad G^\lambda_T = \text{bootstrap}$$
+$$G^\lambda_t = r_t + \gamma(1-\text{done}_t)\left[(1-\lambda)V(s_{t+1}) + \lambda G^\lambda_{t+1}\right] + \gamma\,\text{truncated}_t\,\text{bootstrap}_t, \qquad G^\lambda_T = \text{bootstrap}_{T-1}$$
 
-At every step the value function $V(s_{t+1})$ provides an intermediate bootstrap weighted by $(1-\lambda)$, and the remaining weight $\lambda$ propagates the multi-step return forward.
+where $\text{done}_t = \text{terminated}_t \mid \text{truncated}_t$. At every non-boundary step the value function $V(s_{t+1})$ provides an intermediate bootstrap weighted by $(1-\lambda)$, and the remaining weight $\lambda$ propagates the multi-step return. At truncated steps the true continuation value is injected via `bootstrap_values` instead.
 
 #### Special cases
 
 | λ | Reduces to |
 |---|---|
-| 0 | One-step TD: $G_t = r_t + \gamma(1-d_t)V(s_{t+1})$ |
-| 1 | Pure discounted return: $G_t = r_t + \gamma(1-d_t)G_{t+1}$ |
+| 0 | One-step TD: $G_t = r_t + \gamma(1-\text{done}_t)V(s_{t+1}) + \gamma\,\text{truncated}_t\,\text{bootstrap}_t$ |
+| 1 | Pure discounted return (with truncation bootstrap) |
 
 At λ=1 the value function terms drop out entirely and `compute_lambda_returns` reproduces `compute_discounted_returns` numerically. The two functions exist as separate API entries because their caller profiles differ: discounted returns never receives a value function tensor at all.
 
@@ -69,13 +71,17 @@ At λ=1 the value function terms drop out entirely and `compute_lambda_returns` 
 
 Expanding and grouping the recurrence into $a + b \cdot G^\lambda_{t+1}$ form:
 
-$$a_t = r_t + \gamma(1-\lambda)(1-d_t)V(s_{t+1}), \qquad b_t = \gamma\lambda(1-d_t)$$
+$$\alpha_t = r_t + \gamma(1-\lambda)(1-\text{done}_t)V(s_{t+1}) + \gamma\,\text{truncated}_t\,\text{bootstrap}_t, \qquad \beta_t = \gamma\lambda(1-\text{done}_t)$$
 
-The value function is absorbed directly into the additive term $a_t$ at every step. This means `next_values` acts as a per-step bootstrap that is always available - no separate boundary tensor is needed for on-policy truncated episodes as long as `next_values[:, -1]` contains $V(s_T)$.
+The value function is absorbed into the additive term $\alpha_t$ at every step, and the truncation bootstrap is also absorbed into $\alpha_t$ at truncated steps.
 
-#### Bootstrap at truncated boundaries
+#### Terminated vs. truncated boundaries and double-counting
 
-Because $V(s_{t+1})$ is mixed into $a_t$ at every step, the recurrence already carries value information up to (but not including) the boundary. Pass `bootstrap_values = next_values[:, -1]` for truncated windows; omit it (defaults to zero) for terminated episodes where $d_{T-1}=1$.
+`terminated[t] = 1` zeros both the value-function bootstrap and the trace decay.  `truncated[t] = 1` stops trace decay but injects `bootstrap_values[env, t] = V(s_{t+1}^{\text{true}})` into $\alpha_t$.
+
+Because both `next_values[t]` and `bootstrap_values[t]` contribute to $\alpha_t$, the caller **must zero `next_values[env, t]` at every truncated step** to avoid double-counting the continuation value. The kernel enforces no such zeroing — it is a caller responsibility documented in the API.
+
+For the window boundary at $t = T-1$, set `bootstrap_values[env, T-1] = V(s_T)` when the episode continues beyond the rollout; zero it if the episode terminated.
 
 ---
 
@@ -125,7 +131,7 @@ The field responded to staleness by preferring the forward view: compute the λ-
 
 #### Mapping to the associative scan
 
-$$a_t = \mathbf{g}_t, \qquad b_t = \gamma\lambda(1-d_t)$$
+$$\alpha_t = \mathbf{g}_t, \qquad \beta_t = \gamma\lambda(1-d_t)$$
 
 The form is structurally identical to discounted returns, but processed left-to-right via `_run_scan_forward` instead of right-to-left via `_run_scan`. The forward kernel reads `u` and `v` in natural time order; no reversal is needed.
 
@@ -137,18 +143,18 @@ The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_t)\,\mathbf{z}_{
 
 The combine function is identical to the backward case:
 
-$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B\,a_A,\; b_A b_B)$$
+$$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B\,\alpha_A,\; \beta_A \beta_B)$$
 
 One thread block per environment loads the entire sequence $(\mathbf{g}_0, \gamma\lambda(1-d_0)), \ldots, (\mathbf{g}_{T-1}, \gamma\lambda(1-d_{T-1}))$ in natural order. `tl.associative_scan` then computes the prefix reduction in $O(\log T)$ parallel steps across SIMD lanes within the block.
 
-After the scan, position $t$ holds the pair $(a_{0..t},\, b_{0..t})$ where:
+After the scan, position $t$ holds the pair $(\alpha_{0..t},\, \beta_{0..t})$ where:
 
-$$a_{0..t} = \mathbf{g}_t + \gamma\lambda\,\mathbf{g}_{t-1} + (\gamma\lambda)^2\mathbf{g}_{t-2} + \cdots + (\gamma\lambda)^t\,\mathbf{g}_0$$
-$$b_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_k)$$
+$$\alpha_{0..t} = \mathbf{g}_t + \gamma\lambda\,\mathbf{g}_{t-1} + (\gamma\lambda)^2\mathbf{g}_{t-2} + \cdots + (\gamma\lambda)^t\,\mathbf{g}_0$$
+$$\beta_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_k)$$
 
 The seed $\mathbf{z}_{-1}$ is then folded in with a single fused addition:
 
-$$\mathbf{z}_t = a_{0..t} + b_{0..t} \cdot \mathbf{z}_{-1}$$
+$$\mathbf{z}_t = \alpha_{0..t} + \beta_{0..t} \cdot \mathbf{z}_{-1}$$
 
 Done flags collapse any $v$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary - exactly the correct trace reset.
 
@@ -168,27 +174,27 @@ The forward scan uses the flat single-block kernel only. Sequences longer than 1
 
 All three estimators use the same associative operator $\oplus$:
 
-$$(a_B, b_B) \oplus (a_A, b_A) = (a_B + b_B a_A,\; b_A b_B)$$
+$$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B \alpha_A,\; \beta_A \beta_B)$$
 
 Each mapping is verified over a 4-step sequence with no done flags and scalar inputs ($\gamma < 1$, $\lambda \in (0,1)$). The array is reversed for the backward scan so that index 4 corresponds to chronological $t=1$.
 
 After the $O(\log N)$ scan, the accumulated result at position 4 is:
 
-$$a_{1..4} = a_4 + b_4 a_3 + b_4 b_3 a_2 + b_4 b_3 b_2 a_1$$
+$$\alpha_{1..4} = \alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1$$
 
 #### Discounted returns
 
-Substituting $a_k = r_k$ and $b_k = \gamma$:
+Substituting $\alpha_k = r_k$ and $\beta_k = \gamma$:
 
-$$a_{1..4} = r_1 + \gamma r_2 + \gamma^2 r_3 + \gamma^3 r_4$$
+$$\alpha_{1..4} = r_1 + \gamma r_2 + \gamma^2 r_3 + \gamma^3 r_4$$
 
 This is exactly $G_1$, the discounted sum of all rewards from $t=1$ onward.
 
 #### TD(λ) returns
 
-Substituting $a_k = r_k + \gamma(1-\lambda)V(s_{k+1})$ and $b_k = \gamma\lambda$:
+Assuming no done flags and no truncations in this 4-step sequence, substituting $\alpha_k = r_k + \gamma(1-\lambda)V(s_{k+1})$ and $\beta_k = \gamma\lambda$:
 
-$$a_{1..4} = \bigl[r_1 + \gamma(1{-}\lambda)V_2\bigr]
+$$\alpha_{1..4} = \bigl[r_1 + \gamma(1{-}\lambda)V_2\bigr]
            + \gamma\lambda\bigl[r_2 + \gamma(1{-}\lambda)V_3\bigr]
            + (\gamma\lambda)^2\bigl[r_3 + \gamma(1{-}\lambda)V_4\bigr]
            + (\gamma\lambda)^3\bigl[r_4 + \gamma(1{-}\lambda)V_5\bigr]$$
@@ -197,11 +203,11 @@ where $V_k = V(s_k)$. Collecting reward and value terms:
 
 $$= \sum_{k=1}^{4} (\gamma\lambda)^{k-1} r_k + \gamma(1-\lambda)\sum_{k=1}^{4}(\gamma\lambda)^{k-1}V_{k+1}$$
 
-This is the λ-weighted mixture of 1- through 4-step returns truncated at $t=4$, exactly matching $G^\lambda_1$ from the forward-view definition.
+This is the λ-weighted mixture of 1- through 4-step returns truncated at $t=4$, exactly matching $G^\lambda_1$ from the forward-view definition. At a truncated step the $\gamma\,\text{truncated}_k\,\text{bootstrap}_k$ term in $\alpha_k$ would substitute the true $V(s_{k+1}^{\text{true}})$ in place of the stale buffer value, with `next_values[k]` zeroed to avoid double-counting.
 
 #### Eligibility traces
 
-For the forward scan, the array is processed left-to-right. At position $t=4$ (the last step), substituting $a_k = \mathbf{g}_k$ (the per-step input - a value gradient, or a feature vector in the linear special case) and $b_k = \gamma\lambda$:
+For the forward scan, the array is processed left-to-right. At position $t=4$ (the last step), substituting $\alpha_k = \mathbf{g}_k$ (the per-step input - a value gradient, or a feature vector in the linear special case) and $\beta_k = \gamma\lambda$:
 
 $$\mathbf{z}_4 = \mathbf{g}_4 + \gamma\lambda\, \mathbf{g}_3 + (\gamma\lambda)^2 \mathbf{g}_2 + (\gamma\lambda)^3 \mathbf{g}_1$$
 
@@ -217,7 +223,7 @@ $$G_t = A_t \quad \text{(discounted returns)}$$
 $$G^\lambda_t = A_t \quad \text{(λ-returns)}$$
 $$\mathbf{z}_t = A_t \quad \text{(eligibility traces)}$$
 
-This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $a_t$ already encodes the full additive term, so $A_t$ is the target directly.
+This contrasts with GAE ($A_t = \Delta_t + \delta_t$) and Retrace ($Q^{ret}_t = \Delta_t + Q_t$), where a separate baseline must be added back after the scan. Here, $\alpha_t$ already encodes the full additive term, so $A_t$ is the target directly.
 
 ---
 

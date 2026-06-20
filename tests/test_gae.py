@@ -34,7 +34,7 @@ def _make_next_values(values: torch.Tensor, bootstrap_values: torch.Tensor | Non
 def reference_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminateds: torch.Tensor,
     gamma: float,
     lambda_: float,
     bootstrap_values: torch.Tensor | None = None,
@@ -51,7 +51,7 @@ def reference_gae(
     if bootstrap_values is not None:
         carry = bootstrap_values.clone()
     for t in reversed(range(T)):
-        not_done  = 1.0 - dones[:, t]
+        not_done  = 1.0 - terminateds[:, t]
         delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
         carry     = delta + gamma * lambda_ * not_done * carry
         adv[:, t] = carry
@@ -62,8 +62,8 @@ def _make_inputs(num_envs, seq_len, device="cuda", seed=0):
     torch.manual_seed(seed)
     rewards = torch.randn(num_envs, seq_len, device=device)
     values  = torch.randn(num_envs, seq_len, device=device)
-    dones   = (torch.rand(num_envs, seq_len, device=device) < 0.05).float()
-    return rewards, values, dones
+    terminateds   = (torch.rand(num_envs, seq_len, device=device) < 0.05).float()
+    return rewards, values, terminateds
 
 
 def _make_inputs_np(num_envs, seq_len, seed=0):
@@ -75,18 +75,18 @@ def _make_inputs_np(num_envs, seq_len, seed=0):
 def numpy_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminateds: torch.Tensor,
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
     """CPU GAE backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
-    rewards, values, dones = rewards.cpu(), values.cpu(), dones.cpu()
+    rewards, values, terminateds = rewards.cpu(), values.cpu(), terminateds.cpu()
     next_values = _make_next_values(values, None)
     T     = rewards.shape[1]
     adv   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0])
     for t in reversed(range(T)):
-        not_done  = 1.0 - dones[:, t]
+        not_done  = 1.0 - terminateds[:, t]
         delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
         carry     = delta + gamma * lambda_ * not_done * carry
         adv[:, t] = carry
@@ -123,70 +123,70 @@ def numpy_to_triton_to_numpy(
 
 @cuda_only
 def test_gae_known_values_single_env():
-    # gamma=1, lambda=1, no dones, bootstrap=0, V=0 -> delta[t]=r[t].
+    # gamma=1, lambda=1, no terminateds, bootstrap=0, V=0 -> delta[t]=r[t].
     # A[2] = 3 + 0 = 3
     # A[1] = 2 + 3 = 5
     # A[0] = 1 + 5 = 6
     rewards  = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values   = torch.zeros(1, 3, device="cuda")
-    dones    = torch.zeros(1, 3, device="cuda")
+    terminateds    = torch.zeros(1, 3, device="cuda")
     expected = torch.tensor([[6.0, 5.0, 3.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, terminateds, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_gae_known_values_delta():
-    # gamma=1, lambda=1, no dones, bootstrap=0.
+    # gamma=1, lambda=1, no terminateds, bootstrap=0.
     # values=[1,1,1] -> next_values=[1,1,0(bootstrap)] -> delta[t]=r[t]+1-1=r[t]
     # Same result as above — verifies V shifts cancel correctly.
     rewards  = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values   = torch.ones(1, 3, device="cuda")
-    dones    = torch.zeros(1, 3, device="cuda")
+    terminateds    = torch.zeros(1, 3, device="cuda")
     # next_values = [1, 1, 0(bootstrap)] -> delta = [1+1-1, 2+1-1, 3+0-1] = [1, 2, 2]
     # A[2] = 2
     # A[1] = 2 + 2 = 4
     # A[0] = 1 + 4 = 5
     expected = torch.tensor([[5.0, 4.0, 2.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, terminateds, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_gae_known_values_gamma():
-    # gamma=0.9, lambda=1, no dones, bootstrap=0, V=0.
+    # gamma=0.9, lambda=1, no terminateds, bootstrap=0, V=0.
     # next_values = [0, 0(bootstrap)] -> delta[t]=r[t]
     # A[1] = 2 + 0.9*0 = 2
     # A[0] = 1 + 0.9*2 = 2.8
     rewards  = torch.tensor([[1.0, 2.0]], device="cuda")
     values   = torch.zeros(1, 2, device="cuda")
-    dones    = torch.zeros(1, 2, device="cuda")
+    terminateds    = torch.zeros(1, 2, device="cuda")
     expected = torch.tensor([[2.8, 2.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=0.9, lambda_=1.0),
+        compute_gae(rewards, values, terminateds, gamma=0.9, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_gae_known_values_lambda():
-    # gamma=1, lambda=0, no dones, V=0 -> A[t] = delta[t] = r[t] (one-step TD).
+    # gamma=1, lambda=0, no terminateds, V=0 -> A[t] = delta[t] = r[t] (one-step TD).
     rewards  = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values   = torch.zeros(1, 3, device="cuda")
-    dones    = torch.zeros(1, 3, device="cuda")
+    terminateds    = torch.zeros(1, 3, device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=1.0, lambda_=0.0),
+        compute_gae(rewards, values, terminateds, gamma=1.0, lambda_=0.0),
         rewards, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_gae_known_values_truncated():
-    # gamma=1, lambda=1, no dones, bootstrap=2.0, V=0.
+    # gamma=1, lambda=1, no terminateds, bootstrap=2.0, V=0.
     # bootstrap serves as both A[T] and V(s_T) (standard GAE semantics).
     # v_next = [values[1], values[2], bootstrap] = [0, 0, 2]
     # delta  = [1+0-0, 2+0-0, 3+2-0] = [1, 2, 5]
@@ -195,12 +195,12 @@ def test_gae_known_values_truncated():
     # A[0] = delta[0] + 1*A[1] = 1 + 9 = 10
     rewards    = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values     = torch.zeros(1, 3, device="cuda")
-    dones      = torch.zeros(1, 3, device="cuda")
+    terminateds      = torch.zeros(1, 3, device="cuda")
     bootstrap  = torch.tensor([2.0], device="cuda")
     expected   = torch.tensor([[10.0, 9.0, 7.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones,
-                           gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap),
+        compute_gae(rewards, values, terminateds,
+                           gamma=1.0, lambda_=1.0, last_value=bootstrap),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -208,7 +208,7 @@ def test_gae_known_values_truncated():
 @cuda_only
 def test_gae_known_values_mixed_termination():
     # Two envs: env 0 terminated (bootstrap=0), env 1 truncated (bootstrap=5).
-    # gamma=1, lambda=1, no mid-sequence dones, V=0.
+    # gamma=1, lambda=1, no mid-sequence terminateds, V=0.
     # Env 0: next_values=[0,0], delta=r, A[1]=2, A[0]=3
     # Env 1: next_values=[0,5], delta=[1,2+5]=[1,7]... wait:
     #   delta[1] = r[1] + gamma*next_v[1] - v[1] = 2 + 1*5 - 0 = 7
@@ -219,13 +219,13 @@ def test_gae_known_values_mixed_termination():
     #   Hmm, that changes the hand calc. Let me use reference_gae as oracle.
     rewards   = torch.tensor([[1.0, 2.0], [1.0, 2.0]], device="cuda")
     values    = torch.zeros(2, 2, device="cuda")
-    dones     = torch.zeros(2, 2, device="cuda")
+    terminateds     = torch.zeros(2, 2, device="cuda")
     bootstrap = torch.tensor([0.0, 5.0], device="cuda")
-    expected  = reference_gae(rewards, values, dones,
+    expected  = reference_gae(rewards, values, terminateds,
                                gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap)
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones,
-                           gamma=1.0, lambda_=1.0, bootstrap_values=bootstrap),
+        compute_gae(rewards, values, terminateds,
+                           gamma=1.0, lambda_=1.0, last_value=bootstrap),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -239,26 +239,26 @@ def test_gae_known_values_episode_boundary():
     # A[0] = 1 + 1*2 = 3
     rewards  = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values   = torch.zeros(1, 3, device="cuda")
-    dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
+    terminateds    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
     expected = torch.tensor([[3.0, 2.0, 3.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, terminateds, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_gae_known_values_batch():
-    # Two envs, gamma=1, lambda=1, no dones, V=0.
+    # Two envs, gamma=1, lambda=1, no terminateds, V=0.
     # next_values = zeros (bootstrap=0) -> delta=r
     # Env 0: A[1]=2, A[0]=1+2=3
     # Env 1: A[1]=4, A[0]=3+4=7
     rewards  = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="cuda")
     values   = torch.zeros(2, 2, device="cuda")
-    dones    = torch.zeros(2, 2, device="cuda")
+    terminateds    = torch.zeros(2, 2, device="cuda")
     expected = torch.tensor([[3.0, 2.0], [7.0, 4.0]], device="cuda")
     torch.testing.assert_close(
-        compute_gae(rewards, values, dones, gamma=1.0, lambda_=1.0),
+        compute_gae(rewards, values, terminateds, gamma=1.0, lambda_=1.0),
         expected, atol=1e-5, rtol=1e-5,
     )
 
@@ -269,9 +269,9 @@ def test_gae_known_values_batch():
 
 @cuda_only
 def test_gae_correctness_basic():
-    rewards, values, dones = _make_inputs(64, 512, seed=0)
-    expected = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
-    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    rewards, values, terminateds = _make_inputs(64, 512, seed=0)
+    expected = reference_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
+    actual   = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -285,33 +285,174 @@ def test_gae_correctness_basic():
     (256, 2048),
 ])
 def test_gae_correctness_shapes(num_envs, seq_len):
-    rewards, values, dones = _make_inputs(num_envs, seq_len, seed=42)
-    expected = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
-    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    rewards, values, terminateds = _make_inputs(num_envs, seq_len, seed=42)
+    expected = reference_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
+    actual   = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
 def test_gae_correctness_bootstrap():
-    rewards, values, dones = _make_inputs(32, 512, seed=3)
+    rewards, values, terminateds = _make_inputs(32, 512, seed=3)
     bootstrap = torch.rand(32, device="cuda")
-    expected  = reference_gae(rewards, values, dones, gamma=0.99, lambda_=0.95,
+    expected  = reference_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95,
                                bootstrap_values=bootstrap)
-    actual    = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95,
-                                   bootstrap_values=bootstrap)
+    actual    = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95,
+                            last_value=bootstrap)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
 def test_gae_lambda0():
     """lambda=0: advantage equals the one-step TD error at every step."""
-    rewards, values, dones = _make_inputs(8, 64, seed=1)
+    rewards, values, terminateds = _make_inputs(8, 64, seed=1)
     # next_values = values shifted by 1, with 0 at end
     next_values = _make_next_values(values, None)
-    not_done = 1.0 - dones
+    not_done = 1.0 - terminateds
     expected = rewards + 0.99 * not_done * next_values - values
-    actual   = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.0)
+    actual   = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.0)
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Sequential reference for full [num_envs, seq_len] bootstrap_values
+# ---------------------------------------------------------------------------
+
+def _ref_gae_sequential(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    terminateds: torch.Tensor,
+    truncateds: torch.Tensor,
+    bootstrap_values: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """Pure step-by-step Python loop — ground truth for per-step bootstrap_values.
+
+    Handles interior truncated steps (bootstrap_values[n, t] used as v_next when
+    truncateds[n, t]=1) in addition to the window boundary (t=T-1).
+    """
+    N, T = rewards.shape
+    out = torch.zeros_like(rewards)
+    for n in range(N):
+        carry = bootstrap_values[n, T - 1].item()   # A[T] = boundary bootstrap
+        for t in reversed(range(T)):
+            if t == T - 1 or truncateds[n, t].item() == 1.0:
+                v_next = bootstrap_values[n, t].item()
+            else:
+                v_next = values[n, t + 1].item()
+            not_terminated = 1.0 - terminateds[n, t].item()
+            done = min(1.0, terminateds[n, t].item() + truncateds[n, t].item())
+            delta = rewards[n, t].item() + gamma * not_terminated * v_next - values[n, t].item()
+            carry = delta + gamma * lambda_ * (1.0 - done) * carry
+            out[n, t] = carry
+    return out
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_values / last_value API tests
+# ---------------------------------------------------------------------------
+
+@cuda_only
+def test_gae_two_interior_truncations():
+    """Two interior truncated episodes + continuing window boundary.
+
+    This is the case CleanRL/SB3-style single-bootstrap approaches get wrong.
+    Verified against a pure sequential Python reference loop.
+    """
+    torch.manual_seed(99)
+    N, T = 2, 12
+    rewards     = torch.rand(N, T, device="cuda")
+    values      = torch.rand(N, T, device="cuda")
+    terminateds = torch.zeros(N, T, device="cuda")
+    truncateds  = torch.zeros(N, T, device="cuda")
+
+    # env 0: truncations at t=3 and t=7; window continues past t=11
+    truncateds[0, 3]  = 1.0
+    truncateds[0, 7]  = 1.0
+    # env 1: single truncation at t=5; window terminates at t=11
+    truncateds[1, 5]  = 1.0
+
+    bootstrap_values = torch.zeros(N, T, device="cuda")
+    bootstrap_values[0, 3]  = 2.5    # V(s_{t=4}^true) for env 0, first truncation
+    bootstrap_values[0, 7]  = 1.8    # V(s_{t=8}^true) for env 0, second truncation
+    bootstrap_values[0, 11] = 3.2    # V(s_T), env 0 window continues
+    bootstrap_values[1, 5]  = 0.9    # V(s_{t=6}^true) for env 1
+    # bootstrap_values[1, 11] stays 0: env 1 terminates at t=11
+
+    expected = _ref_gae_sequential(
+        rewards.cpu(), values.cpu(), terminateds.cpu(), truncateds.cpu(),
+        bootstrap_values.cpu(), gamma=0.99, lambda_=0.95,
+    ).cuda()
+    actual = compute_gae(
+        rewards, values, terminateds, truncateds,
+        gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values,
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+def test_gae_bootstrap_values_full_tensor():
+    """Passing a full [num_envs, seq_len] bootstrap_values tensor (no last_value).
+
+    Exercises the public bootstrap_values API directly — values at truncated steps
+    plus a non-zero boundary column for a continuing episode.
+    """
+    torch.manual_seed(42)
+    N, T = 8, 64
+    rewards, values, terminateds = _make_inputs(N, T, seed=42)
+    truncateds = (torch.rand(N, T, device="cuda") < 0.05).float()
+    # Ensure terminated and truncated are mutually exclusive
+    truncateds = truncateds * (1.0 - terminateds)
+
+    bootstrap_values = torch.zeros(N, T, device="cuda")
+    # Set bootstrap at every truncated step
+    bootstrap_values[truncateds.bool()] = torch.rand(int(truncateds.sum().item()), device="cuda")
+    # Set boundary continuation value
+    bootstrap_values[:, -1] = torch.rand(N, device="cuda")
+
+    expected = _ref_gae_sequential(
+        rewards.cpu(), values.cpu(), terminateds.cpu(), truncateds.cpu(),
+        bootstrap_values.cpu(), gamma=0.99, lambda_=0.95,
+    ).cuda()
+    actual = compute_gae(
+        rewards, values, terminateds, truncateds,
+        gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values,
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+def test_gae_last_value_mutual_exclusion():
+    """Passing both last_value and bootstrap_values must raise."""
+    rewards     = torch.rand(4, 16, device="cuda")
+    values      = torch.rand(4, 16, device="cuda")
+    terminateds = torch.zeros(4, 16, device="cuda")
+    bv = torch.zeros(4, 16, device="cuda")
+    lv = torch.rand(4, device="cuda")
+    with pytest.raises(AssertionError, match="not both"):
+        compute_gae(rewards, values, terminateds,
+                    bootstrap_values=bv, last_value=lv)
+
+
+@cuda_only
+def test_gae_last_value_equivalence():
+    """last_value=[num_envs] produces identical output to the equivalent
+    hand-built bootstrap_values[:, -1] tensor."""
+    torch.manual_seed(7)
+    N, T = 8, 64
+    rewards, values, terminateds = _make_inputs(N, T, seed=7)
+    lv = torch.rand(N, device="cuda")
+
+    actual = compute_gae(rewards, values, terminateds,
+                         gamma=0.99, lambda_=0.95, last_value=lv)
+
+    bv = torch.zeros(N, T, device="cuda")
+    bv[:, -1] = lv
+    expected = compute_gae(rewards, values, terminateds,
+                           gamma=0.99, lambda_=0.95, bootstrap_values=bv)
+
+    torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-6)
 
 
 @cuda_only
@@ -320,13 +461,13 @@ def test_gae_non_contiguous_input():
     base    = torch.randn(64, 512, 2, device="cuda")
     rewards = base[..., 0]
     values  = torch.randn(64, 512, 2, device="cuda")[..., 0]
-    dones   = torch.zeros(64, 512, 2, device="cuda")[..., 0]
+    terminateds   = torch.zeros(64, 512, 2, device="cuda")[..., 0]
 
     expected = reference_gae(
-        rewards.contiguous(), values.contiguous(), dones.contiguous(),
+        rewards.contiguous(), values.contiguous(), terminateds.contiguous(),
         gamma=0.99, lambda_=0.95,
     )
-    actual = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
+    actual = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -432,7 +573,7 @@ def test_gae_performance():
 def vectorized_gae(
     rewards: torch.Tensor,
     values: torch.Tensor,
-    dones: torch.Tensor,
+    terminateds: torch.Tensor,
     gamma: float,
     lambda_: float,
     bootstrap_values: torch.Tensor | None = None,
@@ -444,7 +585,7 @@ def vectorized_gae(
     log-space suffix-product trick as vectorized_vtrace. Not production-hardened;
     only used for benchmarking.
     """
-    not_done    = 1.0 - dones
+    not_done    = 1.0 - terminateds
     next_values = _make_next_values(values, bootstrap_values)
     deltas      = rewards + gamma * not_done * next_values - values
     decays      = gamma * lambda_ * not_done

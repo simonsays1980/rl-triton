@@ -79,6 +79,9 @@ def _vtrace_inputs():
 def _retrace_inputs(num_actions=4):
     torch.manual_seed(0)
     d = "cuda"
+    terminateds = (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float()
+    # truncateds are mutually exclusive with terminateds
+    truncateds  = ((torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05) & ~terminateds.bool()).float()
     return (
         torch.softmax(torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d), dim=-1),
         torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) * 0.8 + 0.1,
@@ -86,7 +89,8 @@ def _retrace_inputs(num_actions=4):
         torch.randn(_NUM_ENVS, _SEQ_LEN, num_actions, device=d),
         torch.randint(0, num_actions, (_NUM_ENVS, _SEQ_LEN), device=d),
         torch.randn(_NUM_ENVS, _SEQ_LEN, device=d),
-        (torch.rand(_NUM_ENVS, _SEQ_LEN, device=d) < 0.05).float(),
+        terminateds,
+        truncateds,
     )
 
 

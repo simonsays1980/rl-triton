@@ -72,57 +72,60 @@ def compute_gae(
     Returns:
         advantages: A[t], shape [num_envs, seq_len], float32.
     """
-    for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
-        assert t.is_cuda,                f"{name} must be on CUDA"
-        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
-
     num_envs, seq_len = rewards.shape
+    has_truncations   = truncateds is not None
+
+    if _CORRECTNESS_WARNINGS():
+        for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
+            assert t.is_cuda,                f"{name} must be on CUDA"
+            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+        if has_truncations:
+            assert truncateds.is_cuda,                "truncateds must be on CUDA"
+            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+            assert truncateds.shape == rewards.shape, \
+                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+            assert not (terminateds.bool() & truncateds.bool()).any(), \
+                "terminated and truncated are mutually exclusive: a step cannot be both"
+        if last_value is not None:
+            assert bootstrap_values is None, \
+                "pass either last_value (shape [num_envs], convenience for the " \
+                "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
+                "full per-step control), not both."
+            assert last_value.shape == (num_envs,), \
+                f"last_value must have shape [{num_envs}], got {last_value.shape}"
+            assert not has_truncations, \
+                "last_value cannot be combined with truncateds; use bootstrap_values instead."
+        if bootstrap_values is not None:
+            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+            assert bootstrap_values.shape == rewards.shape, \
+                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+        if has_truncations and bootstrap_values is not None:
+            interior = torch.ones_like(truncateds, dtype=torch.bool)
+            interior[:, -1] = False
+            stray = (bootstrap_values != 0) & (truncateds == 0) & interior
+            assert not stray.any(), (
+                "bootstrap_values must be zero at non-truncated interior steps. "
+                "Nonzero entries there double-count via the additive v_next trick "
+                "and corrupt delta. Populate bootstrap_values only at truncated "
+                "steps and at the final column (window boundary)."
+            )
 
     rewards     = rewards.contiguous()
     values      = values.contiguous()
     terminateds = terminateds.contiguous()
-
-    if truncateds is not None:
-        assert truncateds.is_cuda,                "truncateds must be on CUDA"
-        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-        assert truncateds.shape == rewards.shape, \
-            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
         truncateds = truncateds.contiguous()
-        assert not (terminateds.bool() & truncateds.bool()).any(), \
-            "terminated and truncated are mutually exclusive: a step cannot be both"
-    else:
-        truncateds = torch.zeros_like(terminateds)
 
     if last_value is not None:
-        assert bootstrap_values is None, \
-            "pass either last_value (shape [num_envs], convenience for the " \
-            "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
-            "full per-step control), not both."
-        assert last_value.shape == (num_envs,), \
-            f"last_value must have shape [{num_envs}], got {last_value.shape}"
-        bootstrap_values = torch.zeros_like(rewards)
-        bootstrap_values[:, -1] = last_value
-
-    if bootstrap_values is None:
-        bootstrap_values = torch.zeros_like(rewards)
-    else:
-        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-        assert bootstrap_values.shape == rewards.shape, \
-            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+        scalar_bootstrap = last_value.contiguous()
+        bootstrap_values = None
+    elif bootstrap_values is not None:
         bootstrap_values = bootstrap_values.contiguous()
-
-    if _CORRECTNESS_WARNINGS:
-        interior = torch.ones_like(truncateds, dtype=torch.bool)
-        interior[:, -1] = False  # boundary column is exempt (window edge)
-        stray = (bootstrap_values != 0) & (truncateds == 0) & interior
-        assert not stray.any(), (
-            "bootstrap_values must be zero at non-truncated interior steps. "
-            "Nonzero entries there double-count via the additive v_next trick "
-            "and corrupt delta. Populate bootstrap_values only at truncated "
-            "steps and at the final column (window boundary)."
-        )
+        scalar_bootstrap = None
+    else:
+        scalar_bootstrap = None
 
     out = torch.empty_like(rewards)
 
@@ -131,32 +134,46 @@ def compute_gae(
         num_warps  = _WARPS.get(BLOCK_SIZE, 16)
         num_stages = 2 if BLOCK_SIZE >= 2048 else 1
 
-        gae_fused_kernel[(num_envs,)](
-            rewards, values, terminateds, truncateds,
-            out,
-            bootstrap_values,
-            seq_len,
-            rewards.stride(0),
-            gamma=gamma,
-            lambda_=lambda_,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
+        if has_truncations:
+            if bootstrap_values is None:
+                bootstrap_values = torch.zeros_like(rewards)
+            gae_fused_kernel[(num_envs,)](
+                rewards, values, terminateds, truncateds,
+                out, bootstrap_values,
+                seq_len, rewards.stride(0),
+                gamma=gamma, lambda_=lambda_,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=True,
+            )
+        else:
+            if scalar_bootstrap is None:
+                scalar_bootstrap = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+            gae_fused_kernel[(num_envs,)](
+                rewards, values, terminateds, None,
+                out, scalar_bootstrap,
+                seq_len, rewards.stride(0),
+                gamma=gamma, lambda_=lambda_,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=False,
+            )
         return out
 
     # Chunked path for seq_len > 131072.
-    # v_next[t] = values[t+1] at interior non-truncated steps,
-    #             bootstrap_values[t] at truncated steps and window boundary.
-    # Additive formulation matches the fused kernel exactly (no torch.where).
+    if not has_truncations:
+        truncateds = torch.zeros_like(terminateds)
+    if bootstrap_values is None:
+        bootstrap_values = torch.zeros_like(rewards)
+        if scalar_bootstrap is not None:
+            bootstrap_values[:, -1] = scalar_bootstrap
+
     not_terminated = 1.0 - terminateds
     not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
     next_values    = torch.empty_like(values)
     next_values[:, :-1] = values[:, 1:]
     next_values[:, -1]  = 0.0
-    next_values = next_values * (1.0 - truncateds)   # zero at truncated steps
-    next_values[:, -1]  = 0.0                         # boundary: no stored next value
-    next_values = next_values + bootstrap_values      # additive, same as kernel
+    next_values = next_values * (1.0 - truncateds)
+    next_values[:, -1]  = 0.0
+    next_values = next_values + bootstrap_values
 
     deltas = rewards + gamma * not_terminated * next_values - values
     decays = gamma * lambda_ * not_done

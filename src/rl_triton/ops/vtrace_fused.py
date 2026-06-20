@@ -72,18 +72,49 @@ def compute_vtrace_fused(
         vtrace_targets:    [num_envs, seq_len], float32.
         vtrace_advantages: [num_envs, seq_len], float32.
     """
-    for name, t in [
-        ("log_pi_target",   log_pi_target),
-        ("log_pi_behavior", log_pi_behavior),
-        ("values",          values),
-        ("rewards",         rewards),
-        ("terminateds",     terminateds),
-    ]:
-        assert t.is_cuda,                f"{name} must be on CUDA"
-        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
-
     num_envs, seq_len = rewards.shape
+
+    if _CORRECTNESS_WARNINGS():
+        for name, t in [
+            ("log_pi_target",   log_pi_target),
+            ("log_pi_behavior", log_pi_behavior),
+            ("values",          values),
+            ("rewards",         rewards),
+            ("terminateds",     terminateds),
+        ]:
+            assert t.is_cuda,                f"{name} must be on CUDA"
+            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+        if truncateds is not None:
+            assert truncateds.is_cuda,                "truncateds must be on CUDA"
+            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+            assert truncateds.shape == rewards.shape, \
+                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+            assert not (terminateds.bool() & truncateds.bool()).any(), \
+                "terminated and truncated are mutually exclusive: a step cannot be both"
+        if last_value is not None:
+            assert bootstrap_values is None, \
+                "pass either last_value (shape [num_envs], convenience for the " \
+                "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
+                "full per-step control), not both."
+            assert last_value.shape == (num_envs,), \
+                f"last_value must have shape [{num_envs}], got {last_value.shape}"
+        if bootstrap_values is not None:
+            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+            assert bootstrap_values.shape == rewards.shape, \
+                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+        if truncateds is not None and bootstrap_values is not None:
+            interior = torch.ones_like(truncateds, dtype=torch.bool)
+            interior[:, -1] = False
+            stray = (bootstrap_values != 0) & (truncateds == 0) & interior
+            assert not stray.any(), (
+                "bootstrap_values must be zero at non-truncated interior steps. "
+                "Nonzero entries there double-count via the additive v_next trick "
+                "and corrupt delta. Populate bootstrap_values only at truncated "
+                "steps and at the final column (window boundary)."
+            )
+
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
         "Use compute_vtrace for longer sequences (it auto-dispatches to chunked)."
@@ -96,45 +127,17 @@ def compute_vtrace_fused(
     terminateds     = terminateds.contiguous()
 
     if truncateds is not None:
-        assert truncateds.is_cuda,                "truncateds must be on CUDA"
-        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-        assert truncateds.shape == rewards.shape, \
-            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
         truncateds = truncateds.contiguous()
-        assert not (terminateds.bool() & truncateds.bool()).any(), \
-            "terminated and truncated are mutually exclusive: a step cannot be both"
     else:
         truncateds = torch.zeros_like(terminateds)
 
     if last_value is not None:
-        assert bootstrap_values is None, \
-            "pass either last_value (shape [num_envs], convenience for the " \
-            "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
-            "full per-step control), not both."
-        assert last_value.shape == (num_envs,), \
-            f"last_value must have shape [{num_envs}], got {last_value.shape}"
         bootstrap_values = torch.zeros_like(rewards)
         bootstrap_values[:, -1] = last_value
-
-    if bootstrap_values is None:
-        bootstrap_values = torch.zeros_like(rewards)
-    else:
-        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-        assert bootstrap_values.shape == rewards.shape, \
-            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+    elif bootstrap_values is not None:
         bootstrap_values = bootstrap_values.contiguous()
-
-    if _CORRECTNESS_WARNINGS:
-        interior = torch.ones_like(truncateds, dtype=torch.bool)
-        interior[:, -1] = False  # boundary column is exempt (window edge)
-        stray = (bootstrap_values != 0) & (truncateds == 0) & interior
-        assert not stray.any(), (
-            "bootstrap_values must be zero at non-truncated interior steps. "
-            "Nonzero entries there double-count via the additive v_next trick "
-            "and corrupt delta. Populate bootstrap_values only at truncated "
-            "steps and at the final column (window boundary)."
-        )
+    else:
+        bootstrap_values = torch.zeros_like(rewards)
 
     vtrace_targets    = torch.empty_like(rewards)
     vtrace_advantages = torch.empty_like(rewards)

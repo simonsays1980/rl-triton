@@ -4,7 +4,7 @@ import triton
 from rl_triton.kernels.discounted_returns_fused import discounted_returns_fused_kernel
 from rl_triton.kernels.eligibility_traces_fused import eligibility_traces_fused_kernel
 from rl_triton.kernels.lambda_returns_fused import lambda_returns_fused_kernel
-from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN
+from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Lambda returns carries more registers (next_values, u computation) — same budget as GAE.
 _WARPS_LAMBDA = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
@@ -12,7 +12,6 @@ _WARPS_LAMBDA = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
 # Discounted returns and eligibility traces carry very few registers (2 loads, 1 scan).
 # More warps fit without spilling, giving the scan tree more parallelism.
 _WARPS_LIGHT = {512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
-
 
 
 def compute_lambda_returns(
@@ -60,35 +59,33 @@ def compute_lambda_returns(
     Returns:
         lambda_returns: G[t], shape [num_envs, seq_len], float32.
     """
-    for name, t in [("rewards", rewards), ("next_values", next_values), ("terminateds", terminateds)]:
-        assert t.is_cuda,                f"{name} must be on CUDA"
-        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
-
     num_envs, seq_len = rewards.shape
+    has_truncations   = truncateds is not None
+
+    if _CORRECTNESS_WARNINGS():
+        for name, t in [("rewards", rewards), ("next_values", next_values), ("terminateds", terminateds)]:
+            assert t.is_cuda,                f"{name} must be on CUDA"
+            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+        if has_truncations:
+            assert truncateds.is_cuda,                "truncateds must be on CUDA"
+            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+            assert truncateds.shape == rewards.shape, \
+                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+            assert not (terminateds.bool() & truncateds.bool()).any(), \
+                "terminated and truncated are mutually exclusive: a step cannot be both"
+        if bootstrap_values is not None:
+            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+            assert bootstrap_values.shape == rewards.shape, \
+                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
     rewards     = rewards.contiguous()
     next_values = next_values.contiguous()
     terminateds = terminateds.contiguous()
-
-    if truncateds is not None:
-        assert truncateds.is_cuda,                "truncateds must be on CUDA"
-        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-        assert truncateds.shape == rewards.shape, \
-            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
         truncateds = truncateds.contiguous()
-        assert not (terminateds.bool() & truncateds.bool()).any(), \
-            "terminated and truncated are mutually exclusive: a step cannot be both"
-    else:
-        truncateds = torch.zeros_like(terminateds)
-
-    if bootstrap_values is None:
-        bootstrap_values = torch.zeros_like(rewards)
-    else:
-        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-        assert bootstrap_values.shape == rewards.shape, \
-            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+    if bootstrap_values is not None:
         bootstrap_values = bootstrap_values.contiguous()
 
     out = torch.empty_like(rewards)
@@ -97,18 +94,36 @@ def compute_lambda_returns(
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
         num_warps  = _WARPS_LAMBDA.get(BLOCK_SIZE, 16)
         num_stages = 2 if BLOCK_SIZE >= 2048 else 1
-        lambda_returns_fused_kernel[(num_envs,)](
-            rewards, next_values, terminateds, truncateds,
-            out, bootstrap_values,
-            seq_len, rewards.stride(0),
-            gamma=gamma, lambda_=lambda_,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
+        if has_truncations:
+            if bootstrap_values is None:
+                bootstrap_values = torch.zeros_like(rewards)
+            lambda_returns_fused_kernel[(num_envs,)](
+                rewards, next_values, terminateds, truncateds,
+                out, bootstrap_values,
+                seq_len, rewards.stride(0),
+                gamma=gamma, lambda_=lambda_,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=True,
+            )
+        else:
+            scalar_bootstrap = bootstrap_values[:, -1].contiguous() \
+                               if bootstrap_values is not None \
+                               else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+            lambda_returns_fused_kernel[(num_envs,)](
+                rewards, next_values, terminateds, None,
+                out, scalar_bootstrap,
+                seq_len, rewards.stride(0),
+                gamma=gamma, lambda_=lambda_,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=False,
+            )
         return out
 
     # Chunked fallback for seq_len > 131072.
+    if not has_truncations:
+        truncateds = torch.zeros_like(terminateds)
+    if bootstrap_values is None:
+        bootstrap_values = torch.zeros_like(rewards)
     not_done = 1.0 - (terminateds + truncateds).clamp(max=1.0)
     carry    = bootstrap_values[:, -1]
     u = rewards + gamma * (1.0 - lambda_) * not_done * next_values \
@@ -153,34 +168,32 @@ def compute_discounted_returns(
     Returns:
         returns: G[t], shape [num_envs, seq_len], float32.
     """
-    for name, t in [("rewards", rewards), ("terminateds", terminateds)]:
-        assert t.is_cuda,                f"{name} must be on CUDA"
-        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
-
     num_envs, seq_len = rewards.shape
+    has_truncations   = truncateds is not None
+
+    if _CORRECTNESS_WARNINGS():
+        for name, t in [("rewards", rewards), ("terminateds", terminateds)]:
+            assert t.is_cuda,                f"{name} must be on CUDA"
+            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+        if has_truncations:
+            assert truncateds.is_cuda,                "truncateds must be on CUDA"
+            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+            assert truncateds.shape == rewards.shape, \
+                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+            assert not (terminateds.bool() & truncateds.bool()).any(), \
+                "terminated and truncated are mutually exclusive: a step cannot be both"
+        if bootstrap_values is not None:
+            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+            assert bootstrap_values.shape == rewards.shape, \
+                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
     rewards     = rewards.contiguous()
     terminateds = terminateds.contiguous()
-
-    if truncateds is not None:
-        assert truncateds.is_cuda,                "truncateds must be on CUDA"
-        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-        assert truncateds.shape == rewards.shape, \
-            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
         truncateds = truncateds.contiguous()
-        assert not (terminateds.bool() & truncateds.bool()).any(), \
-            "terminated and truncated are mutually exclusive: a step cannot be both"
-    else:
-        truncateds = torch.zeros_like(terminateds)
-
-    if bootstrap_values is None:
-        bootstrap_values = torch.zeros_like(rewards)
-    else:
-        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-        assert bootstrap_values.shape == rewards.shape, \
-            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+    if bootstrap_values is not None:
         bootstrap_values = bootstrap_values.contiguous()
 
     out = torch.empty_like(rewards)
@@ -189,18 +202,36 @@ def compute_discounted_returns(
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
         num_warps  = _WARPS_LIGHT.get(BLOCK_SIZE, 16)
         num_stages = 2 if BLOCK_SIZE >= 1024 else 1
-        discounted_returns_fused_kernel[(num_envs,)](
-            rewards, terminateds, truncateds,
-            out, bootstrap_values,
-            seq_len, rewards.stride(0),
-            gamma=gamma,
-            BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
+        if has_truncations:
+            if bootstrap_values is None:
+                bootstrap_values = torch.zeros_like(rewards)
+            discounted_returns_fused_kernel[(num_envs,)](
+                rewards, terminateds, truncateds,
+                out, bootstrap_values,
+                seq_len, rewards.stride(0),
+                gamma=gamma,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=True,
+            )
+        else:
+            scalar_bootstrap = bootstrap_values[:, -1].contiguous() \
+                               if bootstrap_values is not None \
+                               else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+            discounted_returns_fused_kernel[(num_envs,)](
+                rewards, terminateds, None,
+                out, scalar_bootstrap,
+                seq_len, rewards.stride(0),
+                gamma=gamma,
+                BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
+                HAS_TRUNCATIONS=False,
+            )
         return out
 
     # Chunked fallback for seq_len > 131072.
+    if not has_truncations:
+        truncateds = torch.zeros_like(terminateds)
+    if bootstrap_values is None:
+        bootstrap_values = torch.zeros_like(rewards)
     done  = (terminateds + truncateds).clamp(max=1.0)
     carry = bootstrap_values[:, -1]
     u = rewards + gamma * truncateds * bootstrap_values
@@ -222,7 +253,6 @@ def compute_eligibility_traces(
 
     - z[t] = g[t] + γ·λ·(1 - done[t]) * z[t-1],  z[-1] = seed
 
-
     g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t) for
     general function approximation, or the feature vector x(s_t) in the linear
     case.  Unlike all other kernels, this scan runs forward in time.
@@ -240,12 +270,17 @@ def compute_eligibility_traces(
     Returns:
         traces: z[t], shape [num_envs, seq_len], float32.
     """
-    assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
-    assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
-    assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"
-    assert gradients.shape == dones.shape,   "gradients and dones must have the same shape"
-
     num_envs, seq_len = gradients.shape
+
+    if _CORRECTNESS_WARNINGS():
+        assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
+        assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
+        assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"
+        assert gradients.shape == dones.shape,   "gradients and dones must have the same shape"
+        if seed_values is not None:
+            assert seed_values.shape == (num_envs,), \
+                f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
+            assert seed_values.is_cuda, "seed_values must be on CUDA"
 
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
@@ -258,9 +293,6 @@ def compute_eligibility_traces(
     if seed_values is None:
         seed_values = torch.zeros(num_envs, device=gradients.device, dtype=torch.float32)
     else:
-        assert seed_values.shape == (num_envs,), \
-            f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
-        assert seed_values.is_cuda, "seed_values must be on CUDA"
         seed_values = seed_values.contiguous()
 
     out = torch.empty_like(gradients)

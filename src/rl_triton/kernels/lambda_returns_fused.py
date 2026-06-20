@@ -14,6 +14,7 @@ def lambda_returns_fused_kernel(
     gamma,
     lambda_,
     BLOCK_SIZE: tl.constexpr,
+    HAS_TRUNCATIONS: tl.constexpr,
 ):
     """
     Fully-fused TD(λ) returns kernel: one program per environment.
@@ -26,31 +27,26 @@ def lambda_returns_fused_kernel(
       α[t] = r[t] + γ*(1-λ)*(1-done[t])*V(s_{t+1}) + γ*truncated[t]*bootstrap[t]
       β[t] = γ*λ*(1-done[t])
 
-    next_values_ptr holds V(s_{t+1}) pre-aligned: next_values_ptr[env, t] = V(s_{t+1}).
-    For truncated steps the caller sets next_values[t] = 0 and bootstrap[t] = V(s_{t+1}^true),
-    so the two are never double-counted.
+    When HAS_TRUNCATIONS=False, truncateds_ptr is unused and bootstrap_ptr is
+    [num_envs] (scalar per env), saving two full HBM reads.
 
-    bootstrap_ptr is [num_envs, seq_len] — nonzero only at truncated steps and
-    the window boundary (t=T-1 when the episode continues past the window).
-    The window-boundary carry is bootstrap[T-1], extracted via masked sum.
-
-    Indexing (reversed):
-      offs = 0, 1, …, BLOCK_SIZE-1
-      rev  = seq_len - 1 - offs      (offs=0 → t=T-1)
+    When HAS_TRUNCATIONS=True, bootstrap_ptr is [num_envs, seq_len] — nonzero
+    only at truncated steps and the window boundary.
 
     Args:
         rewards_ptr:     [num_envs, seq_len], float32.
         next_values_ptr: V(s_{t+1}), same shape. Zeroed by caller at truncated steps.
         terminateds_ptr: True termination flags (1.0=terminated), same shape.
-        truncateds_ptr:  Time-limit truncation flags (1.0=truncated), same shape.
+        truncateds_ptr:  Truncation flags, same shape. Unused when HAS_TRUNCATIONS=False.
         out_ptr:         Output G[t], same shape.
-        bootstrap_ptr:   True continuation values [num_envs, seq_len], float32.
-                         Nonzero only at truncated steps and the window boundary.
+        bootstrap_ptr:   [num_envs, seq_len] when HAS_TRUNCATIONS=True;
+                         [num_envs] scalar per env when HAS_TRUNCATIONS=False.
         seq_len:         Number of timesteps.
         stride_env:      Row stride in elements.
         gamma:           Discount factor.
         lambda_:         Trace parameter.
         BLOCK_SIZE:      Power-of-2 >= seq_len (constexpr).
+        HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -62,15 +58,26 @@ def lambda_returns_fused_kernel(
     r          = tl.load(rewards_ptr     + base + rev, mask=mask, other=0.0)
     nv         = tl.load(next_values_ptr + base + rev, mask=mask, other=0.0)
     terminated = tl.load(terminateds_ptr + base + rev, mask=mask, other=1.0)
-    truncated  = tl.load(truncateds_ptr  + base + rev, mask=mask, other=0.0)
-    bootstrap  = tl.load(bootstrap_ptr   + base + rev, mask=mask, other=0.0)
-    done       = tl.minimum(terminated + truncated, 1.0)
 
-    not_done = 1.0 - done
-    u     = r + gamma * (1.0 - lambda_) * not_done * nv + gamma * truncated * bootstrap
-    decay = gamma * lambda_ * not_done
+    if HAS_TRUNCATIONS:
+        truncated = tl.load(truncateds_ptr + base + rev, mask=mask, other=0.0)
+        bootstrap = tl.load(bootstrap_ptr  + base + rev, mask=mask, other=0.0)
+        done      = tl.minimum(terminated + truncated, 1.0)
 
-    out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+        not_done = 1.0 - done
+        u     = r + gamma * (1.0 - lambda_) * not_done * nv + gamma * truncated * bootstrap
+        decay = gamma * lambda_ * not_done
 
-    carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
-    tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
+        out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+
+        carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
+        tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
+    else:
+        not_done  = 1.0 - terminated
+        bootstrap = tl.load(bootstrap_ptr + env_idx)
+
+        u     = r + gamma * (1.0 - lambda_) * not_done * nv
+        decay = gamma * lambda_ * not_done
+
+        out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+        tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)

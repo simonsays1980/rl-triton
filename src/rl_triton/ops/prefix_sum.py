@@ -2,7 +2,7 @@ import torch
 import triton
 
 from rl_triton.kernels.prefix_sum_fused import prefix_sum_fused_kernel
-from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN
+from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Prefix sum carries the fewest registers of any kernel (2 loads, v=1-done, scan).
 # Use the same aggressive warp/stage settings as the other light kernels.
@@ -34,12 +34,17 @@ def compute_episodic_prefix_sum(
     Returns:
         prefix_sums: C[t], shape [num_envs, seq_len], float32.
     """
-    assert inputs.is_cuda and dones.is_cuda, "inputs and dones must be on CUDA"
-    assert inputs.dtype == torch.float32, f"inputs: expected float32, got {inputs.dtype}"
-    assert dones.dtype == torch.float32,  f"dones: expected float32, got {dones.dtype}"
-    assert inputs.shape == dones.shape,   "inputs and dones must have the same shape"
-
     num_envs, seq_len = inputs.shape
+
+    if _CORRECTNESS_WARNINGS():
+        assert inputs.is_cuda and dones.is_cuda, "inputs and dones must be on CUDA"
+        assert inputs.dtype == torch.float32, f"inputs: expected float32, got {inputs.dtype}"
+        assert dones.dtype == torch.float32,  f"dones: expected float32, got {dones.dtype}"
+        assert inputs.shape == dones.shape,   "inputs and dones must have the same shape"
+        if seed_values is not None:
+            assert seed_values.shape == (num_envs,), \
+                f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
+            assert seed_values.is_cuda, "seed_values must be on CUDA"
 
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
@@ -52,9 +57,6 @@ def compute_episodic_prefix_sum(
     if seed_values is None:
         seed_values = torch.zeros(num_envs, device=inputs.device, dtype=torch.float32)
     else:
-        assert seed_values.shape == (num_envs,), \
-            f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
-        assert seed_values.is_cuda, "seed_values must be on CUDA"
         seed_values = seed_values.contiguous()
 
     out = torch.empty_like(inputs)

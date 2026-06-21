@@ -25,6 +25,8 @@ at production batch sizes (128+ envs, 1024+ steps):
 
 ## v0.2 - Fusion and Precision
 
+- [ ] **Multi-Block Hierarchical 2D Grid Scan** to maximize hardware occupancy of
+      low-environment/high-sequence configurations.
 - [ ] **Fused GAE + advantage normalisation** (single-pass, eliminates
       redundant reads of the advantages tensor)
 - [ ] **Fused value loss kernel** (GAE + MSE/Huber in one pass; `values`

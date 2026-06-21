@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu, parallel_suffix_scan
 
 triton = pytest.importorskip("triton")
 
@@ -527,6 +527,8 @@ def test_gae_performance():
     _bsv0   = torch.zeros(_N, _T, device="cuda")
     _bsv0[:, -1] = torch.rand(_N, device="cuda")
 
+    # Trigger torch.compile tracing at one shape; per-config warmup below
+    # handles each distinct BLOCK_SIZE (seq_len → power-of-2) before timing.
     compiled_cumsum(*_args, gamma=0.99, lambda_=0.95)
     compiled_assoc_scan(_args[0], _args[1], _args[2], _trunc0, _bsv0, 0.99, 0.95)
     compiled_loop(*_args, gamma=0.99, lambda_=0.95)
@@ -547,20 +549,27 @@ def test_gae_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter   = _n_iter_gpu(seq_len, num_envs)
 
         # Build zero-truncation inputs for the assoc-scan baseline.
         trunc0 = torch.zeros(num_envs, seq_len, device="cuda")
         bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
         bsv0[:, -1] = torch.rand(num_envs, device="cuda")
 
+        # Per-config warmup at the exact shape being timed — each distinct
+        # seq_len triggers a fresh Triton compile (new BLOCK_SIZE power-of-2).
+        _warmup_gpu(compute_gae, *args_gpu, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_cumsum, *args_gpu, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_assoc_scan,
+                    args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95)
+
         tri_ms    = _bench_gpu(compute_gae, *args_gpu,
-                               gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
+                               gamma=0.99, lambda_=0.95, n_iter=n_iter)
         cum_ms    = _bench_gpu(compiled_cumsum, *args_gpu,
-                               gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
+                               gamma=0.99, lambda_=0.95, n_iter=n_iter)
         asc_ms    = _bench_gpu(compiled_assoc_scan,
                                args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95,
-                               n_warmup=gpu_warmup, n_iter=gpu_iter)
+                               n_iter=n_iter)
         loop_ms   = _bench_cpu(compiled_loop, *args_gpu, gamma=0.99, lambda_=0.95)
         np_tri_ms = _bench_cpu(numpy_to_triton_to_numpy, *args_np, gamma=0.99, lambda_=0.95)
         numpy_ms  = _bench_cpu(numpy_gae, *args_gpu, gamma=0.99, lambda_=0.95)
@@ -769,7 +778,8 @@ def test_gae_truncation_performance():
         bootstrap_values[:, -1] = torch.rand(num_envs, device="cuda")
         return rewards, values, terminateds, truncateds, bootstrap_values
 
-    # Warmup — compiles compiled_vec_trunc.
+    # Initial compile trigger at one shape; per-config warmup below handles
+    # each distinct BLOCK_SIZE before timing.
     _wa = _make_trunc_inputs(64, 512, seed=1)
     compiled_vec_trunc(*_wa, gamma=0.99, lambda_=0.95)
     compute_gae(_wa[0], _wa[1], _wa[2], _wa[3], gamma=0.99, lambda_=0.95,
@@ -786,18 +796,23 @@ def test_gae_truncation_performance():
     all_speedups = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        args = _make_trunc_inputs(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        args   = _make_trunc_inputs(num_envs, seq_len)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_gae, args[0], args[1], args[2], args[3],
+                    gamma=0.99, lambda_=0.95, bootstrap_values=args[4])
+        _warmup_gpu(compiled_vec_trunc, *args, gamma=0.99, lambda_=0.95)
 
         tri_ms = _bench_gpu(
             compute_gae, args[0], args[1], args[2], args[3],
             gamma=0.99, lambda_=0.95, bootstrap_values=args[4],
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
         vec_ms = _bench_gpu(
             compiled_vec_trunc, *args,
             gamma=0.99, lambda_=0.95,
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
 
         su = vec_ms / tri_ms

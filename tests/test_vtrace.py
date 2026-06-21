@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu, parallel_suffix_scan
 
 # numpy is used intentionally: episode data is typically stored as NumPy arrays,
 # so numpy_to_triton_to_numpy mirrors the real adoption path (np -> GPU -> np)
@@ -705,10 +705,14 @@ def test_vtrace_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter   = _n_iter_gpu(seq_len, num_envs)
 
-        fused_ms  = _bench_gpu(compute_vtrace_fused,     *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        vec_ms    = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_vtrace_fused, *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,         *args_gpu, gamma=0.99)
+
+        fused_ms  = _bench_gpu(compute_vtrace_fused,     *args_gpu, gamma=0.99, n_iter=n_iter)
+        vec_ms    = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_iter=n_iter)
         loop_ms   = _bench_cpu(compiled_loop,            *args_gpu, gamma=0.99)
         np_tri_ms = _bench_cpu(numpy_to_triton_to_numpy, *args_np,  gamma=0.99)
         numpy_ms  = _bench_cpu(numpy_vtrace,             *args_gpu, gamma=0.99)
@@ -901,19 +905,25 @@ def test_vtrace_truncation_performance():
     all_speedups = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        args = _make_trunc_inputs(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        args   = _make_trunc_inputs(num_envs, seq_len)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_vtrace_fused,
+                    args[0], args[1], args[2], args[3], args[4],
+                    truncateds=args[5], gamma=0.99, bootstrap_values=args[6])
+        _warmup_gpu(compiled_vec_trunc, *args, gamma=0.99)
 
         tri_ms = _bench_gpu(
             compute_vtrace_fused,
             args[0], args[1], args[2], args[3], args[4],
             truncateds=args[5], gamma=0.99, bootstrap_values=args[6],
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
         vec_ms = _bench_gpu(
             compiled_vec_trunc, *args,
             gamma=0.99,
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
 
         su = vec_ms / tri_ms

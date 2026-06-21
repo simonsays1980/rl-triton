@@ -47,34 +47,55 @@ def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return a[:, :T]
 
 
-def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> float:
-    """Time a GPU kernel with CUDA events. Returns milliseconds per call."""
+def _warmup_gpu(fn, *args, n_warmup: int = 20, **kwargs) -> None:
+    """Run n_warmup untimed iterations and synchronize.
+
+    Must be called once per (fn, config) pair before _bench_gpu — absorbs
+    Triton JIT compilation, autotuning, cuBLAS init, and first-touch
+    allocation so none of these land in the timed region.
+    """
     for _ in range(n_warmup):
         fn(*args, **kwargs)
     torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end   = torch.cuda.Event(enable_timing=True)
-    start.record()
+
+
+def _bench_gpu(fn, *args, n_iter: int = 50, **kwargs) -> float:
+    """Time a GPU kernel with CUDA events. Returns MEDIAN milliseconds per call.
+
+    Caller must call _warmup_gpu(fn, *args, **kwargs) before this so that
+    Triton compilation and autotuning are already done.  Measures each
+    iteration individually with a pair of CUDA events and returns the median
+    — robust against occasional scheduler jitter.
+    """
+    times = []
     for _ in range(n_iter):
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
         fn(*args, **kwargs)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+    times.sort()
+    return times[len(times) // 2]
 
 
 def _bench_gpu_spread(
     fn_a, fn_b, args_a, args_b, kwargs_a, kwargs_b,
-    n_warmup: int = 25, n_iter: int = 100, n_trials: int = 5,
+    n_warmup: int = 20, n_iter: int = 50, n_trials: int = 5,
 ) -> tuple[list[float], list[float], list[float]]:
     """Run two GPU functions n_trials times each and return per-trial speedups.
 
     Returns (speedups, ms_a_list, ms_b_list) where speedup[i] = ms_b[i] / ms_a[i].
     Used to measure run-to-run variance before setting performance floors.
     """
+    _warmup_gpu(fn_a, *args_a, n_warmup=n_warmup, **kwargs_a)
+    _warmup_gpu(fn_b, *args_b, n_warmup=n_warmup, **kwargs_b)
     speedups, ms_a_list, ms_b_list = [], [], []
     for _ in range(n_trials):
-        ms_a = _bench_gpu(fn_a, *args_a, n_warmup=n_warmup, n_iter=n_iter, **kwargs_a)
-        ms_b = _bench_gpu(fn_b, *args_b, n_warmup=n_warmup, n_iter=n_iter, **kwargs_b)
+        ms_a = _bench_gpu(fn_a, *args_a, n_iter=n_iter, **kwargs_a)
+        ms_b = _bench_gpu(fn_b, *args_b, n_iter=n_iter, **kwargs_b)
         speedups.append(ms_b / ms_a)
         ms_a_list.append(ms_a)
         ms_b_list.append(ms_b)
@@ -96,8 +117,11 @@ def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) ->
 
 
 def _n_iter_gpu(seq_len: int, num_envs: int) -> tuple[int, int]:
-    """Scale warmup/iter counts so we don't over-benchmark small configs."""
+    """Scale iter count so we don't over-benchmark small configs.
+
+    Warmup is always handled by explicit _warmup_gpu calls — this only
+    controls the number of timed iterations passed to _bench_gpu.
+    """
     elements = seq_len * num_envs
-    n_warmup = max(5,  min(25,  5_000_000 // elements))
-    n_iter   = max(20, min(200, 20_000_000 // elements))
-    return n_warmup, n_iter
+    n_iter = max(20, min(200, 20_000_000 // elements))
+    return n_iter

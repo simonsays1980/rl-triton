@@ -4,7 +4,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu, parallel_suffix_scan
 from rl_triton.ops.returns import compute_discounted_returns, compute_eligibility_traces, compute_lambda_returns
 
 cuda_only = pytest.mark.skipif(
@@ -823,15 +823,19 @@ def test_lambda_returns_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter   = _n_iter_gpu(seq_len, num_envs)
 
         rewards, next_values, dones = args_gpu
         rewards_np, next_values_np, dones_np = args_np
 
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_lambda_returns, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_vec,           rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+
         tri_ms    = _bench_gpu(compute_lambda_returns, rewards, next_values, dones,
-                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, lambda_=0.95, n_iter=n_iter)
         vec_ms    = _bench_gpu(compiled_vec,  rewards, next_values, dones,
-                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, lambda_=0.95, n_iter=n_iter)
         loop_ms   = _bench_cpu(compiled_loop, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
         np_tri_ms = _bench_cpu(np_to_triton_to_np_lambda, rewards_np, next_values_np, dones_np,
                                 gamma=0.99, lambda_=0.95)
@@ -906,15 +910,19 @@ def test_discounted_returns_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter   = _n_iter_gpu(seq_len, num_envs)
 
         rewards, _, dones = args_gpu
         rewards_np, _, dones_np = args_np
 
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_discounted_returns, rewards, dones, gamma=0.99)
+        _warmup_gpu(compiled_vec,               rewards, dones, gamma=0.99)
+
         tri_ms    = _bench_gpu(compute_discounted_returns, rewards, dones,
-                                gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, n_iter=n_iter)
         vec_ms    = _bench_gpu(compiled_vec,  rewards, dones,
-                                gamma=0.99, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, n_iter=n_iter)
         loop_ms   = _bench_cpu(compiled_loop, rewards, dones, gamma=0.99)
         np_tri_ms = _bench_cpu(np_to_triton_to_np_discounted, rewards_np, dones_np, gamma=0.99)
         numpy_ms  = _bench_cpu(numpy_discounted_returns, rewards, dones, gamma=0.99)
@@ -996,15 +1004,19 @@ def test_eligibility_traces_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
-        n_warmup, n_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
 
         gradients, _, dones = args_gpu
         gradients_np, _, dones_np = args_np
 
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_eligibility_traces, gradients, dones, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_vec,               gradients, dones, gamma=0.99, lambda_=0.95)
+
         tri_ms    = _bench_gpu(compute_eligibility_traces, gradients, dones,
-                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, lambda_=0.95, n_iter=n_iter)
         vec_ms    = _bench_gpu(compiled_vec,  gradients, dones,
-                                gamma=0.99, lambda_=0.95, n_warmup=n_warmup, n_iter=n_iter)
+                                gamma=0.99, lambda_=0.95, n_iter=n_iter)
         loop_ms   = _bench_cpu(compiled_loop, gradients, dones, gamma=0.99, lambda_=0.95)
         np_tri_ms = _bench_cpu(np_to_triton_to_np_eligibility, gradients_np, dones_np,
                                 gamma=0.99, lambda_=0.95)
@@ -1094,19 +1106,25 @@ def test_lambda_returns_truncation_performance():
     all_speedups = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        args = _make_trunc_inputs(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        args   = _make_trunc_inputs(num_envs, seq_len)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_lambda_returns,
+                    args[0], args[1], args[2],
+                    truncateds=args[3], gamma=0.99, lambda_=0.95, bootstrap_values=args[4])
+        _warmup_gpu(compiled_vec_trunc, *args, gamma=0.99, lambda_=0.95)
 
         tri_ms = _bench_gpu(
             compute_lambda_returns,
             args[0], args[1], args[2],
             truncateds=args[3], gamma=0.99, lambda_=0.95, bootstrap_values=args[4],
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
         vec_ms = _bench_gpu(
             compiled_vec_trunc, *args,
             gamma=0.99, lambda_=0.95,
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
 
         su = vec_ms / tri_ms
@@ -1167,19 +1185,25 @@ def test_discounted_returns_truncation_performance():
     all_speedups = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
-        args = _make_trunc_inputs(num_envs, seq_len)
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        args   = _make_trunc_inputs(num_envs, seq_len)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
+
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(compute_discounted_returns,
+                    args[0], args[1],
+                    truncateds=args[2], gamma=0.99, bootstrap_values=args[3])
+        _warmup_gpu(compiled_vec_trunc, *args, gamma=0.99)
 
         tri_ms = _bench_gpu(
             compute_discounted_returns,
             args[0], args[1],
             truncateds=args[2], gamma=0.99, bootstrap_values=args[3],
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
         vec_ms = _bench_gpu(
             compiled_vec_trunc, *args,
             gamma=0.99,
-            n_warmup=gpu_warmup, n_iter=gpu_iter,
+            n_iter=n_iter,
         )
 
         su = vec_ms / tri_ms

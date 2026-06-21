@@ -490,82 +490,111 @@ def test_gae_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
 
-      triton           — Triton kernel  (CUDA events)
-      pt.compile(vec)  — torch.compile on vectorized_gae  (CUDA events)
-      pt.compile(loop) — torch.compile on reference_gae loop  (wall-clock)
-      np->triton->np   — NumPy→GPU→NumPy adoption path  (wall-clock)
-      numpy(cpu)       — CPU Python loop  (wall-clock)
+      triton              — Triton kernel  (CUDA events)
+      compile(cumsum)     — torch.compile on vectorized_gae (log-space cumsum)  (CUDA events)
+      compile(assoc_scan) — torch.compile on vectorized_gae_with_truncations
+                            called with zero truncateds  (CUDA events)
+      compile(loop)       — torch.compile on reference_gae loop  (wall-clock)
+      np->triton->np      — NumPy→GPU→NumPy adoption path  (wall-clock)
+      numpy(cpu)          — CPU Python loop  (wall-clock)
 
     Scope: NO-TRUNCATION PATH ONLY.  _make_inputs produces no truncateds, so
-    the kernel dispatches to HAS_TRUNCATIONS=False.  vectorized_gae also takes
-    no truncateds.  Both sides solve the same termination-only problem — the
-    comparison is apples-to-apples for this path.  For the truncation-path
-    speedup (HAS_TRUNCATIONS=True, the feature that distinguishes this library
-    from single-bootstrap approaches) see test_gae_truncation_performance.
+    the kernel dispatches to HAS_TRUNCATIONS=False.
+
+    Two baselines are reported for the no-truncation path:
+      (a) compile(cumsum):     the specialized fast baseline that only works
+          when there are no truncations (log(0)=-inf breaks it otherwise).
+      (b) compile(assoc_scan): the general-purpose baseline — the same
+          vectorized_gae_with_truncations function used in the truncation
+          benchmark, called with zero truncateds and bootstrap_values nonzero
+          only at the boundary column.  A real engineer supporting both
+          truncated and non-truncated episodes would maintain one
+          implementation, not two.  This baseline uses the same associative
+          scan for both regimes, making the no-truncation and truncation
+          benchmark methodologies consistent.
 
     Assertions:
-      - triton >=1.5x faster than pt.compile(vec).
+      - triton >=1.5x faster than compile(cumsum).
       - np->triton->np >=1.5x faster than numpy(cpu).
     """
-    compiled_vec  = torch.compile(vectorized_gae)
-    compiled_loop = torch.compile(reference_gae)
+    compiled_cumsum     = torch.compile(vectorized_gae)
+    compiled_assoc_scan = torch.compile(vectorized_gae_with_truncations)
+    compiled_loop       = torch.compile(reference_gae)
 
     _args = _make_inputs(64, 512)
-    compiled_vec(*_args, gamma=0.99, lambda_=0.95)
+    _N, _T = _args[0].shape
+    _trunc0 = torch.zeros(_N, _T, device="cuda")
+    _bsv0   = torch.zeros(_N, _T, device="cuda")
+    _bsv0[:, -1] = torch.rand(_N, device="cuda")
+
+    compiled_cumsum(*_args, gamma=0.99, lambda_=0.95)
+    compiled_assoc_scan(_args[0], _args[1], _args[2], _trunc0, _bsv0, 0.99, 0.95)
     compiled_loop(*_args, gamma=0.99, lambda_=0.95)
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'triton':>8} {'compile(cumsum)':>16} {'compile(assoc)':>15} {'compile(loop)':>15} "
         f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
-        f"{'vs vec':>8} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
+        f"{'vs cumsum':>11} {'vs assoc':>10} {'vs loop':>9} {'np->tri->np vs numpy':>22}"
     )
     print(header)
     print("-" * len(header))
 
-    all_speedups_vec = []
-    all_speedups_e2e = []
+    all_speedups_cumsum = []
+    all_speedups_e2e    = []
 
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_np  = _make_inputs_np(num_envs, seq_len)
         gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
 
+        # Build zero-truncation inputs for the assoc-scan baseline.
+        trunc0 = torch.zeros(num_envs, seq_len, device="cuda")
+        bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
+        bsv0[:, -1] = torch.rand(num_envs, device="cuda")
+
         tri_ms    = _bench_gpu(compute_gae, *args_gpu,
-                                gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        vec_ms    = _bench_gpu(compiled_vec,  *args_gpu,
-                                gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
+                               gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        cum_ms    = _bench_gpu(compiled_cumsum, *args_gpu,
+                               gamma=0.99, lambda_=0.95, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        asc_ms    = _bench_gpu(compiled_assoc_scan,
+                               args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95,
+                               n_warmup=gpu_warmup, n_iter=gpu_iter)
         loop_ms   = _bench_cpu(compiled_loop, *args_gpu, gamma=0.99, lambda_=0.95)
         np_tri_ms = _bench_cpu(numpy_to_triton_to_numpy, *args_np, gamma=0.99, lambda_=0.95)
         numpy_ms  = _bench_cpu(numpy_gae, *args_gpu, gamma=0.99, lambda_=0.95)
 
-        su_vec  = vec_ms  / tri_ms
-        su_loop = loop_ms / tri_ms
-        su_e2e  = numpy_ms / np_tri_ms
-        all_speedups_vec.append(su_vec)
+        su_cumsum = cum_ms  / tri_ms
+        su_assoc  = asc_ms  / tri_ms
+        su_loop   = loop_ms / tri_ms
+        su_e2e    = numpy_ms / np_tri_ms
+        all_speedups_cumsum.append(su_cumsum)
         all_speedups_e2e.append(su_e2e)
 
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{tri_ms:>7.3f}ms {vec_ms:>13.3f}ms {loop_ms:>14.3f}ms "
+            f"{tri_ms:>7.3f}ms {cum_ms:>15.3f}ms {asc_ms:>14.3f}ms {loop_ms:>14.3f}ms "
             f"{np_tri_ms:>12.3f}ms {numpy_ms:>11.3f}ms "
-            f"{su_vec:>6.1f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
+            f"{su_cumsum:>9.2f}x {su_assoc:>9.2f}x {su_loop:>7.1f}x {su_e2e:>20.1f}x"
         )
 
     print(
-        "\ntriton       : CUDA events — pure kernel time."
-        "\ncompile(vec) : CUDA events — vectorized log-space cumsum, no Python loop."
-        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
-        "\n               CUDA events would miss the CPU stall."
-        "\nnp->tri->np  : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
-        "\nnumpy(cpu)   : wall-clock — plain Python loop on CPU tensors."
-        "\nspeedups vs triton kernel."
+        "\ntriton          : CUDA events — pure kernel time."
+        "\ncompile(cumsum) : CUDA events — log-space suffix cumsum; specialized for"
+        "\n                  no-truncation only (log(0)=-inf breaks it with truncateds)."
+        "\ncompile(assoc)  : CUDA events — vectorized_gae_with_truncations, zero truncateds;"
+        "\n                  same function as the truncation benchmark — consistent baseline."
+        "\ncompile(loop)   : wall-clock — one CUDA op per timestep from Python;"
+        "\n                  CUDA events would miss the CPU stall."
+        "\nnp->tri->np     : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)      : wall-clock — plain Python loop on CPU tensors."
+        "\nspeedups are baseline_ms / triton_ms (higher = triton is faster)."
     )
 
-    assert min(all_speedups_vec) >= 1.5, (
-        f"Expected >=1.5x speedup over pt.compile(vec) across all configs, "
-        f"worst was {min(all_speedups_vec):.2f}x"
+    assert min(all_speedups_cumsum) >= 1.5, (
+        f"Expected >=1.5x speedup over compile(cumsum) across all configs, "
+        f"worst was {min(all_speedups_cumsum):.2f}x"
     )
     assert min(all_speedups_e2e) >= 1.5, (
         f"Expected >=1.5x end-to-end speedup (np->triton->np vs numpy(cpu)) across all configs, "

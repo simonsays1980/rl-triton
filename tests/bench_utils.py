@@ -19,6 +19,25 @@ def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> fl
     return start.elapsed_time(end) / n_iter
 
 
+def _bench_gpu_spread(
+    fn_a, fn_b, args_a, args_b, kwargs_a, kwargs_b,
+    n_warmup: int = 25, n_iter: int = 100, n_trials: int = 5,
+) -> tuple[list[float], list[float], list[float]]:
+    """Run two GPU functions n_trials times each and return per-trial speedups.
+
+    Returns (speedups, ms_a_list, ms_b_list) where speedup[i] = ms_b[i] / ms_a[i].
+    Used to measure run-to-run variance before setting performance floors.
+    """
+    speedups, ms_a_list, ms_b_list = [], [], []
+    for _ in range(n_trials):
+        ms_a = _bench_gpu(fn_a, *args_a, n_warmup=n_warmup, n_iter=n_iter, **kwargs_a)
+        ms_b = _bench_gpu(fn_b, *args_b, n_warmup=n_warmup, n_iter=n_iter, **kwargs_b)
+        speedups.append(ms_b / ms_a)
+        ms_a_list.append(ms_a)
+        ms_b_list.append(ms_b)
+    return speedups, ms_a_list, ms_b_list
+
+
 def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) -> float:
     """Time a CPU-dispatched function with wall-clock. Returns milliseconds per call."""
     for _ in range(n_warmup):

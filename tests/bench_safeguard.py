@@ -19,7 +19,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_gpu, _bench_gpu_spread, _n_iter_gpu
 from rl_triton.ops.gae import compute_gae
 from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 from rl_triton.ops.retrace import compute_retrace
@@ -151,38 +151,77 @@ def test_perf_vtrace():
 @cuda_only
 @pytest.mark.perf
 def test_perf_retrace():
+    # Retrace is a near-pure scan: it reads a 3D action-prob tensor per timestep
+    # and computes advantages in a second pass (store→debug_barrier→reload targets).
+    # vectorized_retrace does the same two-output work.  Both sides are memory-bound
+    # at 128x1024; the realistic speedup ceiling is ~1.1–1.3x, not 1.5x.
+    #
+    # TODO(floor): set from 5-run spread on GPU runner.  Observed single-run: 1.15x.
+    # Floor left at _SPEEDUP_FLOOR (1.5x) — will fail until spread data arrives.
+    # Expected true ceiling: ~1.1–1.3x based on memory-bound analysis.
     args = _retrace_inputs()
     compiled = torch.compile(vectorized_retrace)
     _warmup(compiled, *args, gamma=0.99)
 
     nw, ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
-    triton_ms = _bench_gpu(compute_retrace, *args, gamma=0.99, n_warmup=nw, n_iter=ni)
-    vec_ms    = _bench_gpu(compiled,               *args, gamma=0.99, n_warmup=nw, n_iter=ni)
-    speedup   = vec_ms / triton_ms
+    speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
+        compute_retrace, compiled,
+        args, args,
+        {"gamma": 0.99}, {"gamma": 0.99},
+        n_warmup=nw, n_iter=ni, n_trials=5,
+    )
+    speedup = speedups[-1]  # last trial for the assertion; print all for evidence
 
-    print(f"\nRetrace  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(vec)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
+    print(
+        f"\nRetrace  {_NUM_ENVS}x{_SEQ_LEN}  (5-trial spread):"
+        f"\n  triton ms : {[f'{x:.3f}' for x in tri_ms_list]}"
+        f"\n  vec ms    : {[f'{x:.3f}' for x in vec_ms_list]}"
+        f"\n  speedups  : {[f'{x:.2f}x' for x in speedups]}"
+        f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
+    )
     assert speedup >= _SPEEDUP_FLOOR, (
         f"Retrace Triton {speedup:.2f}x vs torch.compile(vec) — below {_SPEEDUP_FLOOR}x floor"
+        f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
 
 @cuda_only
 @pytest.mark.perf
 def test_perf_lambda_returns():
+    # λ-returns is a near-pure scan: 3 inputs (rewards, next_values, terminateds),
+    # trivial per-step arithmetic.  Both kernel and vectorized_lambda_returns are
+    # fully memory-bound at 128x1024; the realistic speedup ceiling is ~1.0–1.3x,
+    # not 1.5x.
+    #
+    # TODO(floor): set from 5-run spread on GPU runner.  Observed single-run: 1.07x
+    # (down from 1.21x at efffa9c — bisect shows no arithmetic change in the kernel;
+    # 1.21x was a high sample, ~1.1x may be the stable ceiling, or variance is wide).
+    # Floor left at _SPEEDUP_FLOOR (1.5x) — will fail until spread data confirms
+    # the true ceiling and the floor is set at its low end.
     rewards, next_values, dones = _returns_inputs()
     compiled = torch.compile(vectorized_lambda_returns)
     _warmup(compiled, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
 
     nw, ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
-    triton_ms = _bench_gpu(compute_lambda_returns, rewards, next_values, dones,
-                           gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
-    vec_ms    = _bench_gpu(compiled, rewards, next_values, dones,
-                           gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
-    speedup   = vec_ms / triton_ms
+    kw = {"gamma": 0.99, "lambda_": 0.95}
+    speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
+        compute_lambda_returns, compiled,
+        (rewards, next_values, dones), (rewards, next_values, dones),
+        kw, kw,
+        n_warmup=nw, n_iter=ni, n_trials=5,
+    )
+    speedup = speedups[-1]
 
-    print(f"\nλ-returns  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(vec)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
+    print(
+        f"\nλ-returns  {_NUM_ENVS}x{_SEQ_LEN}  (5-trial spread):"
+        f"\n  triton ms : {[f'{x:.3f}' for x in tri_ms_list]}"
+        f"\n  vec ms    : {[f'{x:.3f}' for x in vec_ms_list]}"
+        f"\n  speedups  : {[f'{x:.2f}x' for x in speedups]}"
+        f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
+    )
     assert speedup >= _SPEEDUP_FLOOR, (
         f"λ-returns Triton {speedup:.2f}x vs torch.compile(vec) — below {_SPEEDUP_FLOOR}x floor"
+        f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
 
@@ -195,21 +234,40 @@ def test_perf_discounted_returns():
     # via a log-space cumsum that is fully parallel across envs, leaving less
     # room for the Triton kernel to win on bandwidth.  1.2x is the realistic
     # floor for this algorithm at 128x1024; larger configs see higher speedups.
+    # Discounted returns is the lightest kernel (2 inputs, u[t]=r[t]) so the
+    # associative-scan tree overhead is a larger fraction of total runtime than
+    # for heavier kernels.  torch.compile(vectorized) avoids the scan entirely
+    # via a log-space cumsum that is fully parallel across envs, leaving less
+    # room for the Triton kernel to win on bandwidth.  ~1.2x is the realistic
+    # ceiling at 128x1024; larger configs see higher speedups.
+    #
+    # TODO(floor): confirm from 5-run spread on GPU runner.  Observed single-run:
+    # 1.20x.  Floor set at 1.2x — at the edge; spread may push it below.
+    # Set floor to low end of confirmed spread once runner data arrives.
     _DISC_FLOOR = 1.2
     rewards, _, dones = _returns_inputs()
     compiled = torch.compile(vectorized_discounted_returns)
     _warmup(compiled, rewards, dones, gamma=0.99)
 
     nw, ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
-    triton_ms = _bench_gpu(compute_discounted_returns, rewards, dones,
-                           gamma=0.99, n_warmup=nw, n_iter=ni)
-    vec_ms    = _bench_gpu(compiled, rewards, dones,
-                           gamma=0.99, n_warmup=nw, n_iter=ni)
-    speedup   = vec_ms / triton_ms
+    speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
+        compute_discounted_returns, compiled,
+        (rewards, dones), (rewards, dones),
+        {"gamma": 0.99}, {"gamma": 0.99},
+        n_warmup=nw, n_iter=ni, n_trials=5,
+    )
+    speedup = speedups[-1]
 
-    print(f"\nDisc-returns  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(vec)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
+    print(
+        f"\nDisc-returns  {_NUM_ENVS}x{_SEQ_LEN}  (5-trial spread):"
+        f"\n  triton ms : {[f'{x:.3f}' for x in tri_ms_list]}"
+        f"\n  vec ms    : {[f'{x:.3f}' for x in vec_ms_list]}"
+        f"\n  speedups  : {[f'{x:.2f}x' for x in speedups]}"
+        f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
+    )
     assert speedup >= _DISC_FLOOR, (
         f"Discounted-returns Triton {speedup:.2f}x vs torch.compile(vec) — below {_DISC_FLOOR}x floor"
+        f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
 
@@ -256,17 +314,33 @@ def test_perf_prefix_sum():
     # configs where the fused reset saves a full read-write pass. 0.85x guards
     # against genuine regressions (e.g. a broken scan or an extra allocation)
     # without penalising the inherent overhead difference vs plain cumsum.
+    # Prefix sum is the lightest kernel in the library: u[t]=x[t], v[t]=1-done[t],
+    # no derived quantities, no next-values.  The baseline is the fair segmented
+    # PyTorch equivalent (cumsum + episodic reset), not bare cumsum.  At 128x1024
+    # both complete in ~30µs; margin is kernel-launch overhead, not algorithm
+    # efficiency.  0.85x is a non-regression guard only — not a speedup claim.
     _PREFIX_FLOOR = 0.85
     args = _prefix_sum_inputs()
     compiled = torch.compile(vectorized_episodic_prefix_sum)
     _warmup(compiled, *args)
 
     nw, ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
-    triton_ms = _bench_gpu(compute_episodic_prefix_sum, *args, n_warmup=nw, n_iter=ni)
-    vec_ms    = _bench_gpu(compiled,                    *args, n_warmup=nw, n_iter=ni)
-    speedup   = vec_ms / triton_ms
+    speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
+        compute_episodic_prefix_sum, compiled,
+        args, args,
+        {}, {},
+        n_warmup=nw, n_iter=ni, n_trials=5,
+    )
+    speedup = speedups[-1]
 
-    print(f"\nPrefix-sum  {_NUM_ENVS}x{_SEQ_LEN}: triton={triton_ms:.3f}ms  compile(vec)={vec_ms:.3f}ms  speedup={speedup:.1f}x")
+    print(
+        f"\nPrefix-sum  {_NUM_ENVS}x{_SEQ_LEN}  (5-trial spread):"
+        f"\n  triton ms : {[f'{x:.3f}' for x in tri_ms_list]}"
+        f"\n  vec ms    : {[f'{x:.3f}' for x in vec_ms_list]}"
+        f"\n  speedups  : {[f'{x:.2f}x' for x in speedups]}"
+        f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
+    )
     assert speedup >= _PREFIX_FLOOR, (
-        f"Prefix-sum Triton {speedup:.2f}x vs torch.compile(cumsum) — below {_PREFIX_FLOOR}x floor"
+        f"Prefix-sum Triton {speedup:.2f}x vs torch.compile(episodic) — below {_PREFIX_FLOOR}x floor"
+        f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )

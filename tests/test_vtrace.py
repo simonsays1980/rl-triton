@@ -468,7 +468,6 @@ def test_vtrace_two_interior_truncations():
 
 
 @cuda_only
-@pytest.mark.gpu
 def test_vtrace_fused_two_interior_truncations():
     """HAS_TRUNCATIONS=True kernel path: two interior truncated episodes + boundary.
 

@@ -468,6 +468,51 @@ def test_vtrace_two_interior_truncations():
 
 
 @cuda_only
+@pytest.mark.gpu
+def test_vtrace_fused_two_interior_truncations():
+    """HAS_TRUNCATIONS=True kernel path: two interior truncated episodes + boundary.
+
+    Exercises compute_vtrace_fused directly with truncateds and a full
+    [num_envs, seq_len] bootstrap_values tensor.  T=12, truncations at
+    t=3 and t=7 in env 0, t=5 in env 1.  Boundary continues (non-zero
+    bootstrap at t=11 for env 0).  Compared against _ref_vtrace_sequential.
+    """
+    torch.manual_seed(77)
+    N, T = 2, 12
+    log_pi_target   = -torch.rand(N, T, device="cuda")
+    log_pi_behavior = -torch.rand(N, T, device="cuda")
+    values      = torch.rand(N, T, device="cuda")
+    rewards     = torch.rand(N, T, device="cuda")
+    terminateds = torch.zeros(N, T, device="cuda")
+    truncateds  = torch.zeros(N, T, device="cuda")
+
+    # env 0: truncations at t=3 and t=7; window continues past t=11
+    truncateds[0, 3] = 1.0
+    truncateds[0, 7] = 1.0
+    # env 1: single truncation at t=5; window terminates at t=11
+    truncateds[1, 5] = 1.0
+
+    bootstrap_values = torch.zeros(N, T, device="cuda")
+    bootstrap_values[0, 3]  = 2.5   # V(s_{t=4}^true) for env 0
+    bootstrap_values[0, 7]  = 1.8   # V(s_{t=8}^true) for env 0
+    bootstrap_values[0, 11] = 3.2   # V(s_T), env 0 window continues
+    bootstrap_values[1, 5]  = 0.9   # V(s_{t=6}^true) for env 1
+    # bootstrap_values[1, 11] stays 0: env 1 terminates at t=11
+
+    exp_t, exp_a = _ref_vtrace_sequential(
+        log_pi_target.cpu(), log_pi_behavior.cpu(),
+        values.cpu(), rewards.cpu(), terminateds.cpu(), truncateds.cpu(),
+        bootstrap_values.cpu(), gamma=0.99,
+    )
+    act_t, act_a = compute_vtrace_fused(
+        log_pi_target, log_pi_behavior, values, rewards, terminateds,
+        truncateds=truncateds, gamma=0.99, bootstrap_values=bootstrap_values,
+    )
+    torch.testing.assert_close(act_t, exp_t.cuda(), atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(act_a, exp_a.cuda(), atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
 def test_vtrace_bootstrap_values_full_tensor():
     """Passing a full [num_envs, seq_len] bootstrap_values tensor (no last_value).
 

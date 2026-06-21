@@ -5,6 +5,51 @@ from rl_triton.kernels.scan import _combine
 
 
 @triton.jit
+def gae_kernel(
+    rewards_ptr, values_ptr, dones_ptr,
+    out_ptr,
+    bootstrap_ptr,
+    seq_len,
+    stride_env,
+    gamma,
+    lambda_,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """
+    GAE kernel for the common no-truncation case.
+
+    Identical to the pre-overhaul kernel: reads rewards, values, dones and a
+    scalar bootstrap per env.  No truncateds or 2D bootstrap tensor.
+
+      delta[t] = r[t] + gamma*(1-d[t])*V(s_{t+1}) - V(s_t)
+      decay[t] = gamma*lambda*(1-d[t])
+      A[t] = delta[t] + decay[t]*A[t+1],  A[T] = bootstrap
+    """
+    env_idx = tl.program_id(0)
+    base    = env_idx * stride_env
+
+    offs = tl.arange(0, BLOCK_SIZE)
+    rev  = seq_len - 1 - offs
+    mask = offs < seq_len
+
+    r    = tl.load(rewards_ptr + base + rev, mask=mask, other=0.0)
+    v    = tl.load(values_ptr  + base + rev, mask=mask, other=0.0)
+    done = tl.load(dones_ptr   + base + rev, mask=mask, other=1.0)
+
+    bootstrap  = tl.load(bootstrap_ptr + env_idx)
+    v_next_raw = tl.load(values_ptr + base + rev + 1,
+                         mask=mask & (offs > 0), other=0.0)
+    v_next = tl.where(offs == 0, bootstrap, v_next_raw)
+
+    not_done = 1.0 - done
+    delta    = r + gamma * v_next * not_done - v
+    decay    = gamma * lambda_ * not_done
+
+    out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+    tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)
+
+
+@triton.jit
 def gae_fused_kernel(
     rewards_ptr, values_ptr, terminateds_ptr, truncateds_ptr,
     out_ptr,

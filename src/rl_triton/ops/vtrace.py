@@ -137,28 +137,29 @@ def compute_vtrace(
     if has_truncations:
         truncateds = truncateds.contiguous()
 
-    if last_value is not None:
-        bootstrap_values = torch.zeros_like(rewards)
-        bootstrap_values[:, -1] = last_value
-    elif bootstrap_values is not None:
-        bootstrap_values = bootstrap_values.contiguous()
-
-    if bootstrap_values is None:
-        bootstrap_values = torch.zeros_like(rewards)
-
-    if not has_truncations:
-        truncateds = torch.zeros_like(terminateds)
-
     # Fused kernel for seq_len <= 131072.
+    # Pass truncateds=None for the no-truncation path so compute_vtrace_fused
+    # dispatches HAS_TRUNCATIONS=False — no zero-tensor allocations for truncateds
+    # or 2D bootstrap_values in that path.
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         return compute_vtrace_fused(
             log_pi_target, log_pi_behavior,
-            values, rewards, terminateds, truncateds,
+            values, rewards, terminateds,
+            truncateds=truncateds if has_truncations else None,
             gamma=gamma, rho_bar=rho_bar, c_bar=c_bar,
             bootstrap_values=bootstrap_values,
+            last_value=last_value,
         )
 
-    # Chunked path for seq_len > 131072.
+    # Chunked path for seq_len > 131072.  Materialize None inputs here only.
+    if not has_truncations:
+        truncateds = torch.zeros_like(terminateds)
+    if last_value is not None:
+        bootstrap_values = torch.zeros_like(rewards)
+        bootstrap_values[:, -1] = last_value
+    elif bootstrap_values is None:
+        bootstrap_values = torch.zeros_like(rewards)
+
     not_terminated = 1.0 - terminateds
     not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
     next_values    = torch.empty_like(values)

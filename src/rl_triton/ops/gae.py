@@ -1,7 +1,7 @@
 import torch
 import triton
 
-from rl_triton.kernels.gae import gae_fused_kernel
+from rl_triton.kernels.gae import gae_kernel, gae_fused_kernel
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 _WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
@@ -75,32 +75,36 @@ def compute_gae(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
+    # Cheap structural checks — always-on.
+    for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
+        assert t.is_cuda,                f"{name} must be on CUDA"
+        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
+        assert truncateds.is_cuda,                "truncateds must be on CUDA"
+        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+        assert truncateds.shape == rewards.shape, \
+            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if last_value is not None:
+        assert bootstrap_values is None, \
+            "pass either last_value (shape [num_envs], convenience for the " \
+            "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
+            "full per-step control), not both."
+        assert last_value.shape == (num_envs,), \
+            f"last_value must have shape [{num_envs}], got {last_value.shape}"
+        assert not has_truncations, \
+            "last_value cannot be combined with truncateds; use bootstrap_values instead."
+    if bootstrap_values is not None:
+        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+        assert bootstrap_values.shape == rewards.shape, \
+            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+
+    # Expensive tensor scans — correctness-warning path only (not in benchmark hot loop).
     if _CORRECTNESS_WARNINGS():
-        for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
-            assert t.is_cuda,                f"{name} must be on CUDA"
-            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
         if has_truncations:
-            assert truncateds.is_cuda,                "truncateds must be on CUDA"
-            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-            assert truncateds.shape == rewards.shape, \
-                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
             assert not (terminateds.bool() & truncateds.bool()).any(), \
                 "terminated and truncated are mutually exclusive: a step cannot be both"
-        if last_value is not None:
-            assert bootstrap_values is None, \
-                "pass either last_value (shape [num_envs], convenience for the " \
-                "window boundary) or bootstrap_values (shape [num_envs, seq_len], " \
-                "full per-step control), not both."
-            assert last_value.shape == (num_envs,), \
-                f"last_value must have shape [{num_envs}], got {last_value.shape}"
-            assert not has_truncations, \
-                "last_value cannot be combined with truncateds; use bootstrap_values instead."
-        if bootstrap_values is not None:
-            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-            assert bootstrap_values.shape == rewards.shape, \
-                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
         if has_truncations and bootstrap_values is not None:
             interior = torch.ones_like(truncateds, dtype=torch.bool)
             interior[:, -1] = False

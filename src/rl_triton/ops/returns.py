@@ -62,23 +62,27 @@ def compute_lambda_returns(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
+    # Cheap structural checks — always-on.
+    for name, t in [("rewards", rewards), ("next_values", next_values), ("terminateds", terminateds)]:
+        assert t.is_cuda,                f"{name} must be on CUDA"
+        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
+        assert truncateds.is_cuda,                "truncateds must be on CUDA"
+        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+        assert truncateds.shape == rewards.shape, \
+            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if bootstrap_values is not None:
+        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+        assert bootstrap_values.shape == rewards.shape, \
+            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+
+    # Expensive tensor scans — correctness-warning path only.
     if _CORRECTNESS_WARNINGS():
-        for name, t in [("rewards", rewards), ("next_values", next_values), ("terminateds", terminateds)]:
-            assert t.is_cuda,                f"{name} must be on CUDA"
-            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
         if has_truncations:
-            assert truncateds.is_cuda,                "truncateds must be on CUDA"
-            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-            assert truncateds.shape == rewards.shape, \
-                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
             assert not (terminateds.bool() & truncateds.bool()).any(), \
                 "terminated and truncated are mutually exclusive: a step cannot be both"
-        if bootstrap_values is not None:
-            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-            assert bootstrap_values.shape == rewards.shape, \
-                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
     rewards     = rewards.contiguous()
     next_values = next_values.contiguous()
@@ -171,23 +175,27 @@ def compute_discounted_returns(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
+    # Cheap structural checks — always-on.
+    for name, t in [("rewards", rewards), ("terminateds", terminateds)]:
+        assert t.is_cuda,                f"{name} must be on CUDA"
+        assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
+        assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+    if has_truncations:
+        assert truncateds.is_cuda,                "truncateds must be on CUDA"
+        assert truncateds.dtype == torch.float32, "truncateds: expected float32"
+        assert truncateds.shape == rewards.shape, \
+            f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
+    if bootstrap_values is not None:
+        assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
+        assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
+        assert bootstrap_values.shape == rewards.shape, \
+            f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
+
+    # Expensive tensor scans — correctness-warning path only.
     if _CORRECTNESS_WARNINGS():
-        for name, t in [("rewards", rewards), ("terminateds", terminateds)]:
-            assert t.is_cuda,                f"{name} must be on CUDA"
-            assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
-            assert t.shape == rewards.shape, f"{name} shape {t.shape} != rewards shape {rewards.shape}"
         if has_truncations:
-            assert truncateds.is_cuda,                "truncateds must be on CUDA"
-            assert truncateds.dtype == torch.float32, "truncateds: expected float32"
-            assert truncateds.shape == rewards.shape, \
-                f"truncateds shape {truncateds.shape} != rewards shape {rewards.shape}"
             assert not (terminateds.bool() & truncateds.bool()).any(), \
                 "terminated and truncated are mutually exclusive: a step cannot be both"
-        if bootstrap_values is not None:
-            assert bootstrap_values.is_cuda,                "bootstrap_values must be on CUDA"
-            assert bootstrap_values.dtype == torch.float32, "bootstrap_values: expected float32"
-            assert bootstrap_values.shape == rewards.shape, \
-                f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
     rewards     = rewards.contiguous()
     terminateds = terminateds.contiguous()
@@ -272,15 +280,15 @@ def compute_eligibility_traces(
     """
     num_envs, seq_len = gradients.shape
 
-    if _CORRECTNESS_WARNINGS():
-        assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
-        assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
-        assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"
-        assert gradients.shape == dones.shape,   "gradients and dones must have the same shape"
-        if seed_values is not None:
-            assert seed_values.shape == (num_envs,), \
-                f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
-            assert seed_values.is_cuda, "seed_values must be on CUDA"
+    # Cheap structural checks — always-on.
+    assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
+    assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
+    assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"
+    assert gradients.shape == dones.shape,   "gradients and dones must have the same shape"
+    if seed_values is not None:
+        assert seed_values.shape == (num_envs,), \
+            f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
+        assert seed_values.is_cuda, "seed_values must be on CUDA"
 
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "

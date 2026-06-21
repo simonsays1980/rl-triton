@@ -68,32 +68,35 @@ def compute_retrace(
         retrace_targets: Q_ret[t], shape [num_envs, seq_len], float32.
         advantages:      A[t],     shape [num_envs, seq_len], float32.
     """
-    if _CORRECTNESS_WARNINGS():
-        for name, t in [
-            ("action_probs_behavior", action_probs_behavior),
-            ("q_values",              q_values),
-            ("rewards",               rewards),
-            ("terminateds",           terminateds),
-            ("truncateds",            truncateds),
-        ]:
-            assert t.is_cuda,                 f"{name} must be on CUDA"
-            assert t.dtype == torch.float32,  f"{name}: expected float32, got {t.dtype}"
-            assert t.shape == rewards.shape,  f"{name} shape {t.shape} != rewards shape {rewards.shape}"
+    # Cheap structural checks — always-on.
+    for name, t in [
+        ("action_probs_behavior", action_probs_behavior),
+        ("q_values",              q_values),
+        ("rewards",               rewards),
+        ("terminateds",           terminateds),
+        ("truncateds",            truncateds),
+    ]:
+        assert t.is_cuda,                 f"{name} must be on CUDA"
+        assert t.dtype == torch.float32,  f"{name}: expected float32, got {t.dtype}"
+        assert t.shape == rewards.shape,  f"{name} shape {t.shape} != rewards shape {rewards.shape}"
 
-        assert action_probs_target.is_cuda,                "action_probs_target must be on CUDA"
-        assert action_probs_target.dtype == torch.float32, "action_probs_target: expected float32"
-        assert action_probs_target.shape[:2] == rewards.shape, (
-            f"action_probs_target shape {action_probs_target.shape} incompatible with rewards {rewards.shape}"
-        )
-        assert next_q_values_all.is_cuda,                "next_q_values_all must be on CUDA"
-        assert next_q_values_all.dtype == torch.float32, "next_q_values_all: expected float32"
-        assert next_q_values_all.shape == action_probs_target.shape, (
-            f"next_q_values_all {next_q_values_all.shape} != action_probs_target {action_probs_target.shape}"
-        )
-        assert actions.is_cuda,              "actions must be on CUDA"
-        assert actions.dtype == torch.int64, f"actions: expected int64, got {actions.dtype}"
-        assert actions.shape == rewards.shape, \
-            f"actions shape {actions.shape} != rewards shape {rewards.shape}"
+    assert action_probs_target.is_cuda,                "action_probs_target must be on CUDA"
+    assert action_probs_target.dtype == torch.float32, "action_probs_target: expected float32"
+    assert action_probs_target.shape[:2] == rewards.shape, (
+        f"action_probs_target shape {action_probs_target.shape} incompatible with rewards {rewards.shape}"
+    )
+    assert next_q_values_all.is_cuda,                "next_q_values_all must be on CUDA"
+    assert next_q_values_all.dtype == torch.float32, "next_q_values_all: expected float32"
+    assert next_q_values_all.shape == action_probs_target.shape, (
+        f"next_q_values_all {next_q_values_all.shape} != action_probs_target {action_probs_target.shape}"
+    )
+    assert actions.is_cuda,              "actions must be on CUDA"
+    assert actions.dtype == torch.int64, f"actions: expected int64, got {actions.dtype}"
+    assert actions.shape == rewards.shape, \
+        f"actions shape {actions.shape} != rewards shape {rewards.shape}"
+
+    # Expensive tensor scan — correctness-warning path only.
+    if _CORRECTNESS_WARNINGS():
         assert not (terminateds.bool() & truncateds.bool()).any(), \
             "terminated and truncated are mutually exclusive: a step cannot be both"
 

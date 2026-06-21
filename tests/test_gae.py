@@ -496,6 +496,13 @@ def test_gae_performance():
       np->triton->np   — NumPy→GPU→NumPy adoption path  (wall-clock)
       numpy(cpu)       — CPU Python loop  (wall-clock)
 
+    Scope: NO-TRUNCATION PATH ONLY.  _make_inputs produces no truncateds, so
+    the kernel dispatches to HAS_TRUNCATIONS=False.  vectorized_gae also takes
+    no truncateds.  Both sides solve the same termination-only problem — the
+    comparison is apples-to-apples for this path.  For the truncation-path
+    speedup (HAS_TRUNCATIONS=True, the feature that distinguishes this library
+    from single-bootstrap approaches) see test_gae_truncation_performance.
+
     Assertions:
       - triton >=1.5x faster than pt.compile(vec).
       - np->triton->np >=1.5x faster than numpy(cpu).
@@ -602,3 +609,165 @@ def vectorized_gae(
         adv = adv + weights * bootstrap_values.unsqueeze(1)
 
     return adv
+
+
+def vectorized_gae_with_truncations(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    terminateds: torch.Tensor,
+    truncateds: torch.Tensor,
+    bootstrap_values: torch.Tensor,
+    gamma: float,
+    lambda_: float,
+) -> torch.Tensor:
+    """
+    Fully vectorized GAE with truncation support — strong compiled baseline for
+    HAS_TRUNCATIONS=True kernel path.
+
+    Matches the kernel semantics exactly:
+      - next_values[t] = values[t+1] at interior non-truncated steps,
+        bootstrap_values[t] at truncated steps and the boundary column (additive:
+        v_next_raw is zero-masked at those positions, bootstrap fills them).
+      - delta[t] = r[t] + gamma*(1-terminated[t])*next_values[t] - V(s_t)
+      - decay[t] = gamma*lambda*(1 - clamp(terminated[t]+truncated[t], max=1))
+      - log-space suffix cumsum scan, carry seeded from bootstrap_values[:, -1].
+
+    bootstrap_values must be nonzero only at truncated steps and the boundary
+    column (t=T-1); zero elsewhere.  Not production-hardened; benchmark use only.
+    """
+    not_terminated = 1.0 - terminateds
+    not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
+
+    # next_values: values[t+1] at interior non-truncated steps, 0 elsewhere.
+    # bootstrap_values fills the truncated/boundary positions additively.
+    v_next_raw          = torch.empty_like(values)
+    v_next_raw[:, :-1]  = values[:, 1:] * (1.0 - truncateds[:, :-1])
+    v_next_raw[:, -1]   = 0.0
+    next_values         = v_next_raw + bootstrap_values
+
+    deltas = rewards + gamma * not_terminated * next_values - values
+    decays = gamma * lambda_ * not_done
+
+    log_suffix = torch.flip(
+        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
+    )
+    weights = torch.exp(log_suffix)
+    adv     = torch.flip(
+        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
+    ) / weights
+
+    carry = bootstrap_values[:, -1]
+    adv   = adv + weights * carry.unsqueeze(1)
+
+    return adv
+
+
+@cuda_only
+def test_vectorized_gae_with_truncations_correctness():
+    """Verify vectorized_gae_with_truncations matches _ref_gae_sequential.
+
+    Uses the same two-interior-truncation fixture as test_gae_two_interior_truncations
+    so correctness of the new baseline is confirmed against the sequential reference
+    before it is used in the benchmark.
+    """
+    torch.manual_seed(99)
+    N, T = 2, 12
+    rewards     = torch.rand(N, T)
+    values      = torch.rand(N, T)
+    terminateds = torch.zeros(N, T)
+    truncateds  = torch.zeros(N, T)
+
+    truncateds[0, 3] = 1.0
+    truncateds[0, 7] = 1.0
+    truncateds[1, 5] = 1.0
+
+    bootstrap_values = torch.zeros(N, T)
+    bootstrap_values[0, 3]  = 2.5
+    bootstrap_values[0, 7]  = 1.8
+    bootstrap_values[0, 11] = 3.2
+    bootstrap_values[1, 5]  = 0.9
+
+    expected = _ref_gae_sequential(
+        rewards, values, terminateds, truncateds, bootstrap_values,
+        gamma=0.99, lambda_=0.95,
+    )
+    actual = vectorized_gae_with_truncations(
+        rewards, values, terminateds, truncateds, bootstrap_values,
+        gamma=0.99, lambda_=0.95,
+    )
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+@pytest.mark.slow
+def test_gae_truncation_performance():
+    """
+    Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
+    torch.compile(vectorized_gae_with_truncations).
+
+    Inputs have ~5% truncated steps (mutually exclusive with terminated),
+    so the kernel dispatches to HAS_TRUNCATIONS=True.  Both sides compute
+    full per-step bootstrap support.  This path reads 7 full-width tensors
+    vs 5 for the no-truncation path, so expect a lower speedup number.
+
+    No assertion floor is imposed here — the truncation path is a correctness
+    feature, not a performance regression from the no-truncation baseline.
+    This test exists to make the truncation-path speedup visible and tracked.
+    """
+    compiled_vec_trunc = torch.compile(vectorized_gae_with_truncations)
+
+    def _make_trunc_inputs(num_envs, seq_len, seed=0):
+        torch.manual_seed(seed)
+        rewards     = torch.randn(num_envs, seq_len, device="cuda")
+        values      = torch.randn(num_envs, seq_len, device="cuda")
+        terminateds = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        # truncateds mutually exclusive with terminateds, ~5% rate
+        trunc_cand  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        truncateds  = trunc_cand * (1.0 - terminateds)
+        bootstrap_values = torch.zeros(num_envs, seq_len, device="cuda")
+        bootstrap_values[truncateds.bool()] = torch.rand(
+            int(truncateds.sum().item()), device="cuda"
+        )
+        bootstrap_values[:, -1] = torch.rand(num_envs, device="cuda")
+        return rewards, values, terminateds, truncateds, bootstrap_values
+
+    # Warmup
+    _wa = _make_trunc_inputs(64, 512, seed=1)
+    compiled_vec_trunc(*_wa, gamma=0.99, lambda_=0.95)
+    compute_gae(_wa[0], _wa[1], _wa[2], _wa[3], gamma=0.99, lambda_=0.95,
+                bootstrap_values=_wa[4])
+    torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    all_speedups = []
+
+    for num_envs, seq_len in BENCH_CONFIGS:
+        args = _make_trunc_inputs(num_envs, seq_len)
+        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+
+        tri_ms = _bench_gpu(
+            compute_gae, args[0], args[1], args[2], args[3],
+            gamma=0.99, lambda_=0.95, bootstrap_values=args[4],
+            n_warmup=gpu_warmup, n_iter=gpu_iter,
+        )
+        vec_ms = _bench_gpu(
+            compiled_vec_trunc, *args,
+            gamma=0.99, lambda_=0.95,
+            n_warmup=gpu_warmup, n_iter=gpu_iter,
+        )
+
+        su = vec_ms / tri_ms
+        all_speedups.append(su)
+        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>19.3f}ms {su:>8.2f}x")
+
+    print(
+        f"\nMin speedup: {min(all_speedups):.2f}x  "
+        f"Max: {max(all_speedups):.2f}x  "
+        f"(HAS_TRUNCATIONS=True path; 7 full-width reads vs 5 for no-truncation path)"
+    )

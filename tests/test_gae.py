@@ -621,45 +621,41 @@ def vectorized_gae_with_truncations(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    Fully vectorized GAE with truncation support — strong compiled baseline for
-    HAS_TRUNCATIONS=True kernel path.
+    Vectorized GAE with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
 
     Matches the kernel semantics exactly:
       - next_values[t] = values[t+1] at interior non-truncated steps,
-        bootstrap_values[t] at truncated steps and the boundary column (additive:
-        v_next_raw is zero-masked at those positions, bootstrap fills them).
+        bootstrap_values[t] at truncated steps and the boundary.
       - delta[t] = r[t] + gamma*(1-terminated[t])*next_values[t] - V(s_t)
       - decay[t] = gamma*lambda*(1 - clamp(terminated[t]+truncated[t], max=1))
-      - log-space suffix cumsum scan, carry seeded from bootstrap_values[:, -1].
+      - carry seeded from bootstrap_values[:, -1].
 
-    bootstrap_values must be nonzero only at truncated steps and the boundary
-    column (t=T-1); zero elsewhere.  Not production-hardened; benchmark use only.
+    Uses an env-parallel time loop instead of the log-space cumsum trick.
+    The log-space trick breaks when decay[t]=0 at guaranteed truncated steps
+    (log(0)=-inf contaminates the entire suffix, causing 0/0 in the division).
+    The time loop is O(T) serial but executes all envs in parallel per step —
+    the same complexity as torch.compile on the time loop, which is the relevant
+    baseline comparison.
     """
     not_terminated = 1.0 - terminateds
     not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
 
-    # next_values: values[t+1] at interior non-truncated steps, 0 elsewhere.
-    # bootstrap_values fills the truncated/boundary positions additively.
-    v_next_raw          = torch.empty_like(values)
-    v_next_raw[:, :-1]  = values[:, 1:] * (1.0 - truncateds[:, :-1])
-    v_next_raw[:, -1]   = 0.0
-    next_values         = v_next_raw + bootstrap_values
+    # next_values[t]: values[t+1] at interior non-truncated steps, bootstrap elsewhere.
+    v_next_raw         = torch.empty_like(values)
+    v_next_raw[:, :-1] = values[:, 1:] * (1.0 - truncateds[:, :-1])
+    v_next_raw[:, -1]  = 0.0
+    next_values        = v_next_raw + bootstrap_values
 
     deltas = rewards + gamma * not_terminated * next_values - values
     decays = gamma * lambda_ * not_done
 
-    log_suffix = torch.flip(
-        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights = torch.exp(log_suffix)
-    adv     = torch.flip(
-        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
-    ) / weights
-
-    carry = bootstrap_values[:, -1]
-    adv   = adv + weights * carry.unsqueeze(1)
-
-    return adv
+    T   = rewards.shape[1]
+    out = torch.empty_like(rewards)
+    carry = bootstrap_values[:, -1].clone()
+    for t in reversed(range(T)):
+        carry    = deltas[:, t] + decays[:, t] * carry
+        out[:, t] = carry
+    return out
 
 
 @cuda_only

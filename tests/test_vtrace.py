@@ -744,3 +744,182 @@ def test_vtrace_performance():
         f"Expected >=1.5x end-to-end speedup (np->triton->np vs numpy(cpu)) across all configs, "
         f"worst was {min(all_speedups_e2e):.2f}x"
     )
+
+
+# ---------------------------------------------------------------------------
+# Vectorized baseline with truncation support (benchmark only)
+# ---------------------------------------------------------------------------
+
+def vectorized_vtrace_with_truncations(
+    log_pi_target: torch.Tensor,
+    log_pi_behavior: torch.Tensor,
+    values: torch.Tensor,
+    rewards: torch.Tensor,
+    terminateds: torch.Tensor,
+    truncateds: torch.Tensor,
+    bootstrap_values: torch.Tensor,
+    gamma: float,
+    rho_bar: float = 1.0,
+    c_bar: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized V-Trace with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
+
+    Matches the kernel semantics exactly:
+      - v_next[t] = values[t+1] at interior non-truncated steps,
+        bootstrap_values[t] at truncated steps and the boundary.
+      - not_terminated[t] gates the one-step TD: gamma * v_next * (1 - terminated)
+      - not_done[t] = 1 - clamp(terminated + truncated, max=1) gates trace decay
+      - carry seeded from bootstrap_values[:, -1] (boundary value).
+
+    Uses an env-parallel time loop instead of the log-space cumsum trick.
+    The log-space trick breaks when decay[t]=0 at guaranteed truncated steps
+    (log(0)=-inf contaminates the entire suffix, causing 0/0 in the division).
+    The time loop is O(T) serial but executes all envs in parallel per step.
+    """
+    is_ratios      = torch.exp(log_pi_target - log_pi_behavior)
+    rho            = torch.clamp(is_ratios, max=rho_bar)
+    c              = torch.clamp(is_ratios, max=c_bar)
+    not_terminated = 1.0 - terminateds
+    not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
+
+    # v_next[t]: values[t+1] at interior non-truncated steps, bootstrap elsewhere.
+    v_next_raw         = torch.empty_like(values)
+    v_next_raw[:, :-1] = values[:, 1:] * (1.0 - truncateds[:, :-1])
+    v_next_raw[:, -1]  = 0.0
+    v_next             = v_next_raw + bootstrap_values
+
+    deltas = rho * (rewards + gamma * not_terminated * v_next - values)
+    decays = gamma * c * not_done
+
+    T     = rewards.shape[1]
+    carry = bootstrap_values[:, -1].clone()
+    value_deltas = torch.empty_like(rewards)
+    for t in reversed(range(T)):
+        carry            = deltas[:, t] + decays[:, t] * carry
+        value_deltas[:, t] = carry
+
+    vtrace_targets = value_deltas + values
+
+    next_vtrace_targets         = torch.empty_like(vtrace_targets)
+    next_vtrace_targets[:, :-1] = torch.where(
+        truncateds[:, :-1].bool(),
+        bootstrap_values[:, :-1],
+        vtrace_targets[:, 1:],
+    )
+    next_vtrace_targets[:, -1] = bootstrap_values[:, -1]
+
+    vtrace_advantages = rho * (rewards + gamma * not_terminated * next_vtrace_targets - values)
+    return vtrace_targets, vtrace_advantages
+
+
+@cuda_only
+def test_vectorized_vtrace_with_truncations_correctness():
+    """Verify vectorized_vtrace_with_truncations matches _ref_vtrace_sequential.
+
+    Uses the same two-interior-truncation fixture as test_vtrace_fused_two_interior_truncations
+    so correctness of the new baseline is confirmed before it is used in the benchmark.
+    """
+    torch.manual_seed(77)
+    N, T = 2, 12
+    log_pi_target   = -torch.rand(N, T)
+    log_pi_behavior = -torch.rand(N, T)
+    values      = torch.rand(N, T)
+    rewards     = torch.rand(N, T)
+    terminateds = torch.zeros(N, T)
+    truncateds  = torch.zeros(N, T)
+
+    truncateds[0, 3] = 1.0
+    truncateds[0, 7] = 1.0
+    truncateds[1, 5] = 1.0
+
+    bootstrap_values = torch.zeros(N, T)
+    bootstrap_values[0, 3]  = 2.5
+    bootstrap_values[0, 7]  = 1.8
+    bootstrap_values[0, 11] = 3.2
+    bootstrap_values[1, 5]  = 0.9
+
+    exp_t, exp_a = _ref_vtrace_sequential(
+        log_pi_target, log_pi_behavior, values, rewards, terminateds, truncateds,
+        bootstrap_values, gamma=0.99,
+    )
+    act_t, act_a = vectorized_vtrace_with_truncations(
+        log_pi_target, log_pi_behavior, values, rewards, terminateds, truncateds,
+        bootstrap_values, gamma=0.99,
+    )
+    torch.testing.assert_close(act_t, exp_t, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(act_a, exp_a, atol=1e-5, rtol=1e-5)
+
+
+@cuda_only
+@pytest.mark.slow
+def test_vtrace_truncation_performance():
+    """
+    Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
+    torch.compile(vectorized_vtrace_with_truncations).
+
+    Inputs have ~5% truncated steps (mutually exclusive with terminated),
+    so the kernel dispatches HAS_TRUNCATIONS=True (7 full-width reads).
+    No floor is asserted — the truncation path is a correctness feature.
+    This test makes the speedup visible and tracked.
+    """
+    compiled_vec_trunc = torch.compile(vectorized_vtrace_with_truncations)
+
+    def _make_trunc_inputs(num_envs, seq_len, seed=0):
+        torch.manual_seed(seed)
+        log_pi_target   = -torch.rand(num_envs, seq_len, device="cuda")
+        log_pi_behavior = -torch.rand(num_envs, seq_len, device="cuda")
+        values      = torch.randn(num_envs, seq_len, device="cuda")
+        rewards     = torch.randn(num_envs, seq_len, device="cuda")
+        terminateds = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        trunc_cand  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        truncateds  = trunc_cand * (1.0 - terminateds)
+        bootstrap_values = torch.zeros(num_envs, seq_len, device="cuda")
+        bootstrap_values[truncateds.bool()] = torch.rand(
+            int(truncateds.sum().item()), device="cuda"
+        )
+        bootstrap_values[:, -1] = torch.rand(num_envs, device="cuda")
+        return log_pi_target, log_pi_behavior, values, rewards, terminateds, truncateds, bootstrap_values
+
+    _wa = _make_trunc_inputs(64, 512, seed=1)
+    compiled_vec_trunc(*_wa, gamma=0.99)
+    compute_vtrace_fused(
+        _wa[0], _wa[1], _wa[2], _wa[3], _wa[4],
+        truncateds=_wa[5], gamma=0.99, bootstrap_values=_wa[6],
+    )
+    torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    all_speedups = []
+
+    for num_envs, seq_len in BENCH_CONFIGS:
+        args = _make_trunc_inputs(num_envs, seq_len)
+        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+
+        tri_ms = _bench_gpu(
+            compute_vtrace_fused,
+            args[0], args[1], args[2], args[3], args[4],
+            truncateds=args[5], gamma=0.99, bootstrap_values=args[6],
+            n_warmup=gpu_warmup, n_iter=gpu_iter,
+        )
+        vec_ms = _bench_gpu(
+            compiled_vec_trunc, *args,
+            gamma=0.99,
+            n_warmup=gpu_warmup, n_iter=gpu_iter,
+        )
+
+        su = vec_ms / tri_ms
+        all_speedups.append(su)
+        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>19.3f}ms {su:>8.2f}x")
+
+    print(
+        f"\nMin speedup: {min(all_speedups):.2f}x  "
+        f"Max: {max(all_speedups):.2f}x  "
+        f"(HAS_TRUNCATIONS=True path; 7 full-width reads vs 5 for no-truncation path)"
+    )

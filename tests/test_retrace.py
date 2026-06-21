@@ -386,6 +386,25 @@ def test_retrace_non_contiguous_input():
 
 
 # ---------------------------------------------------------------------------
+# Truncation classification note
+# ---------------------------------------------------------------------------
+#
+# Retrace(λ) takes `truncateds` as a required positional argument — it is always
+# present.  There is NO separate bootstrap_values parameter because the Q-bootstrap
+# γ·E_π[Q(s_{t+1},·)] is folded into `next_q_values_all` (the caller supplies the
+# full Q-table for the next state).  The truncated flag stops trace decay exactly
+# as terminated does, but the one-step δ[t] keeps the next-Q term (gated only by
+# terminated, not truncated) because the Q-function already provides the correct
+# continuation value.
+#
+# Consequence: there is no distinct HAS_TRUNCATIONS fast/slow dispatch in Retrace.
+# The existing test_retrace_performance already exercises `truncateds=zeros`, which
+# is the realistic production case (most steps are not truncated).  A separate
+# truncation-path benchmark would compare the same kernel to itself with a ~5%
+# density difference — not a meaningful coverage gap.  No additional truncation
+# benchmark or correctness test is added here.
+#
+# ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------
 

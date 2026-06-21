@@ -699,7 +699,12 @@ def test_vectorized_gae_with_truncations_correctness():
 def test_gae_truncation_performance():
     """
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
-    torch.compile(vectorized_gae_with_truncations).
+    vectorized_gae_with_truncations (raw, not compiled).
+
+    torch.compile is NOT used on the time-loop baseline: the Python for-loop
+    causes torch.compile to unroll all T iterations into a flat graph, triggering
+    a multi-minute compilation for large seq_len.  The raw time loop is already
+    as fast as it can get on GPU (each step is one vectorized op over N envs).
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches to HAS_TRUNCATIONS=True.  Both sides compute
@@ -710,8 +715,6 @@ def test_gae_truncation_performance():
     feature, not a performance regression from the no-truncation baseline.
     This test exists to make the truncation-path speedup visible and tracked.
     """
-    compiled_vec_trunc = torch.compile(vectorized_gae_with_truncations)
-
     def _make_trunc_inputs(num_envs, seq_len, seed=0):
         torch.manual_seed(seed)
         rewards     = torch.randn(num_envs, seq_len, device="cuda")
@@ -729,14 +732,14 @@ def test_gae_truncation_performance():
 
     # Warmup
     _wa = _make_trunc_inputs(64, 512, seed=1)
-    compiled_vec_trunc(*_wa, gamma=0.99, lambda_=0.95)
+    vectorized_gae_with_truncations(*_wa, gamma=0.99, lambda_=0.95)
     compute_gae(_wa[0], _wa[1], _wa[2], _wa[3], gamma=0.99, lambda_=0.95,
                 bootstrap_values=_wa[4])
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+        f"{'triton':>8} {'vec_trunc(raw)':>16} {'speedup':>9}"
     )
     print(header)
     print("-" * len(header))
@@ -753,14 +756,14 @@ def test_gae_truncation_performance():
             n_warmup=gpu_warmup, n_iter=gpu_iter,
         )
         vec_ms = _bench_gpu(
-            compiled_vec_trunc, *args,
+            vectorized_gae_with_truncations, *args,
             gamma=0.99, lambda_=0.95,
             n_warmup=gpu_warmup, n_iter=gpu_iter,
         )
 
         su = vec_ms / tri_ms
         all_speedups.append(su)
-        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>19.3f}ms {su:>8.2f}x")
+        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>15.3f}ms {su:>8.2f}x")
 
     print(
         f"\nMin speedup: {min(all_speedups):.2f}x  "

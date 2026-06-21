@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
 
 triton = pytest.importorskip("triton")
 
@@ -611,6 +611,7 @@ def vectorized_gae(
     return adv
 
 
+
 def vectorized_gae_with_truncations(
     rewards: torch.Tensor,
     values: torch.Tensor,
@@ -621,7 +622,18 @@ def vectorized_gae_with_truncations(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    Vectorized GAE with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
+    Vectorized GAE with truncation support — log-depth parallel scan baseline.
+
+    Uses the linear-space associative scan combine operator
+      (a1, b1) ∘ (a2, b2) = (a2 + b2*a1, b2*b1)
+    which is associative and handles decay=0 at boundaries exactly: b=0
+    severs the carry (right element wins), so no boundary-specific logic
+    is needed.  This is the same algorithm tl.associative_scan uses in the
+    Triton kernel.  Log2(T) doubling steps, each fully vectorized over N and T.
+
+    The log-space cumsum trick fails here because decay[t]=0 at truncated/
+    terminated steps gives log(0)=-inf which contaminates the suffix cumsum.
+    The linear-space associative scan handles decay=0 directly.
 
     Matches the kernel semantics exactly:
       - next_values[t] = values[t+1] at interior non-truncated steps,
@@ -629,13 +641,6 @@ def vectorized_gae_with_truncations(
       - delta[t] = r[t] + gamma*(1-terminated[t])*next_values[t] - V(s_t)
       - decay[t] = gamma*lambda*(1 - clamp(terminated[t]+truncated[t], max=1))
       - carry seeded from bootstrap_values[:, -1].
-
-    Uses an env-parallel time loop instead of the log-space cumsum trick.
-    The log-space trick breaks when decay[t]=0 at guaranteed truncated steps
-    (log(0)=-inf contaminates the entire suffix, causing 0/0 in the division).
-    The time loop is O(T) serial but executes all envs in parallel per step —
-    the same complexity as torch.compile on the time loop, which is the relevant
-    baseline comparison.
     """
     not_terminated = 1.0 - terminateds
     not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
@@ -649,16 +654,20 @@ def vectorized_gae_with_truncations(
     deltas = rewards + gamma * not_terminated * next_values - values
     decays = gamma * lambda_ * not_done
 
-    T   = rewards.shape[1]
-    out = torch.empty_like(rewards)
-    carry = bootstrap_values[:, -1].clone()
-    for t in reversed(range(T)):
-        carry    = deltas[:, t] + decays[:, t] * carry
-        out[:, t] = carry
-    return out
+    # Incorporate boundary bootstrap into the initial 'a' values:
+    # The suffix scan computes G[t] assuming G[T]=0.  We need G[T-1] to include
+    # the carry from bootstrap_values[:, -1].  Inject it by treating the boundary
+    # as delta[T-1] += decay[T-1] * bootstrap (which is 0 since T-1 may not be a
+    # boundary, but the last step always contributes bootstrap).
+    # Simpler: append a sentinel step at position T with a=bootstrap, b=0, then scan.
+    N = rewards.shape[0]
+    bootstrap = bootstrap_values[:, -1].unsqueeze(1)   # [N, 1]
+    a = torch.cat([deltas, bootstrap], dim=1)           # [N, T+1]
+    b = torch.cat([decays, torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)], dim=1)
+    result = parallel_suffix_scan(a, b)                 # [N, T+1]
+    return result[:, :rewards.shape[1]]                 # [N, T]
 
 
-@cuda_only
 def test_vectorized_gae_with_truncations_correctness():
     """Verify vectorized_gae_with_truncations matches _ref_gae_sequential.
 
@@ -699,12 +708,11 @@ def test_vectorized_gae_with_truncations_correctness():
 def test_gae_truncation_performance():
     """
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
-    vectorized_gae_with_truncations (raw, not compiled).
+    torch.compile(vectorized_gae_with_truncations).
 
-    torch.compile is NOT used on the time-loop baseline: the Python for-loop
-    causes torch.compile to unroll all T iterations into a flat graph, triggering
-    a multi-minute compilation for large seq_len.  The raw time loop is already
-    as fast as it can get on GPU (each step is one vectorized op over N envs).
+    vectorized_gae_with_truncations uses parallel_suffix_scan: a log-depth
+    parallel associative scan with no Python time loop, compiles cleanly.
+    Uses the same combine operator as tl.associative_scan in the kernel.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches to HAS_TRUNCATIONS=True.  Both sides compute
@@ -715,6 +723,8 @@ def test_gae_truncation_performance():
     feature, not a performance regression from the no-truncation baseline.
     This test exists to make the truncation-path speedup visible and tracked.
     """
+    compiled_vec_trunc = torch.compile(vectorized_gae_with_truncations)
+
     def _make_trunc_inputs(num_envs, seq_len, seed=0):
         torch.manual_seed(seed)
         rewards     = torch.randn(num_envs, seq_len, device="cuda")
@@ -730,16 +740,16 @@ def test_gae_truncation_performance():
         bootstrap_values[:, -1] = torch.rand(num_envs, device="cuda")
         return rewards, values, terminateds, truncateds, bootstrap_values
 
-    # Warmup
+    # Warmup — compiles compiled_vec_trunc.
     _wa = _make_trunc_inputs(64, 512, seed=1)
-    vectorized_gae_with_truncations(*_wa, gamma=0.99, lambda_=0.95)
+    compiled_vec_trunc(*_wa, gamma=0.99, lambda_=0.95)
     compute_gae(_wa[0], _wa[1], _wa[2], _wa[3], gamma=0.99, lambda_=0.95,
                 bootstrap_values=_wa[4])
     torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'vec_trunc(raw)':>16} {'speedup':>9}"
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
     )
     print(header)
     print("-" * len(header))
@@ -756,14 +766,14 @@ def test_gae_truncation_performance():
             n_warmup=gpu_warmup, n_iter=gpu_iter,
         )
         vec_ms = _bench_gpu(
-            vectorized_gae_with_truncations, *args,
+            compiled_vec_trunc, *args,
             gamma=0.99, lambda_=0.95,
             n_warmup=gpu_warmup, n_iter=gpu_iter,
         )
 
         su = vec_ms / tri_ms
         all_speedups.append(su)
-        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>15.3f}ms {su:>8.2f}x")
+        print(f"{num_envs:>10} {seq_len:>8} {tri_ms:>7.3f}ms {vec_ms:>19.3f}ms {su:>8.2f}x")
 
     print(
         f"\nMin speedup: {min(all_speedups):.2f}x  "

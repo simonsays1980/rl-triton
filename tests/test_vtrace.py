@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
 
 # numpy is used intentionally: episode data is typically stored as NumPy arrays,
 # so numpy_to_triton_to_numpy mirrors the real adoption path (np -> GPU -> np)
@@ -763,7 +763,11 @@ def vectorized_vtrace_with_truncations(
     c_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Vectorized V-Trace with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
+    Vectorized V-Trace with truncation support — log-depth parallel scan baseline.
+
+    Uses parallel_suffix_scan (the same associative operator as tl.associative_scan
+    in the kernel) to compute the value-delta suffix scan in O(log2(T)) passes,
+    fully vectorized.  No Python time loop; torch.compile works cleanly.
 
     Matches the kernel semantics exactly:
       - v_next[t] = values[t+1] at interior non-truncated steps,
@@ -771,11 +775,6 @@ def vectorized_vtrace_with_truncations(
       - not_terminated[t] gates the one-step TD: gamma * v_next * (1 - terminated)
       - not_done[t] = 1 - clamp(terminated + truncated, max=1) gates trace decay
       - carry seeded from bootstrap_values[:, -1] (boundary value).
-
-    Uses an env-parallel time loop instead of the log-space cumsum trick.
-    The log-space trick breaks when decay[t]=0 at guaranteed truncated steps
-    (log(0)=-inf contaminates the entire suffix, causing 0/0 in the division).
-    The time loop is O(T) serial but executes all envs in parallel per step.
     """
     is_ratios      = torch.exp(log_pi_target - log_pi_behavior)
     rho            = torch.clamp(is_ratios, max=rho_bar)
@@ -792,12 +791,13 @@ def vectorized_vtrace_with_truncations(
     deltas = rho * (rewards + gamma * not_terminated * v_next - values)
     decays = gamma * c * not_done
 
-    T     = rewards.shape[1]
-    carry = bootstrap_values[:, -1].clone()
-    value_deltas = torch.empty_like(rewards)
-    for t in reversed(range(T)):
-        carry            = deltas[:, t] + decays[:, t] * carry
-        value_deltas[:, t] = carry
+    # Append sentinel at T: a=bootstrap_values[:,-1], b=0 to seed the boundary carry.
+    N        = rewards.shape[0]
+    sentinel_a = bootstrap_values[:, -1].unsqueeze(1)
+    sentinel_b = torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)
+    a = torch.cat([deltas, sentinel_a], dim=1)
+    b = torch.cat([decays, sentinel_b], dim=1)
+    value_deltas = parallel_suffix_scan(a, b)[:, :rewards.shape[1]]
 
     vtrace_targets = value_deltas + values
 
@@ -813,7 +813,6 @@ def vectorized_vtrace_with_truncations(
     return vtrace_targets, vtrace_advantages
 
 
-@cuda_only
 def test_vectorized_vtrace_with_truncations_correctness():
     """Verify vectorized_vtrace_with_truncations matches _ref_vtrace_sequential.
 
@@ -857,6 +856,9 @@ def test_vtrace_truncation_performance():
     """
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_vtrace_with_truncations).
+
+    vectorized_vtrace_with_truncations uses parallel_suffix_scan — a log-depth
+    parallel associative scan with no Python time loop, compiles cleanly.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True (7 full-width reads).

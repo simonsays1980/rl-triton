@@ -4,6 +4,49 @@ import time
 import torch
 
 
+def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Log-depth parallel suffix associative scan for benchmarking truncation baselines.
+
+    Combines pairs (a[t], b[t]) under the operator
+      (a1, b1) ∘ (a2, b2) = (a1 + b1*a2, b1*b2)
+    where the LEFT operand is the earlier timestep (smaller t).
+
+    After log2(T) doubling passes, a[t] = suffix scan result G[t] for the
+    recurrence G[t] = a[t] + b[t]*G[t+1].  b[t]=0 at boundary steps severs
+    the carry naturally (b1=0 → a1+b1*a2 = a1) — no special handling needed.
+
+    This is the same associative operator used by tl.associative_scan in the
+    Triton kernels.  Fully vectorized (no Python loop), compiles cleanly with
+    torch.compile.
+
+    Shape: a, b are [N, T].  Returns a_out [N, T].
+    """
+    N, T = a.shape
+    # Pad T to next power of 2 for clean doubling.
+    T_pad = 1
+    while T_pad < T:
+        T_pad *= 2
+    if T_pad > T:
+        pad = T_pad - T
+        a = torch.cat([a, torch.zeros(N, pad, device=a.device, dtype=a.dtype)], dim=1)
+        b = torch.cat([b, torch.zeros(N, pad, device=b.device, dtype=b.dtype)], dim=1)
+
+    # Suffix scan: at each step, position t absorbs the aggregated result of t+stride.
+    stride = 1
+    while stride < T_pad:
+        a_right = torch.roll(a, -stride, dims=1)
+        b_right = torch.roll(b, -stride, dims=1)
+        # Zero out positions that wrapped around (out of [0, T_pad) on the right).
+        a_right[:, T_pad - stride:] = 0.0
+        b_right[:, T_pad - stride:] = 0.0
+        # G[t] = a[t] + b[t]*G[t+stride]
+        a = a + b * a_right
+        b = b * b_right
+        stride *= 2
+
+    return a[:, :T]
+
+
 def _bench_gpu(fn, *args, n_warmup: int = 25, n_iter: int = 100, **kwargs) -> float:
     """Time a GPU kernel with CUDA events. Returns milliseconds per call."""
     for _ in range(n_warmup):

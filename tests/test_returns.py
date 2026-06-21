@@ -4,7 +4,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_suffix_scan
 from rl_triton.ops.returns import compute_discounted_returns, compute_eligibility_traces, compute_lambda_returns
 
 cuda_only = pytest.mark.skipif(
@@ -582,7 +582,7 @@ def vectorized_lambda_returns_with_truncations(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    TD(λ) returns with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
+    TD(λ) returns with truncation support — log-depth parallel scan baseline.
 
     Mirrors the kernel recurrence exactly:
       u[t]    = r[t] + gamma*(1-lambda_)*not_done[t]*next_values[t]
@@ -590,22 +590,22 @@ def vectorized_lambda_returns_with_truncations(
       decay[t] = gamma*lambda_*not_done[t]
       G[t]    = u[t] + decay[t]*G[t+1]
 
-    Uses an env-parallel time loop (NOT log-space) because decay[t]=0 at truncated
-    steps gives log(0)=-inf which propagates through the suffix cumsum.
+    Uses parallel_suffix_scan (log2(T) doubling passes, no Python time loop)
+    with the same associative operator as tl.associative_scan.  torch.compile
+    works cleanly.  Boundary carry seeded via a sentinel at position T.
     """
-    N, T     = rewards.shape
+    N        = rewards.shape[0]
     not_done = 1.0 - (terminateds + truncateds).clamp(max=1.0)
     u        = (rewards
                 + gamma * (1.0 - lambda_) * not_done * next_values
                 + gamma * truncateds * bootstrap_values)
     decays   = gamma * lambda_ * not_done
 
-    out   = torch.empty_like(rewards)
-    carry = bootstrap_values[:, -1].clone()
-    for t in reversed(range(T)):
-        carry     = u[:, t] + decays[:, t] * carry
-        out[:, t] = carry
-    return out
+    sentinel_a = bootstrap_values[:, -1].unsqueeze(1)
+    sentinel_b = torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)
+    a = torch.cat([u,      sentinel_a], dim=1)
+    b = torch.cat([decays, sentinel_b], dim=1)
+    return parallel_suffix_scan(a, b)[:, :rewards.shape[1]]
 
 
 def vectorized_discounted_returns_with_truncations(
@@ -616,27 +616,26 @@ def vectorized_discounted_returns_with_truncations(
     gamma: float,
 ) -> torch.Tensor:
     """
-    Discounted returns with truncation support — compiled baseline for HAS_TRUNCATIONS=True.
+    Discounted returns with truncation support — log-depth parallel scan baseline.
 
-    G[t] = r[t] + gamma*(1-done[t])*carry + gamma*truncated[t]*bootstrap_values[n,t]
+    G[t] = r[t] + gamma*(1-done[t])*G[t+1] + gamma*truncated[t]*bootstrap_values[n,t]
+    i.e.  u[t] = r[t] + gamma*truncated[t]*bootstrap[t],  decay[t] = gamma*(1-done[t])
 
-    Uses an env-parallel time loop (NOT log-space) because decay[t]=0 at truncated
-    steps gives log(0)=-inf which propagates through the suffix cumsum.
+    Uses parallel_suffix_scan (log2(T) doubling passes, no Python time loop).
+    Boundary carry seeded via a sentinel at position T.
     """
-    N, T  = rewards.shape
+    N        = rewards.shape[0]
     not_done = 1.0 - (terminateds + truncateds).clamp(max=1.0)
+    u        = rewards + gamma * truncateds * bootstrap_values
+    decays   = gamma * not_done
 
-    out   = torch.empty_like(rewards)
-    carry = bootstrap_values[:, -1].clone()
-    for t in reversed(range(T)):
-        carry     = (rewards[:, t]
-                     + gamma * not_done[:, t] * carry
-                     + gamma * truncateds[:, t] * bootstrap_values[:, t])
-        out[:, t] = carry
-    return out
+    sentinel_a = bootstrap_values[:, -1].unsqueeze(1)
+    sentinel_b = torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)
+    a = torch.cat([u,      sentinel_a], dim=1)
+    b = torch.cat([decays, sentinel_b], dim=1)
+    return parallel_suffix_scan(a, b)[:, :rewards.shape[1]]
 
 
-@cuda_only
 def test_vectorized_lambda_returns_with_truncations_correctness():
     """Verify vectorized_lambda_returns_with_truncations matches _ref_lambda_sequential."""
     torch.manual_seed(88)
@@ -667,7 +666,6 @@ def test_vectorized_lambda_returns_with_truncations_correctness():
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
-@cuda_only
 def test_vectorized_discounted_returns_with_truncations_correctness():
     """Verify vectorized_discounted_returns_with_truncations matches _ref_discounted_sequential."""
     torch.manual_seed(89)
@@ -1054,6 +1052,9 @@ def test_lambda_returns_truncation_performance():
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_lambda_returns_with_truncations).
 
+    vectorized_lambda_returns_with_truncations uses parallel_suffix_scan —
+    a log-depth parallel associative scan with no Python time loop, compiles cleanly.
+
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True.
     No floor is asserted — the truncation path is a correctness feature.
@@ -1125,6 +1126,9 @@ def test_discounted_returns_truncation_performance():
     """
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_discounted_returns_with_truncations).
+
+    vectorized_discounted_returns_with_truncations uses parallel_suffix_scan —
+    a log-depth parallel associative scan with no Python time loop, compiles cleanly.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True.

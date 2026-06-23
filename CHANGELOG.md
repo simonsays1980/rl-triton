@@ -6,6 +6,17 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+### Changed
+- Removed the `torch.zeros(num_envs)` bootstrap/seed-default allocation from
+  the no-bootstrap/no-seed kernel path across all kernels (GAE, V-Trace,
+  Lambda Returns, Discounted Returns, Eligibility Traces, Prefix Sum, and the
+  shared scan fallback), via a `HAS_BOOTSTRAP`/`HAS_SEED` compile-time flag
+  that substitutes a literal `0.0` instead. Eliminates an extra CUDA kernel
+  launch that previously cost 28-40% of total op time at small sizes.
+  Bit-identical output verified for every kernel. `bench_safeguard.py` floors
+  recalibrated accordingly (e.g. GAE 1.4x → 1.9x, Prefix Sum flips from a
+  0.75x non-regression guard to a genuine 1.1x speedup floor).
+
 ## [0.1.0] - 2026-06-08
 
 ### Added

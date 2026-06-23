@@ -36,7 +36,7 @@ src/rl_triton/
 
 tests/
 ├── test_<name>.py          # correctness + vectorized baseline per kernel
-├── bench_safeguard.py      # PR perf gate - one config per kernel, ≥1.5× vs torch.compile
+├── bench_safeguard.py      # PR perf gate - one config per kernel, per-kernel floor vs torch.compile
 ├── bench_release.py        # full sweep across all (num_envs, seq_len) configs
 └── bench_utils.py          # shared timing helpers
 ```
@@ -192,12 +192,20 @@ range (`seq_len = 131072`), and episode boundaries (non-zero `dones`).
 
 Add one entry to `bench_safeguard.py` for the PR perf gate. It runs a single
 representative config (`128 envs × 1024 steps`) and asserts the Triton kernel
-is **≥ 1.5× faster** than `torch.compile` on the vectorized baseline:
+beats `torch.compile` on the vectorized baseline by at least a per-kernel
+floor. Each kernel gets its own `_MY_KERNEL_FLOOR` constant — do not reuse
+another kernel's floor or a generic placeholder. Calibrate it with
+`bench_utils._bench_gpu_spread` over several trials (5+) across at least 3
+independent process runs, then set the floor below the observed minimum with
+roughly a 10% margin (wider for noisier kernels) so it survives GPU
+power-state variance without flaking:
 
 ```python
 @cuda_only
 @pytest.mark.perf
 def test_my_kernel_performance():
+    # floor 1.6; 3-run min 1.8x, ~10% margin.
+    _MY_KERNEL_FLOOR = 1.6
     inputs = torch.randn(_NUM_ENVS, _SEQ_LEN, device="cuda")
     dones  = torch.zeros(_NUM_ENVS, _SEQ_LEN, device="cuda")
 
@@ -205,8 +213,8 @@ def test_my_kernel_performance():
     pt_compile_ms = _bench_gpu(lambda: vectorized_my_kernel(inputs, dones, gamma=0.99))
 
     speedup = pt_compile_ms / triton_ms
-    assert speedup >= _SPEEDUP_FLOOR, (
-        f"compute_my_kernel speedup {speedup:.2f}× < {_SPEEDUP_FLOOR}× floor"
+    assert speedup >= _MY_KERNEL_FLOOR, (
+        f"compute_my_kernel speedup {speedup:.2f}× < {_MY_KERNEL_FLOOR}× floor"
     )
 ```
 

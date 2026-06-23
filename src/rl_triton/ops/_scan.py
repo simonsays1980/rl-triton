@@ -26,9 +26,9 @@ import triton
 # such as non-contiguous inputs that trigger implicit copies.
 _PERF_WARNINGS = os.environ.get("RL_TRITON_PERF_WARNINGS", "0") == "1"
 
-# Set RL_TRITON_CORRECTNESS_WARNINGS=1 to enable warnings about potentially
-# incorrect inputs, such as truncateds=1 without dones=1 in Retrace.
-_CORRECTNESS_WARNINGS = os.environ.get("RL_TRITON_CORRECTNESS_WARNINGS", "0") == "1"
+# Set RL_TRITON_CORRECTNESS_WARNINGS=1 to enable assertions on inputs.
+def _CORRECTNESS_WARNINGS() -> bool:
+    return os.environ.get("RL_TRITON_CORRECTNESS_WARNINGS", "0") == "1"
 
 
 def _perf_warn(msg: str) -> None:
@@ -37,7 +37,7 @@ def _perf_warn(msg: str) -> None:
 
 
 def _correctness_warn(msg: str) -> None:
-    if _CORRECTNESS_WARNINGS:
+    if _CORRECTNESS_WARNINGS():
         warnings.warn(msg, stacklevel=3)
 
 from rl_triton.kernels.scan import backward_scan_kernel, forward_scan_kernel
@@ -76,26 +76,28 @@ def _run_scan(
     Returns:
         out: A[t] values, shape [num_envs, seq_len], float32.
     """
-    assert u.shape == v.shape,   "u and v must have the same shape"
-    assert u.is_cuda and v.is_cuda, "u and v must be on CUDA"
-    assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
-    assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
-
     if not u.is_contiguous():
         _perf_warn("u is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
     if not v.is_contiguous():
         _perf_warn("v is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
+
+    if _CORRECTNESS_WARNINGS():
+        assert u.shape == v.shape,      "u and v must have the same shape"
+        assert u.is_cuda and v.is_cuda, "u and v must be on CUDA"
+        assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
+        assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
+        if bootstrap is not None:
+            assert bootstrap.shape == (u.shape[0],), \
+                f"bootstrap must have shape [{u.shape[0]}], got {bootstrap.shape}"
+            assert bootstrap.is_cuda, "bootstrap must be on CUDA"
+
     u = u.contiguous()
     v = v.contiguous()
 
     num_envs, seq_len = u.shape
 
-    if bootstrap is None:
-        bootstrap = torch.zeros(num_envs, device=u.device, dtype=torch.float32)
-    else:
-        assert bootstrap.shape == (num_envs,), \
-            f"bootstrap must have shape [{num_envs}], got {bootstrap.shape}"
-        assert bootstrap.is_cuda, "bootstrap must be on CUDA"
+    has_bootstrap = bootstrap is not None
+    if has_bootstrap:
         bootstrap = bootstrap.contiguous()
 
     out = torch.empty_like(u)
@@ -107,6 +109,7 @@ def _run_scan(
             seq_len,
             u.stride(0),
             BLOCK_SIZE=_CHUNK_SIZE,
+            HAS_BOOTSTRAP=has_bootstrap,
         )
     else:
         BLOCK_SIZE = triton.next_power_of_2(seq_len)
@@ -120,6 +123,7 @@ def _run_scan(
             BLOCK_SIZE=BLOCK_SIZE,
             num_warps=num_warps,
             num_stages=num_stages,
+            HAS_BOOTSTRAP=has_bootstrap,
         )
 
     return out
@@ -147,15 +151,21 @@ def _run_scan_forward(
     Returns:
         out: e[t] values, shape [num_envs, seq_len], float32.
     """
-    assert u.shape == v.shape,      "u and v must have the same shape"
-    assert u.is_cuda and v.is_cuda, "u and v must be on CUDA"
-    assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
-    assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
-
     if not u.is_contiguous():
         _perf_warn("u is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
     if not v.is_contiguous():
         _perf_warn("v is not contiguous; a copy will be made. Call .contiguous() before the hot loop to avoid this overhead.")
+
+    if _CORRECTNESS_WARNINGS():
+        assert u.shape == v.shape,      "u and v must have the same shape"
+        assert u.is_cuda and v.is_cuda, "u and v must be on CUDA"
+        assert u.dtype == torch.float32, f"u: expected float32, got {u.dtype}"
+        assert v.dtype == torch.float32, f"v: expected float32, got {v.dtype}"
+        if seed is not None:
+            assert seed.shape == (u.shape[0],), \
+                f"seed must have shape [{u.shape[0]}], got {seed.shape}"
+            assert seed.is_cuda, "seed must be on CUDA"
+
     u = u.contiguous()
     v = v.contiguous()
 
@@ -166,12 +176,8 @@ def _run_scan_forward(
         "A chunked forward scan kernel has not been implemented yet."
     )
 
-    if seed is None:
-        seed = torch.zeros(num_envs, device=u.device, dtype=torch.float32)
-    else:
-        assert seed.shape == (num_envs,), \
-            f"seed must have shape [{num_envs}], got {seed.shape}"
-        assert seed.is_cuda, "seed must be on CUDA"
+    has_seed = seed is not None
+    if has_seed:
         seed = seed.contiguous()
 
     out        = torch.empty_like(u)
@@ -187,5 +193,6 @@ def _run_scan_forward(
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         num_stages=num_stages,
+        HAS_SEED=has_seed,
     )
     return out

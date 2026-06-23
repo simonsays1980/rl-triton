@@ -217,6 +217,13 @@ def test_prefix_sum_non_contiguous_input():
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
+# Prefix sum: no truncation/bootstrap path.
+# compute_prefix_sum is a forward-scan cumulative sum with optional episode-boundary
+# resets via the `dones` mask.  There is no concept of a "continuation value from
+# the next episode" — the scan simply restarts from 0 (or seed_values) at each
+# done step.  Truncation vs termination makes no semantic difference to a cumsum.
+# No truncation correctness test or truncation benchmark is added.
+
 # ---------------------------------------------------------------------------
 # Performance benchmark
 # ---------------------------------------------------------------------------

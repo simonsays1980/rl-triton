@@ -3,6 +3,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
+from bench_utils import _bench_gpu, _n_iter_gpu, _warmup_gpu
 from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _run_scan
 from rl_triton.ops.vtrace import compute_vtrace
 
@@ -144,30 +145,6 @@ def test_vtrace_autodispatch_above_threshold():
 
 
 # ---------------------------------------------------------------------------
-# Benchmark helpers
-# ---------------------------------------------------------------------------
-
-def _bench_gpu(fn, *args, n_warmup: int, n_iter: int, **kwargs) -> float:
-    for _ in range(n_warmup):
-        fn(*args, **kwargs)
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end   = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        fn(*args, **kwargs)
-    end.record()
-    torch.cuda.synchronize()
-    return start.elapsed_time(end) / n_iter
-
-
-def _n_iters(seq_len: int) -> tuple[int, int]:
-    n_warmup = max(2, min(10,  200_000 // seq_len))
-    n_iter   = max(2, min(50, 1_000_000 // seq_len))
-    return n_warmup, n_iter
-
-
-# ---------------------------------------------------------------------------
 # Performance benchmark — long sequences
 # ---------------------------------------------------------------------------
 
@@ -198,9 +175,11 @@ def test_scan_performance():
 
     for num_envs, seq_len in LONG_SEQ_CONFIGS:
         deltas, decays = _make_scan_inputs(num_envs, seq_len)
-        n_warmup, n_iter = _n_iters(seq_len)
+        n_iter = _n_iter_gpu(seq_len, num_envs)
 
-        scan_ms   = _bench_gpu(_run_scan, deltas, decays, n_warmup=n_warmup, n_iter=n_iter)
+        # Per-config warmup at the exact shape being timed.
+        _warmup_gpu(_run_scan, deltas, decays)
+        scan_ms   = _bench_gpu(_run_scan, deltas, decays, n_iter=n_iter)
         auto_used = "flat" if seq_len <= _FLAT_MAX_SEQ_LEN else "chunked"
 
         print(

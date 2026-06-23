@@ -12,6 +12,7 @@ def prefix_sum_fused_kernel(
     seq_len,
     stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_SEED: tl.constexpr,
 ):
     """
     Fully-fused episodic prefix sum kernel: one program per environment.
@@ -19,11 +20,11 @@ def prefix_sum_fused_kernel(
     Recurrence (forward, left-to-right):
       C[t] = x[t] + (1-d[t]) * C[t-1],  C[-1] = seed
 
-    Maps to A[t] = u[t] + v[t] * A[t-1] with:
-      u[t] = inputs[t]
-      v[t] = 1 - dones[t]
+    Maps to A[t] = a[t] + b[t] * A[t-1] with:
+      a[t] = inputs[t]
+      b[t] = 1 - dones[t]
 
-    Fuses the intermediate v = (1-dones) tensor computation into the kernel,
+    Fuses the intermediate b = (1-dones) tensor computation into the kernel,
     eliminating one full read-write pass over the [num_envs, seq_len] data.
 
     Indexing (natural forward order):
@@ -37,6 +38,8 @@ def prefix_sum_fused_kernel(
         seq_len:    Number of timesteps.
         stride_env: Row stride in elements.
         BLOCK_SIZE: Power-of-2 >= seq_len (constexpr).
+        HAS_SEED:   Compile-time flag — False skips the seed_ptr read and uses
+                    literal 0.0 (the default C[-1]=0 when no seed_values is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -51,5 +54,8 @@ def prefix_sum_fused_kernel(
 
     out_local, decay_prod = tl.associative_scan((x, decay), axis=0, combine_fn=_combine)
 
-    seed = tl.load(seed_ptr + env_idx)
+    if HAS_SEED:
+        seed = tl.load(seed_ptr + env_idx)
+    else:
+        seed = 0.0
     tl.store(out_ptr + base + offs, out_local + decay_prod * seed, mask=mask)

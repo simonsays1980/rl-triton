@@ -26,7 +26,7 @@ import torch
 
 # Ensure the tests/ directory is on sys.path so bench_utils is importable.
 sys.path.insert(0, str(Path(__file__).parent))
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu
 
 from rl_triton.ops.gae import compute_gae
 from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
@@ -372,9 +372,10 @@ def bench_gae():
     for num_envs, seq_len in CONFIGS:
         args_gpu = _make_gae(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
-        nw, ni   = _n_iter_gpu(seq_len, num_envs)
+        ni       = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_gae,     *args_gpu, gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
+        _warmup_gpu(compute_gae, *args_gpu, gamma=0.99, lambda_=0.95)
+        triton_ms   = _bench_gpu(compute_gae,     *args_gpu, gamma=0.99, lambda_=0.95, n_iter=ni)
         compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99, lambda_=0.95)
         e2e_ms      = _bench_cpu(numpy_gae_np_to_triton, *args_np,  gamma=0.99, lambda_=0.95)
         numpy_ms    = _bench_cpu(numpy_gae_cpu,          *args_gpu, gamma=0.99, lambda_=0.95)
@@ -399,9 +400,10 @@ def bench_vtrace():
     for num_envs, seq_len in CONFIGS:
         args_gpu = _make_vtrace(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
-        nw, ni   = _n_iter_gpu(seq_len, num_envs)
+        ni       = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_vtrace_fused,          *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        _warmup_gpu(compute_vtrace_fused, *args_gpu, gamma=0.99)
+        triton_ms   = _bench_gpu(compute_vtrace_fused,          *args_gpu, gamma=0.99, n_iter=ni)
         compiled_ms = _bench_cpu(compiled,                      *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(numpy_vtrace_np_to_triton,     *args_np,  gamma=0.99)
         numpy_ms    = _bench_cpu(numpy_vtrace_cpu,              *args_gpu, gamma=0.99)
@@ -431,10 +433,12 @@ def bench_retrace():
         # numpy_retrace_cpu order: rewards, dones, q_values, next_q_all, actions, apt, apb
         # (index 2 is "values" used as q_values in _ref_retrace; index 4 is a duplicate — skip it)
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
-        nw, ni = _n_iter_gpu(seq_len, num_envs)
+        ni = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace,       *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
-        vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_warmup=nw, n_iter=ni)
+        _warmup_gpu(compute_retrace, *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,    *args_gpu, gamma=0.99)
+        triton_ms   = _bench_gpu(compute_retrace,       *args_gpu, gamma=0.99, n_iter=ni)
+        vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_iter=ni)
         compiled_ms = _bench_cpu(compiled_loop,                 *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(numpy_retrace_np_to_triton,    rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
         numpy_ms    = _bench_cpu(numpy_retrace_cpu,             rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
@@ -463,14 +467,17 @@ def bench_returns():
     rows_lambda, rows_disc, rows_traces = [], [], []
     for num_envs, seq_len in CONFIGS:
         rewards, next_values, dones = _make_returns(num_envs, seq_len)
-        nw, ni = _n_iter_gpu(seq_len, num_envs)
+        ni = _n_iter_gpu(seq_len, num_envs)
 
+        _warmup_gpu(compute_lambda_returns,    rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compute_discounted_returns, rewards, dones, gamma=0.99)
+        _warmup_gpu(compute_eligibility_traces, rewards, dones, gamma=0.99, lambda_=0.9)
         lam_ms  = _bench_gpu(compute_lambda_returns,    rewards, next_values, dones,
-                             gamma=0.99, lambda_=0.95, n_warmup=nw, n_iter=ni)
+                             gamma=0.99, lambda_=0.95, n_iter=ni)
         disc_ms = _bench_gpu(compute_discounted_returns, rewards, dones,
-                             gamma=0.99, n_warmup=nw, n_iter=ni)
+                             gamma=0.99, n_iter=ni)
         trc_ms  = _bench_gpu(compute_eligibility_traces, rewards, dones,
-                             gamma=0.99, lambda_=0.9, n_warmup=nw, n_iter=ni)
+                             gamma=0.99, lambda_=0.9, n_iter=ni)
         clam_ms  = _bench_cpu(c_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
         cdisc_ms = _bench_cpu(c_disc,   rewards, dones, gamma=0.99)
         ctrc_ms  = _bench_cpu(c_traces, rewards, dones, gamma=0.99, lambda_=0.9)
@@ -492,9 +499,10 @@ def bench_prefix_sum():
     for num_envs, seq_len in CONFIGS:
         inputs = torch.randn(num_envs, seq_len, device="cuda")
         dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
-        nw, ni = _n_iter_gpu(seq_len, num_envs)
+        ni = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_episodic_prefix_sum, inputs, dones, n_warmup=nw, n_iter=ni)
+        _warmup_gpu(compute_episodic_prefix_sum, inputs, dones)
+        triton_ms   = _bench_gpu(compute_episodic_prefix_sum, inputs, dones, n_iter=ni)
         compiled_ms = _bench_cpu(compiled, inputs, dones)
 
         rows.append({

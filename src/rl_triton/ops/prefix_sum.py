@@ -2,7 +2,7 @@ import torch
 import triton
 
 from rl_triton.kernels.prefix_sum_fused import prefix_sum_fused_kernel
-from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN
+from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Prefix sum carries the fewest registers of any kernel (2 loads, v=1-done, scan).
 # Use the same aggressive warp/stage settings as the other light kernels.
@@ -17,33 +17,34 @@ def compute_episodic_prefix_sum(
     """
     Cumulative sum that resets to zero at episode boundaries.
 
-    Recurrence:  C[t] = x[t] + (1 - d[t]) * C[t-1],  C[-1] = seed
+    Recurrence:
 
-    Maps to the forward linear recurrence e[t] = u[t] + v[t] * e[t-1] with:
-      u[t] = inputs[t]
-      v[t] = 1 - dones[t]   (1.0 while episode ongoing, 0.0 at terminal step)
+    - C[t] = x[t] + (1 - done[t]) * C[t-1],  C[-1] = seed
+    - done[t]=1: accumulator resets, C[t] = x[t]
+    - done[t]=0: accumulator continues, C[t] = x[t] + C[t-1]
 
-    When d[t] = 1, v[t] = 0 and C[t] = x[t]: the accumulation resets.
-    When d[t] = 0, v[t] = 1 and C[t] = x[t] + C[t-1]: standard prefix sum.
-
-    Dispatches to the fully-fused single-block kernel for seq_len <= 131072.
-    Longer sequences are not supported (chunked forward scan not implemented).
+    Limited to seq_len <= 131072.
 
     Args:
         inputs:      Values to accumulate x[t], [num_envs, seq_len], float32, CUDA.
-        dones:       Episode termination flags (1.0 = done), same shape, float32.
+        dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         seed_values: Initial carry C[-1] per environment, shape [num_envs].
-                     Defaults to zeros (accumulation starts from scratch).
+                     Defaults to zeros.
 
     Returns:
-        prefix_sums: C[t], shape [num_envs, seq_len], same dtype as inputs.
+        prefix_sums: C[t], shape [num_envs, seq_len], float32.
     """
-    assert inputs.is_cuda and dones.is_cuda, "inputs and dones must be on CUDA"
-    assert inputs.dtype == torch.float32, f"inputs: expected float32, got {inputs.dtype}"
-    assert dones.dtype == torch.float32,  f"dones: expected float32, got {dones.dtype}"
-    assert inputs.shape == dones.shape,   "inputs and dones must have the same shape"
-
     num_envs, seq_len = inputs.shape
+
+    if _CORRECTNESS_WARNINGS():
+        assert inputs.is_cuda and dones.is_cuda, "inputs and dones must be on CUDA"
+        assert inputs.dtype == torch.float32, f"inputs: expected float32, got {inputs.dtype}"
+        assert dones.dtype == torch.float32,  f"dones: expected float32, got {dones.dtype}"
+        assert inputs.shape == dones.shape,   "inputs and dones must have the same shape"
+        if seed_values is not None:
+            assert seed_values.shape == (num_envs,), \
+                f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
+            assert seed_values.is_cuda, "seed_values must be on CUDA"
 
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
@@ -53,12 +54,8 @@ def compute_episodic_prefix_sum(
     inputs = inputs.contiguous()
     dones  = dones.contiguous()
 
-    if seed_values is None:
-        seed_values = torch.zeros(num_envs, device=inputs.device, dtype=torch.float32)
-    else:
-        assert seed_values.shape == (num_envs,), \
-            f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
-        assert seed_values.is_cuda, "seed_values must be on CUDA"
+    has_seed = seed_values is not None
+    if has_seed:
         seed_values = seed_values.contiguous()
 
     out = torch.empty_like(inputs)
@@ -74,5 +71,6 @@ def compute_episodic_prefix_sum(
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         num_stages=num_stages,
+        HAS_SEED=has_seed,
     )
     return out

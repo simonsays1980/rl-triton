@@ -10,9 +10,10 @@ def chunked_backward_scan_kernel(
     bootstrap_ptr,
     seq_len, stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
-    Chunked backward scan: A[t] = u[t] + v[t] * A[t+1], A[T] = bootstrap.
+    Chunked backward scan: A[t] = α[t] + β[t] * A[t+1], A[T] = bootstrap.
 
     Shared fallback for all estimators (GAE, V-Trace, Retrace, discounted
     returns, lambda returns) when seq_len > 131072, where the flat single-block
@@ -23,9 +24,9 @@ def chunked_backward_scan_kernel(
     Two-pass algorithm per chunk (standard chunked associative scan):
       1. Local scan  — tl.associative_scan within the chunk produces within-chunk
                        outputs as if A[chunk_end+1] = 0.
-      2. Carry fixup — add v_prod * carry to every element, where carry is
-                       A[chunk_end+1] from the previous (right) chunk and v_prod
-                       is the cumulative product of v from each position to the
+      2. Carry fixup — add β_prod * carry to every element, where carry is
+                       A[chunk_end+1] from the previous (right) chunk and β_prod
+                       is the cumulative product of β from each position to the
                        chunk boundary.
 
     The initial carry is the per-environment bootstrap value A[T], loaded from
@@ -42,6 +43,8 @@ def chunked_backward_scan_kernel(
         seq_len:       Number of timesteps (runtime value).
         stride_env:    Row stride in elements (== seq_len for contiguous tensors).
         BLOCK_SIZE:    Chunk size, must be a power of 2.  Need not be >= seq_len.
+        HAS_BOOTSTRAP: Compile-time flag — False skips the bootstrap_ptr read and
+                       seeds carry with literal 0.0 (the default A[T]=0).
     """
     env_idx = tl.program_id(0)
     base = env_idx * stride_env
@@ -50,7 +53,10 @@ def chunked_backward_scan_kernel(
     offsets = tl.arange(0, BLOCK_SIZE)
 
     # Seed the rightmost boundary with the per-environment bootstrap value.
-    carry = tl.load(bootstrap_ptr + env_idx)
+    if HAS_BOOTSTRAP:
+        carry = tl.load(bootstrap_ptr + env_idx)
+    else:
+        carry = 0.0
 
     for chunk_idx in range(num_chunks):
         # Map chunk_idx=0 to the rightmost chunk (latest in time).

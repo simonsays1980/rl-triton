@@ -1,8 +1,8 @@
 """
 Triton kernels for the backward and forward linear recurrence:
 
-    Backward:  A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap   (right-to-left)
-    Forward:   e[t] = u[t] + v[t] * e[t-1],  e[-1] = seed       (left-to-right)
+    Backward:  A[t] = α[t] + β[t] * A[t+1],  A[T] = bootstrap   (right-to-left)
+    Forward:   e[t] = α[t] + β[t] * e[t-1],  e[-1] = seed       (left-to-right)
 
 Both directions share the same associative structure and the same combine
 function.  The only difference between the two kernels is data layout: the
@@ -23,9 +23,9 @@ import triton.language as tl
 @triton.jit
 def _combine(u_a, v_a, u_b, v_b):
     """
-    Associative combine for the linear recurrence A[t] = u[t] + v[t]*A[prev].
+    Associative combine for the linear recurrence A[t] = α[t] + β[t]*A[prev].
 
-    Represents affine map x -> u + v*x.  Composing f_B after f_A (A is the
+    Represents affine map x -> α + β*x.  Composing f_B after f_A (A is the
     earlier/left element whose output feeds into f_B):
       f_B(f_A(x)) = u_B + v_B*(u_A + v_A*x) = (u_B + v_B*u_A) + (v_A*v_B)*x
     """
@@ -43,15 +43,16 @@ def backward_scan_kernel(
     seq_len,
     stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
-    Backward scan: A[t] = u[t] + v[t] * A[t+1], A[T] = bootstrap.
+    Backward scan: A[t] = α[t] + β[t] * A[t+1], A[T] = bootstrap.
 
-    Loads u and v in reverse time order so tl.associative_scan sweeps
-    left-to-right over the reversed axis, then applies the bootstrap boundary
-    condition and writes results back in original order.
+    Loads α (u_ptr) and β (v_ptr) in reverse time order so tl.associative_scan
+    sweeps left-to-right over the reversed axis, then applies the bootstrap
+    boundary condition and writes results back in original order.
 
-    Padding lanes (offsets >= seq_len) use u=0, v=1 (identity) so they do not
+    Padding lanes (offsets >= seq_len) use α=0, β=1 (identity) so they do not
     corrupt valid positions.  BLOCK_SIZE must be >= seq_len and a power of 2.
 
     Args:
@@ -63,6 +64,8 @@ def backward_scan_kernel(
         seq_len:       Number of timesteps (runtime value).
         stride_env:    Row stride in elements.
         BLOCK_SIZE:    Must be >= seq_len and a power of 2.
+        HAS_BOOTSTRAP: Compile-time flag — False skips the bootstrap_ptr read and
+                       uses literal 0.0 (the default A[T]=0 when no bootstrap is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -76,8 +79,11 @@ def backward_scan_kernel(
 
     out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
-    bootstrap = tl.load(bootstrap_ptr + env_idx)
-    out       = out_local + v_prod * bootstrap
+    if HAS_BOOTSTRAP:
+        bootstrap = tl.load(bootstrap_ptr + env_idx)
+    else:
+        bootstrap = 0.0
+    out = out_local + v_prod * bootstrap
 
     tl.store(out_ptr + base + rev_offsets, out, mask=mask)
 
@@ -89,14 +95,15 @@ def forward_scan_kernel(
     seq_len,
     stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_SEED: tl.constexpr,
 ):
     """
-    Forward scan: e[t] = u[t] + v[t] * e[t-1], e[-1] = seed.
+    Forward scan: e[t] = α[t] + β[t] * e[t-1], e[-1] = seed.
 
-    Loads u and v in natural (left-to-right) order and applies the seed
-    boundary condition after the scan.
+    Loads α (u_ptr) and β (v_ptr) in natural (left-to-right) order and applies
+    the seed boundary condition after the scan.
 
-    Padding lanes (offsets >= seq_len) use u=0, v=1 (identity).
+    Padding lanes (offsets >= seq_len) use α=0, β=1 (identity).
     BLOCK_SIZE must be >= seq_len and a power of 2.
 
     Args:
@@ -108,6 +115,8 @@ def forward_scan_kernel(
         seq_len:    Number of timesteps (runtime value).
         stride_env: Row stride in elements.
         BLOCK_SIZE: Must be >= seq_len and a power of 2.
+        HAS_SEED:   Compile-time flag — False skips the seed_ptr read and uses
+                    literal 0.0 (the default e[-1]=0 when no seed is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -120,7 +129,10 @@ def forward_scan_kernel(
 
     out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
-    seed = tl.load(seed_ptr + env_idx)
-    out  = out_local + v_prod * seed
+    if HAS_SEED:
+        seed = tl.load(seed_ptr + env_idx)
+    else:
+        seed = 0.0
+    out = out_local + v_prod * seed
 
     tl.store(out_ptr + base + offsets, out, mask=mask)

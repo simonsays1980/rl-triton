@@ -1,0 +1,82 @@
+/* ── DARK MODE COLORS ───────────────────────────────── */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:             #0a0a0f;
+  --md-primary-fg-color--light:      #1a1a2e;
+  --md-primary-fg-color--dark:       #050508;
+  --md-accent-fg-color:              #f77f00;
+  --md-accent-fg-color--transparent: rgba(247, 127, 0, 0.1);
+  --md-default-bg-color:             #111118;
+}
+
+/* ── UNIFY HEADER AND TABS ──────────────────────────── */
+.md-header,
+.md-header[data-md-state="shadow"],
+.md-tabs {
+  background-color: #0a0a0f !important;
+  box-shadow: none !important;
+}
+
+.md-tabs__link {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+.md-tabs__link--active,
+.md-tabs__link:hover {
+  color: #ffffff !important;
+}
+
+/* ── HEADER BOTTOM EDGE ─────────────────────────────── */
+.md-header {
+  border-bottom: 1px solid #2a2a3a;
+}
+
+/* ── BANNER: full-bleed with purple glow ────────────── */
+.md-content__inner > p:first-child {
+  margin: -1.2rem -1.6rem 2rem -1.6rem;
+}
+
+.md-content__inner > p:first-child img {
+  display: block;
+  width: 100%;
+  border-radius: 0;
+  margin: 0;
+  box-shadow: 0 4px 40px rgba(124, 58, 237, 0.2);
+}
+
+/* ── FADE BANNER INTO BODY ──────────────────────────── */
+.md-content__inner > p:first-child::after {
+  content: '';
+  display: block;
+  height: 60px;
+  margin-top: -60px;
+  background: linear-gradient(to bottom, transparent, #111118);
+  position: relative;
+  z-index: 1;
+}
+
+/* ── REMOVE TOP PADDING ─────────────────────────────── */
+.md-content__inner {
+  padding-top: 0 !important;
+}
+
+/* ── ACTIVE / CURRENT NAV ITEM ──────────────────────── */
+.md-nav__link--active,
+.md-nav__item--active > .md-nav__link {
+  color: #9b59ff !important;
+}
+
+/* ── NAV HOVER ──────────────────────────────────────── */
+.md-nav__link:hover {
+  color: #7c3aed !important;
+}
+
+/* ── INLINE LINKS ───────────────────────────────────── */
+.md-content a,
+.md-typeset a {
+  color: #38bdf8;
+}
+
+.md-content a:hover,
+.md-typeset a:hover {
+  color: #0ea5e9;
+}

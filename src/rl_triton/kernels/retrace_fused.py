@@ -12,9 +12,10 @@ def retrace_fused_kernel(
     next_q_values_all_ptr,
     actions_ptr,
     rewards_ptr,
-    dones_ptr,
+    truncated_ptr,
     terminated_ptr,
     out_ptr,
+    advantages_ptr,
     seq_len,
     num_actions,
     stride_env,
@@ -22,16 +23,18 @@ def retrace_fused_kernel(
     gamma,
     lambda_,
     c_bar,
+    rho_bar,
     BLOCK_SIZE:   tl.constexpr,
     ACTION_BLOCK: tl.constexpr,
 ):
     """
-    Fully-fused Retrace(λ) kernel: one program per environment.
+    Fully-fused Retrace(λ) kernel: computes Q-value targets and advantages in
+    a single program per environment.
 
-    Eliminates all intermediate tensors (expected_next_q, pi_a, u, v, c_next)
+    Eliminates all intermediate tensors (expected_next_q, pi_a, a, b, c_next)
     by computing E_π[Q(s_{t+1},a)] and the IS ratios in registers per timestep,
-    then running the backward associative scan before writing only the final
-    Q-value targets to HBM.
+    then running the backward associative scan before writing the final
+    Q-value targets and advantages to HBM.
 
     Indexing convention
     -------------------
@@ -49,7 +52,7 @@ def retrace_fused_kernel(
 
     Decay convention
     ----------------
-    v[t] = γ · c[t+1] · (1 - done[t])
+    β[t] = γ · c[t+1] · (1 - done[t])
 
     c[t+1] at reversed position offs is the IS ratio clip at t+1, which lives at
     real array index rev+1 (since rev = seq_len-1-offs, rev+1 = t+1).
@@ -58,7 +61,22 @@ def retrace_fused_kernel(
     To compute c[t+1] we load action_probs_target[rev+1, :] and action[rev+1] from
     the next real timestep (rev = seq_len-1-offs, so rev+1 is real index t+1).
     This costs an extra read of the 3D probs array per timestep.  The tradeoff:
-    we save writing and re-reading the full intermediate u, v, c_next tensors.
+    we save writing and re-reading the full intermediate a, b, c_next tensors.
+
+    Advantage computation
+    ---------------------
+    Steps:
+    1. Load inputs; derive IS ratios (rho, c_next), delta (u), decay (v) in registers.
+    2. Backward associative scan → Q-value deltas Δ[t].
+    3. targets[t] = Δ[t] + Q(s_t, a_t); store to HBM.
+    4. Re-load targets[t+1] (debug_barrier); compute and store advantages.
+
+    A[t] = ρ_t · (r_t + γ · Q_ret[t+1] · (1 - terminated[t]) - Q(s_t, a_t))
+
+    For t=T-1, Q_ret[T] is out-of-bounds; we use 0.0 (no continuation target
+    beyond the window — the one-step bootstrap is already inside δ[t] via
+    next_q_values_all, so the advantage correctly reflects only the immediate
+    TD correction).
 
     Args:
         action_probs_target_ptr:   [num_envs, seq_len, num_actions], float32.
@@ -69,7 +87,8 @@ def retrace_fused_kernel(
         rewards_ptr:               [num_envs, seq_len], float32.
         dones_ptr:                 [num_envs, seq_len], float32.
         terminated_ptr:            [num_envs, seq_len], float32.
-        out_ptr:                   [num_envs, seq_len], float32.
+        out_ptr:                   [num_envs, seq_len], float32.  Q-value targets output.
+        advantages_ptr:            [num_envs, seq_len], float32.  Advantages output.
         seq_len:                   Number of timesteps.
         num_actions:               Number of discrete actions (runtime, for masking).
         stride_env:                Row stride for 2D tensors (seq_len when contiguous).
@@ -77,6 +96,7 @@ def retrace_fused_kernel(
         gamma:                     Discount factor.
         lambda_:                   Trace decay parameter.
         c_bar:                     IS ratio clip for trace weights.
+        rho_bar:                   IS ratio clip for advantage scaling.
         BLOCK_SIZE:                Power-of-2 >= seq_len (constexpr).
         ACTION_BLOCK:              Power-of-2 >= num_actions (constexpr).
     """
@@ -90,12 +110,17 @@ def retrace_fused_kernel(
     mask = offs < seq_len
 
     # --- Load 2D inputs in reverse time order ---
-    q_t    = tl.load(q_values_ptr              + base_2d + rev, mask=mask, other=0.0)
-    r      = tl.load(rewards_ptr               + base_2d + rev, mask=mask, other=0.0)
-    done   = tl.load(dones_ptr                 + base_2d + rev, mask=mask, other=1.0)
-    term   = tl.load(terminated_ptr            + base_2d + rev, mask=mask, other=1.0)
+    q_t       = tl.load(q_values_ptr              + base_2d + rev, mask=mask, other=0.0)
+    r         = tl.load(rewards_ptr               + base_2d + rev, mask=mask, other=0.0)
+    truncated = tl.load(truncated_ptr             + base_2d + rev, mask=mask, other=0.0)
+    term      = tl.load(terminated_ptr            + base_2d + rev, mask=mask, other=1.0)
+    # done[t] = terminated[t] | truncated[t]. Computed in-register from the two
+    # raw flags instead of taking a precomputed `dones` tensor — the caller no
+    # longer needs a separate (terminateds+truncateds).clamp(max=1.0) kernel
+    # launch before this one (measured at ~23% of this op's total time).
+    done = tl.minimum(term + truncated, 1.0)
 
-    # --- 3D load setup ---
+    # --- Current-step IS ratio for rho (advantage scaling) ---
     a_offs = tl.arange(0, ACTION_BLOCK)          # [ACTION_BLOCK]
     seq_mask    = mask[:, None]                   # [BLOCK_SIZE, 1]
     action_mask = a_offs[None, :] < num_actions   # [1, ACTION_BLOCK]
@@ -110,6 +135,16 @@ def retrace_fused_kernel(
 
     # E_π[Q_next] = Σ_a π(a) · Q(s_{t+1}, a)
     expected_next_q = tl.sum(pi_all * nq_all, axis=1)   # [BLOCK_SIZE]
+
+    # π(a_t | s_t) for rho: load current-step action and behavior prob
+    action_t = tl.load(actions_ptr               + base_2d + rev, mask=mask, other=0)
+    mu_t     = tl.load(action_probs_behavior_ptr + base_2d + rev, mask=mask, other=1.0)
+    pi_at_t  = tl.sum(
+        pi_all * (a_offs[None, :] == action_t[:, None]).to(tl.float32),
+        axis=1,
+    )
+    is_ratio_t = pi_at_t / mu_t
+    rho = tl.minimum(is_ratio_t, rho_bar)
 
     # --- TD error u[t] ---
     not_term = 1.0 - term
@@ -141,8 +176,18 @@ def retrace_fused_kernel(
     # v[t] = γ · c[t+1] · (1 - done[t])
     v = gamma * c_next * not_done
 
-    # --- Backward associative scan: Δ[T] = 0 (no separate bootstrap for retrace) ---
+    # --- Step 2: Backward associative scan: Δ[T] = 0 ---
     out_local, _ = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
-    # Q_ret[t] = Q(s_t, a_t) + Δ[t]
-    tl.store(out_ptr + base_2d + rev, out_local + q_t, mask=mask)
+    # --- Step 3: Q_ret[t] = Q(s_t, a_t) + Δ[t]; store to HBM ---
+    q_ret = out_local + q_t
+    tl.store(out_ptr + base_2d + rev, q_ret, mask=mask)
+
+    # --- Step 4: advantages ---
+    # A[t] = ρ_t · (r_t + γ · Q_ret[t+1] · (1 - terminated[t]) - Q(s_t, a_t))
+    # Q_ret[t+1] is at real array index rev+1 (valid for offs>0); 0.0 at t=T-1.
+    tl.debug_barrier()
+    next_q_ret = tl.load(out_ptr + base_2d + rev_next, mask=next_mask_2d, other=0.0)
+
+    advantage = rho * (r + gamma * next_q_ret * not_term - q_t)
+    tl.store(advantages_ptr + base_2d + rev, advantage, mask=mask)

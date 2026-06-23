@@ -5,7 +5,7 @@ from rl_triton.kernels.scan import _combine
 
 
 @triton.jit
-def gae_fused_kernel(
+def gae_kernel(
     rewards_ptr, values_ptr, dones_ptr,
     out_ptr,
     bootstrap_ptr,
@@ -16,47 +16,26 @@ def gae_fused_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Fully-fused GAE kernel: computes advantages in a single program per environment.
+    GAE kernel for the common no-truncation case.
 
-    Replaces three separate PyTorch elementwise kernels (not_done, deltas, decays)
-    plus the scan kernel, eliminating all intermediate tensor allocations and
-    kernel launch overhead.  All inputs are read once; the result is written once.
+    Identical to the pre-overhaul kernel: reads rewards, values, dones and a
+    scalar bootstrap per env.  No truncateds or 2D bootstrap tensor.
 
-    v_{t+1} is read directly from values[t+1] (no separate next_values tensor),
-    saving one full HBM read pass (~20% bandwidth reduction).  At reversed position
-    offs=0 (real time t=T-1), V(s_T) comes from bootstrap_ptr; for all other
-    positions load values[rev_offsets + 1] = values[t+1].
-
-      u[t] = delta[t] = r[t] + gamma * (1 - done[t]) * V(s_{t+1}) - V(s_t)
-      v[t] = decay[t] = gamma * lambda * (1 - done[t])
-      A[t] = u[t] + v[t] * A[t+1],  A[T] = bootstrap
-
-    Args:
-        rewards_ptr:   Per-step rewards [num_envs, seq_len], float32.
-        values_ptr:    V(s_t), same shape.  V(s_{t+1}) is loaded from values[t+1].
-        dones_ptr:     Episode termination flags (1.0=done), same shape.
-        out_ptr:       Output advantages A[t], same shape.
-        bootstrap_ptr: Boundary value A[T] / V(s_T) per env, [num_envs], float32.
-        seq_len:       Number of timesteps (runtime value).
-        stride_env:    Row stride in elements.
-        gamma:         Discount factor (runtime value).
-        lambda_:       GAE trace parameter (runtime value).
-        BLOCK_SIZE:    Must be >= seq_len and a power of 2 (constexpr).
+      delta[t] = r[t] + gamma*(1-d[t])*V(s_{t+1}) - V(s_t)
+      decay[t] = gamma*lambda*(1-d[t])
+      A[t] = delta[t] + decay[t]*A[t+1],  A[T] = bootstrap
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
 
-    offs        = tl.arange(0, BLOCK_SIZE)
-    rev         = seq_len - 1 - offs          # offs=0 → t=T-1, offs=1 → t=T-2, …
-    mask        = offs < seq_len
+    offs = tl.arange(0, BLOCK_SIZE)
+    rev  = seq_len - 1 - offs
+    mask = offs < seq_len
 
     r    = tl.load(rewards_ptr + base + rev, mask=mask, other=0.0)
     v    = tl.load(values_ptr  + base + rev, mask=mask, other=0.0)
     done = tl.load(dones_ptr   + base + rev, mask=mask, other=1.0)
 
-    # v_next[t] = values[t+1].
-    # offs=0 is t=T-1; its v_next is bootstrap (V(s_T)).
-    # offs>0 is t<T-1; load values[t+1] = values[rev+1].
     bootstrap  = tl.load(bootstrap_ptr + env_idx)
     v_next_raw = tl.load(values_ptr + base + rev + 1,
                          mask=mask & (offs > 0), other=0.0)
@@ -67,6 +46,118 @@ def gae_fused_kernel(
     decay    = gamma * lambda_ * not_done
 
     out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-    out = out_local + decay_prod * bootstrap
+    tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)
 
-    tl.store(out_ptr + base + rev, out, mask=mask)
+
+@triton.jit
+def gae_fused_kernel(
+    rewards_ptr, values_ptr, terminateds_ptr, truncateds_ptr,
+    out_ptr,
+    bootstrap_ptr,
+    seq_len,
+    stride_env,
+    gamma,
+    lambda_,
+    BLOCK_SIZE: tl.constexpr,
+    HAS_TRUNCATIONS: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
+):
+    """
+    Fully-fused GAE kernel: computes advantages in a single program per environment.
+
+    bootstrap_ptr is [num_envs, seq_len] when HAS_TRUNCATIONS=True — nonzero only
+    at truncated steps and the window boundary.  When HAS_TRUNCATIONS=False,
+    bootstrap_ptr is [num_envs] (one scalar per env) and truncateds_ptr is unused,
+    saving two full HBM reads.
+
+    HAS_BOOTSTRAP only applies when HAS_TRUNCATIONS=False: if the caller has no
+    last_value to inject (the common case — most episodes simply end with
+    terminated=1 at the window boundary), bootstrap_ptr is unused and the literal
+    0.0 is substituted in-register.  This lets the wrapper skip allocating and
+    launching a torch.zeros(num_envs) kernel just to hand this kernel a buffer of
+    zeros — measured at ~33% of this op's total time at 128x1024.
+
+      terminated[t]: 1 if episode ended naturally (value bootstrap zeroed in delta).
+      done[t]:       1 if episode ended for any reason (trace decay zeroed).
+      α[t] = delta[t] = r[t] + gamma*(1-terminated[t])*(values[t+1] + bootstrap[t]) - V(s_t)
+      β[t] = decay[t] = gamma * lambda * (1 - done[t])
+      A[t] = α[t] + β[t] * A[t+1],  A[T] = bootstrap[T-1]
+
+    Args:
+        rewards_ptr:     Per-step rewards [num_envs, seq_len], float32.
+        values_ptr:      V(s_t), same shape.
+        terminateds_ptr: True termination flags (1.0=terminated), same shape.
+        truncateds_ptr:  Truncation flags [num_envs, seq_len]. Unused when HAS_TRUNCATIONS=False.
+        out_ptr:         Output advantages A[t], same shape.
+        bootstrap_ptr:   [num_envs, seq_len] when HAS_TRUNCATIONS=True;
+                         [num_envs] scalar per env when HAS_TRUNCATIONS=False.
+        seq_len:         Number of timesteps (runtime value).
+        stride_env:      Row stride in elements.
+        gamma:           Discount factor (runtime value).
+        lambda_:         GAE trace parameter (runtime value).
+        BLOCK_SIZE:      Must be >= seq_len and a power of 2 (constexpr).
+        HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+                         False skips the scalar bootstrap_ptr read and uses literal 0.0.
+    """
+    env_idx = tl.program_id(0)
+    base    = env_idx * stride_env
+
+    offs = tl.arange(0, BLOCK_SIZE)
+    rev  = seq_len - 1 - offs
+    mask = offs < seq_len
+
+    r          = tl.load(rewards_ptr     + base + rev, mask=mask, other=0.0)
+    v          = tl.load(values_ptr      + base + rev, mask=mask, other=0.0)
+    terminated = tl.load(terminateds_ptr + base + rev, mask=mask, other=1.0)
+
+    if HAS_TRUNCATIONS:
+        truncated = tl.load(truncateds_ptr + base + rev, mask=mask, other=0.0)
+        bootstrap = tl.load(bootstrap_ptr  + base + rev, mask=mask, other=0.0)
+        done      = tl.minimum(terminated + truncated, 1.0)
+
+        # v_next[t] = values[t+1] at non-truncated interior steps.
+        # At truncated interior steps or at the boundary (offs==0, t=T-1):
+        # bootstrap provides the true continuation value.
+        # bootstrap[T-1] is also the scan boundary A[T]; it appears in both
+        # delta[T-1] and via decay_prod*carry below (correct for GAE recurrence).
+        #
+        # The load's mask only needs offs>0 to avoid reading past the buffer at
+        # the boundary lane. truncated==0 is NOT needed in the predicate: the
+        # tl.where below already discards v_next_raw whenever truncated==1 (it
+        # picks bootstrap there regardless of what was loaded), so dropping that
+        # comparison removes one per-lane predicate op with no behavior change —
+        # this load is the one HBM round-trip lambda_returns' equivalent kernel
+        # avoids entirely by taking next_values pre-shifted from the caller.
+        v_next_raw = tl.load(values_ptr + base + rev + 1,
+                             mask=mask & (offs > 0), other=0.0)
+        v_next = tl.where((offs == 0) | (truncated == 1.0), bootstrap, v_next_raw)
+
+        not_terminated = 1.0 - terminated
+        not_done       = 1.0 - done
+        delta = r + gamma * v_next * not_terminated - v
+        decay = gamma * lambda_ * not_done
+
+        out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+
+        carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
+        tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
+    else:
+        not_terminated = 1.0 - terminated
+        if HAS_BOOTSTRAP:
+            bootstrap = tl.load(bootstrap_ptr + env_idx)
+        else:
+            bootstrap = 0.0
+        # Load values[t+1] for interior steps; boundary step (offs==0) gets bootstrap
+        # injected as the next-state value so delta[T-1] = r + gamma*(1-term)*bootstrap - v.
+        # The scan boundary A[T]=bootstrap is then applied via decay_prod*bootstrap below,
+        # giving the full GAE recurrence at the window edge.
+        v_next_raw = tl.load(values_ptr + base + rev + 1,
+                             mask=mask & (offs > 0), other=0.0)
+        v_next = tl.where(offs == 0, bootstrap, v_next_raw)
+
+        delta = r + gamma * v_next * not_terminated - v
+        decay = gamma * lambda_ * not_terminated
+
+        out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+        tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)

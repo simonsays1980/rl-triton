@@ -6,7 +6,7 @@ from rl_triton.kernels.scan import _combine
 
 @triton.jit
 def lambda_returns_fused_kernel(
-    rewards_ptr, next_values_ptr, dones_ptr,
+    rewards_ptr, next_values_ptr, terminateds_ptr, truncateds_ptr,
     out_ptr,
     bootstrap_ptr,
     seq_len,
@@ -14,43 +14,42 @@ def lambda_returns_fused_kernel(
     gamma,
     lambda_,
     BLOCK_SIZE: tl.constexpr,
+    HAS_TRUNCATIONS: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
     Fully-fused TD(λ) returns kernel: one program per environment.
 
     Recurrence:
-      G[t] = r[t] + γ(1-d[t]) * [(1-λ)*V(s_{t+1}) + λ*G[t+1]],  G[T] = bootstrap
+      G[t] = r[t] + γ*(1-done[t]) * [(1-λ)*V(s_{t+1}) + λ*G[t+1]]
+           + γ*truncated[t]*bootstrap[t]
 
-    Maps to A[t] = u[t] + v[t] * A[t+1] with:
-      u[t] = r[t] + γ*(1-λ)*(1-d[t])*V(s_{t+1})
-      v[t] = γ*λ*(1-d[t])
+    Maps to A[t] = α[t] + β[t] * A[t+1] with:
+      α[t] = r[t] + γ*(1-λ)*(1-done[t])*V(s_{t+1}) + γ*truncated[t]*bootstrap[t]
+      β[t] = γ*λ*(1-done[t])
 
-    next_values_ptr holds V(s_{t+1}) pre-aligned: next_values_ptr[env, t] = V(s_{t+1}).
-    The caller is responsible for setting next_values[:, T-1] to the appropriate
-    terminal value (V(s_T) for truncated, 0 for terminated).
+    When HAS_TRUNCATIONS=False, truncateds_ptr is unused and bootstrap_ptr is
+    [num_envs] (scalar per env), saving two full HBM reads.
 
-    bootstrap_ptr is the scan carry boundary G[T] and is independent of next_values.
-    For terminated episodes, both should be 0. For truncated episodes, both should
-    be V(s_T) — callers can pass bootstrap_values=next_values[:, -1].
-
-    Fuses the three separate PyTorch ops (not_done, u, v) and the scan into one
-    kernel, eliminating intermediate tensor writes and re-reads.
-
-    Indexing (reversed):
-      offs = 0, 1, …, BLOCK_SIZE-1
-      rev  = seq_len - 1 - offs      (offs=0 → t=T-1)
+    When HAS_TRUNCATIONS=True, bootstrap_ptr is [num_envs, seq_len] — nonzero
+    only at truncated steps and the window boundary.
 
     Args:
         rewards_ptr:     [num_envs, seq_len], float32.
-        next_values_ptr: V(s_{t+1}), same shape. next_values_ptr[env, t] = V(s_{t+1}).
-        dones_ptr:       Episode termination flags (1.0=done), same shape.
+        next_values_ptr: V(s_{t+1}), same shape. Zeroed by caller at truncated steps.
+        terminateds_ptr: True termination flags (1.0=terminated), same shape.
+        truncateds_ptr:  Truncation flags, same shape. Unused when HAS_TRUNCATIONS=False.
         out_ptr:         Output G[t], same shape.
-        bootstrap_ptr:   Scan boundary G[T] per env, [num_envs], float32.
+        bootstrap_ptr:   [num_envs, seq_len] when HAS_TRUNCATIONS=True;
+                         [num_envs] scalar per env when HAS_TRUNCATIONS=False.
         seq_len:         Number of timesteps.
         stride_env:      Row stride in elements.
         gamma:           Discount factor.
         lambda_:         Trace parameter.
         BLOCK_SIZE:      Power-of-2 >= seq_len (constexpr).
+        HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+                         False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -59,15 +58,32 @@ def lambda_returns_fused_kernel(
     rev  = seq_len - 1 - offs
     mask = offs < seq_len
 
-    r    = tl.load(rewards_ptr     + base + rev, mask=mask, other=0.0)
-    nv   = tl.load(next_values_ptr + base + rev, mask=mask, other=0.0)
-    done = tl.load(dones_ptr       + base + rev, mask=mask, other=1.0)
+    r          = tl.load(rewards_ptr     + base + rev, mask=mask, other=0.0)
+    nv         = tl.load(next_values_ptr + base + rev, mask=mask, other=0.0)
+    terminated = tl.load(terminateds_ptr + base + rev, mask=mask, other=1.0)
 
-    not_done = 1.0 - done
-    u     = r + gamma * (1.0 - lambda_) * not_done * nv
-    decay = gamma * lambda_ * not_done
+    if HAS_TRUNCATIONS:
+        truncated = tl.load(truncateds_ptr + base + rev, mask=mask, other=0.0)
+        bootstrap = tl.load(bootstrap_ptr  + base + rev, mask=mask, other=0.0)
+        done      = tl.minimum(terminated + truncated, 1.0)
 
-    out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+        not_done = 1.0 - done
+        u     = r + gamma * (1.0 - lambda_) * not_done * nv + gamma * truncated * bootstrap
+        decay = gamma * lambda_ * not_done
 
-    bootstrap = tl.load(bootstrap_ptr + env_idx)
-    tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)
+        out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+
+        carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
+        tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
+    else:
+        not_done = 1.0 - terminated
+        if HAS_BOOTSTRAP:
+            bootstrap = tl.load(bootstrap_ptr + env_idx)
+        else:
+            bootstrap = 0.0
+
+        u     = r + gamma * (1.0 - lambda_) * not_done * nv
+        decay = gamma * lambda_ * not_done
+
+        out_local, decay_prod = tl.associative_scan((u, decay), axis=0, combine_fn=_combine)
+        tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)

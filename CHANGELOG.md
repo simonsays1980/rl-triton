@@ -15,7 +15,10 @@ Versioning: [Semantic Versioning](https://semver.org/)
   launch that previously cost 28-40% of total op time at small sizes.
   Bit-identical output verified for every kernel. `bench_safeguard.py` floors
   recalibrated accordingly (e.g. GAE 1.4x → 1.9x, Prefix Sum flips from a
-  0.75x non-regression guard to a genuine 1.1x speedup floor).
+  0.75x non-regression guard to a genuine win with a 1.1x floor). Prefix Sum's
+  safeguard gates on median rather than min speedup, since its short duration
+  makes the min exposed to single-trial GPU clock-ramp transients that don't
+  reflect its real (~1.24x median) performance.
 
 ## [0.1.0] - 2026-06-08
 

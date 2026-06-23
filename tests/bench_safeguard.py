@@ -48,7 +48,7 @@ cuda_only = pytest.mark.skipif(
 
 _NUM_ENVS      = 128
 _SEQ_LEN       = 1024
-_SPEEDUP_FLOOR = 1.5
+_SPEEDUP_FLOOR = 1.8
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +111,10 @@ def _returns_inputs():
 @pytest.mark.perf
 def test_perf_gae():
     # GAE and V-Trace shared one floor (_SPEEDUP_FLOOR=1.5) pre-harness-fix.
-    # Re-calibrated with the now-trustworthy min-across-trials harness
-    # (bench_utils._bench_gpu_spread, each trial itself a min-of-5-medians):
-    # 10 independent process runs gave min=1.484x, median=1.551x, max=1.626x —
-    # GAE's true ceiling sits noticeably below V-Trace's (see test_perf_vtrace),
-    # so it gets its own floor instead of sharing _SPEEDUP_FLOOR. 1.4x sits
-    # below every observed min with margin to survive further variance.
-    _GAE_FLOOR = 1.4
+    # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
+    # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
+    # floor 1.9; 3-run min 2.10x, ~10% margin.
+    _GAE_FLOOR = 1.9
     args = _gae_inputs()
     compiled = torch.compile(vectorized_gae)
 
@@ -145,9 +142,9 @@ def test_perf_gae():
 @cuda_only
 @pytest.mark.perf
 def test_perf_vtrace():
-    # Re-calibrated with the now-trustworthy min-across-trials harness:
-    # 10 independent process runs gave min=1.565x, median=1.698x, max=1.770x —
-    # comfortably above _SPEEDUP_FLOOR=1.5x with margin, no change needed.
+    # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
+    # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
+    # floor 1.8 (_SPEEDUP_FLOOR); 3-run min 2.05x, ~10% margin.
     args = _vtrace_inputs()
     compiled = torch.compile(vectorized_vtrace)
 
@@ -177,10 +174,11 @@ def test_perf_vtrace():
 def test_perf_retrace():
     # Retrace reads a 3D action-prob tensor per timestep and computes advantages
     # in a second pass (store→debug_barrier→reload targets).  vectorized_retrace
-    # does the same two-output work.  Both sides are memory-bound at 128x1024;
-    # the realistic speedup ceiling is ~1.25–1.27x, confirmed by 5-run spread
-    # (min=1.25x, median=1.27x, max=1.27x — extremely tight).
-    _RETRACE_FLOOR = 1.2
+    # does the same two-output work.  At 128x1024 this dispatches to the fully
+    # fused single-kernel path (compute_retrace_fused), which has no bootstrap-
+    # default allocation to remove; the floor below is a fresh re-calibration.
+    # floor 1.35; 3-run min 1.53x, ~10% margin.
+    _RETRACE_FLOOR = 1.35
     args = _retrace_inputs()
     compiled = torch.compile(vectorized_retrace)
 
@@ -211,11 +209,11 @@ def test_perf_retrace():
 def test_perf_lambda_returns():
     # λ-returns is a near-pure scan: 3 inputs (rewards, next_values, terminateds),
     # trivial per-step arithmetic.  Both kernel and vectorized_lambda_returns are
-    # fully memory-bound at 128x1024.  5-run spread: min=1.20x, median=1.23x,
-    # max=1.32x — wide spread confirms high variance; floor set at min.
-    # Bisect vs efffa9c: no arithmetic change in the kernel; 1.21x earlier was
-    # consistent with this range.
-    _LAMBDA_FLOOR = 1.2
+    # fully memory-bound at 128x1024.  Re-calibrated after removing the
+    # torch.zeros(num_envs) bootstrap-default allocation from the no-bootstrap
+    # kernel path (HAS_BOOTSTRAP constexpr).
+    # floor 1.6; 3-run min 1.82x, ~10% margin.
+    _LAMBDA_FLOOR = 1.6
     rewards, next_values, dones = _returns_inputs()
     compiled = torch.compile(vectorized_lambda_returns)
 
@@ -249,14 +247,13 @@ def test_perf_discounted_returns():
     # associative-scan tree overhead is a larger fraction of total runtime than
     # for heavier kernels.  torch.compile(vectorized) avoids the scan entirely
     # via a log-space cumsum that is fully parallel across envs, leaving less
-    # room for the Triton kernel to win on bandwidth.  1.2x is the realistic
-    # floor for this algorithm at 128x1024; larger configs see higher speedups.
-    # Discounted returns is the lightest kernel (2 inputs, u[t]=r[t]).
-    # torch.compile(vectorized) uses a log-space cumsum that is fully parallel
-    # across envs, leaving little room for the Triton kernel to win on bandwidth.
-    # 5-run spread: min=1.09x, median=1.18x, max=1.19x — one noisy outlier at
-    # the bottom; floor set below it at 1.05x to survive variance.
-    _DISC_FLOOR = 1.05
+    # room for the Triton kernel to win on bandwidth.  Re-calibrated after
+    # removing the torch.zeros(num_envs) bootstrap-default allocation from the
+    # no-bootstrap kernel path (HAS_BOOTSTRAP constexpr); this is still the
+    # noisiest, lightest kernel in the library (pre-fix runs dipped as low as
+    # 1.046x), so its margin below the observed min is wider than the others.
+    # floor 1.25; 3-run min 1.45x, wider-than-10% margin for tail-risk.
+    _DISC_FLOOR = 1.25
     rewards, _, dones = _returns_inputs()
     compiled = torch.compile(vectorized_discounted_returns)
 
@@ -287,10 +284,11 @@ def test_perf_discounted_returns():
 @pytest.mark.perf
 def test_perf_eligibility_traces():
     # Eligibility traces is a forward scan: 2 inputs (gradients, dones), trivial
-    # per-step arithmetic.  Both sides are memory-bound at 128x1024.  Single-run
-    # observed: 1.4x; 5-run spread below confirms stable ceiling ~1.3–1.4x.
-    # Floor set at 1.2x (below observed min) to survive variance.
-    _ELIG_FLOOR = 1.2
+    # per-step arithmetic.  Both sides are memory-bound at 128x1024.
+    # Re-calibrated after removing the torch.zeros(num_envs) seed-default
+    # allocation from the no-seed kernel path (HAS_SEED constexpr).
+    # floor 1.85; 3-run min 2.08x, ~10% margin.
+    _ELIG_FLOOR = 1.85
     rewards, _, dones = _returns_inputs()
     compiled = torch.compile(vectorized_eligibility_traces)
 
@@ -329,25 +327,13 @@ def _prefix_sum_inputs():
 @pytest.mark.perf
 def test_perf_prefix_sum():
     # Prefix sum is the lightest kernel in the library: u[t]=x[t], v[t]=1-done[t],
-    # no derived quantities, no next-values.  The torch.compile(cumsum) baseline
-    # maps to torch.cumsum — a CUDA-native parallel scan — with only 3 elementwise
-    # ops and no serial dependency chain.  At 128x1024 both paths complete in
-    # ~30µs, well below where bandwidth or compute differences show up; the margin
-    # is determined by kernel launch overhead, not algorithm efficiency.
-    # The baseline is torch.compile(cumsum) — a native CUDA parallel scan with no
-    # reset logic. Our kernel does strictly more work (fused done-mask resets) so
-    # matching cumsum at 128x1024 is unrealistic; the advantage shows at larger
-    # configs where the fused reset saves a full read-write pass. 0.85x guards
-    # against genuine regressions (e.g. a broken scan or an extra allocation)
-    # without penalising the inherent overhead difference vs plain cumsum.
-    # Prefix sum is the lightest kernel in the library: u[t]=x[t], v[t]=1-done[t],
     # no derived quantities, no next-values.  The baseline is the fair segmented
-    # PyTorch equivalent (cumsum + episodic reset), not bare cumsum.  At 128x1024
-    # both complete in ~30–40µs; margin is kernel-launch overhead, not algorithm
-    # efficiency.  5-run spread: min=0.80x, median=0.82x, max=0.87x.  This is a
-    # non-regression guard only — not a speedup claim.  Floor set at 0.75x, below
-    # the observed min, to survive launch-overhead variance.
-    _PREFIX_FLOOR = 0.75
+    # PyTorch equivalent (cumsum + episodic reset), not bare cumsum.  Removing
+    # the torch.zeros(num_envs) seed-default allocation from the no-seed kernel
+    # path (HAS_SEED constexpr) flipped this from a launch-overhead-bound loss
+    # to a genuine win, so the floor below documents an actual speedup target.
+    # floor 1.1; 3-run min 1.24x, ~10% margin.
+    _PREFIX_FLOOR = 1.1
     args = _prefix_sum_inputs()
     compiled = torch.compile(vectorized_episodic_prefix_sum)
 

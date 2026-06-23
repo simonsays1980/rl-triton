@@ -147,18 +147,17 @@ def compute_gae(
                 seq_len, rewards.stride(0),
                 gamma=gamma, lambda_=lambda_,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=True,
+                HAS_TRUNCATIONS=True, HAS_BOOTSTRAP=True,
             )
         else:
-            if scalar_bootstrap is None:
-                scalar_bootstrap = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+            has_bootstrap = scalar_bootstrap is not None
             gae_fused_kernel[(num_envs,)](
                 rewards, values, terminateds, None,
                 out, scalar_bootstrap,
                 seq_len, rewards.stride(0),
                 gamma=gamma, lambda_=lambda_,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=False,
+                HAS_TRUNCATIONS=False, HAS_BOOTSTRAP=has_bootstrap,
             )
         return out
 

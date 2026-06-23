@@ -107,19 +107,19 @@ def compute_lambda_returns(
                 seq_len, rewards.stride(0),
                 gamma=gamma, lambda_=lambda_,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=True,
+                HAS_TRUNCATIONS=True, HAS_BOOTSTRAP=True,
             )
         else:
             scalar_bootstrap = bootstrap_values[:, -1].contiguous() \
-                               if bootstrap_values is not None \
-                               else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+                               if bootstrap_values is not None else None
+            has_bootstrap = scalar_bootstrap is not None
             lambda_returns_fused_kernel[(num_envs,)](
                 rewards, next_values, terminateds, None,
                 out, scalar_bootstrap,
                 seq_len, rewards.stride(0),
                 gamma=gamma, lambda_=lambda_,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=False,
+                HAS_TRUNCATIONS=False, HAS_BOOTSTRAP=has_bootstrap,
             )
         return out
 
@@ -219,19 +219,19 @@ def compute_discounted_returns(
                 seq_len, rewards.stride(0),
                 gamma=gamma,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=True,
+                HAS_TRUNCATIONS=True, HAS_BOOTSTRAP=True,
             )
         else:
             scalar_bootstrap = bootstrap_values[:, -1].contiguous() \
-                               if bootstrap_values is not None \
-                               else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+                               if bootstrap_values is not None else None
+            has_bootstrap = scalar_bootstrap is not None
             discounted_returns_fused_kernel[(num_envs,)](
                 rewards, terminateds, None,
                 out, scalar_bootstrap,
                 seq_len, rewards.stride(0),
                 gamma=gamma,
                 BLOCK_SIZE=BLOCK_SIZE, num_warps=num_warps, num_stages=num_stages,
-                HAS_TRUNCATIONS=False,
+                HAS_TRUNCATIONS=False, HAS_BOOTSTRAP=has_bootstrap,
             )
         return out
 
@@ -298,9 +298,8 @@ def compute_eligibility_traces(
     gradients = gradients.contiguous()
     dones     = dones.contiguous()
 
-    if seed_values is None:
-        seed_values = torch.zeros(num_envs, device=gradients.device, dtype=torch.float32)
-    else:
+    has_seed = seed_values is not None
+    if has_seed:
         seed_values = seed_values.contiguous()
 
     out = torch.empty_like(gradients)
@@ -317,5 +316,6 @@ def compute_eligibility_traces(
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         num_stages=num_stages,
+        HAS_SEED=has_seed,
     )
     return out

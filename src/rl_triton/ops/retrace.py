@@ -109,20 +109,23 @@ def compute_retrace(
     terminateds           = terminateds.contiguous()
     truncateds            = truncateds.contiguous()
 
-    dones = (terminateds + truncateds).clamp(max=1.0)
-
     num_envs, seq_len = rewards.shape
 
     # Fused kernel for seq_len <= 131072; chunked fallback for longer sequences.
+    # done[t] = terminated[t] | truncated[t] is computed in-kernel from the two
+    # raw flags for the fused path — no separate PyTorch combine here.
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         return compute_retrace_fused(
             action_probs_target, action_probs_behavior,
             q_values, next_q_values_all, actions,
-            rewards, dones, terminateds,
+            rewards, truncateds, terminateds,
             gamma=gamma, lambda_=lambda_, c_bar=c_bar, rho_bar=rho_bar,
         )
 
-    # Chunked fallback for seq_len > 131072.
+    # Chunked fallback for seq_len > 131072. _run_scan takes precomputed u/v,
+    # so dones is materialized here (this path's PyTorch-op overhead is
+    # negligible relative to the chunked kernel's cost at long seq_len).
+    dones = (terminateds + truncateds).clamp(max=1.0)
     expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
     u = rewards + gamma * expected_next_q * (1.0 - terminateds) - q_values
 

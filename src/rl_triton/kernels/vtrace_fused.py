@@ -18,6 +18,7 @@ def vtrace_fused_kernel(
     c_bar,
     BLOCK_SIZE: tl.constexpr,
     HAS_TRUNCATIONS: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
     Fully-fused V-Trace kernel: computes targets and advantages in a single program.
@@ -83,6 +84,8 @@ def vtrace_fused_kernel(
         BLOCK_SIZE:          Must be >= seq_len and a power of 2 (constexpr).
         HAS_TRUNCATIONS:     Compile-time flag — False eliminates truncateds_ptr and
                              2D bootstrap_ptr reads entirely.
+        HAS_BOOTSTRAP:       Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+                             False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -151,8 +154,14 @@ def vtrace_fused_kernel(
     else:
         # 5 full-width reads.  truncateds_ptr is constexpr None — compiled out.
         # bootstrap_ptr is [num_envs]: one scalar per env for the window boundary.
+        # HAS_BOOTSTRAP=False (no last_value/bootstrap_values given): skip the
+        # scalar load entirely and use literal 0.0 — saves the wrapper a
+        # torch.zeros(num_envs) allocation + launch (same pattern as GAE).
         not_done  = not_terminated          # done[t] = terminated[t]
-        bootstrap = tl.load(bootstrap_ptr + env_idx)
+        if HAS_BOOTSTRAP:
+            bootstrap = tl.load(bootstrap_ptr + env_idx)
+        else:
+            bootstrap = 0.0
 
         # v_next[t] = values[t+1] for interior steps; scalar bootstrap at boundary.
         v_next_raw = tl.load(values_ptr + base + rev + 1,

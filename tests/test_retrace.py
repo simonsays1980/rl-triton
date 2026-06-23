@@ -4,7 +4,7 @@ import numpy as np
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu
 from rl_triton.ops.retrace import compute_retrace
 
 cuda_only = pytest.mark.skipif(
@@ -470,10 +470,15 @@ def test_retrace_performance():
     for num_envs, seq_len in BENCH_CONFIGS:
         args_gpu = _make_inputs(num_envs, seq_len)
         args_cpu = _make_inputs(num_envs, seq_len, device="cpu")
-        gpu_warmup, gpu_iter = _n_iter_gpu(seq_len, num_envs)
+        n_iter   = _n_iter_gpu(seq_len, num_envs)
 
-        triton_ms   = _bench_gpu(compute_retrace,          *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
-        vec_ms      = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_warmup=gpu_warmup, n_iter=gpu_iter)
+        # Per-config warmup at the exact shape being timed — each distinct
+        # seq_len triggers a fresh Triton compile (new BLOCK_SIZE power-of-2).
+        _warmup_gpu(compute_retrace, *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,   *args_gpu, gamma=0.99)
+
+        triton_ms   = _bench_gpu(compute_retrace,          *args_gpu, gamma=0.99, n_iter=n_iter)
+        vec_ms      = _bench_gpu(compiled_vec,             *args_gpu, gamma=0.99, n_iter=n_iter)
         loop_ms     = _bench_cpu(compiled_loop,            *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(_np_to_triton_retrace,   *args_gpu, gamma=0.99)
         numpy_ms    = _bench_cpu(reference_retrace,        *args_cpu, gamma=0.99)

@@ -60,6 +60,7 @@ def gae_fused_kernel(
     lambda_,
     BLOCK_SIZE: tl.constexpr,
     HAS_TRUNCATIONS: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
     Fully-fused GAE kernel: computes advantages in a single program per environment.
@@ -68,6 +69,13 @@ def gae_fused_kernel(
     at truncated steps and the window boundary.  When HAS_TRUNCATIONS=False,
     bootstrap_ptr is [num_envs] (one scalar per env) and truncateds_ptr is unused,
     saving two full HBM reads.
+
+    HAS_BOOTSTRAP only applies when HAS_TRUNCATIONS=False: if the caller has no
+    last_value to inject (the common case — most episodes simply end with
+    terminated=1 at the window boundary), bootstrap_ptr is unused and the literal
+    0.0 is substituted in-register.  This lets the wrapper skip allocating and
+    launching a torch.zeros(num_envs) kernel just to hand this kernel a buffer of
+    zeros — measured at ~33% of this op's total time at 128x1024.
 
       terminated[t]: 1 if episode ended naturally (value bootstrap zeroed in delta).
       done[t]:       1 if episode ended for any reason (trace decay zeroed).
@@ -89,6 +97,8 @@ def gae_fused_kernel(
         lambda_:         GAE trace parameter (runtime value).
         BLOCK_SIZE:      Must be >= seq_len and a power of 2 (constexpr).
         HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+                         False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -111,8 +121,16 @@ def gae_fused_kernel(
         # bootstrap provides the true continuation value.
         # bootstrap[T-1] is also the scan boundary A[T]; it appears in both
         # delta[T-1] and via decay_prod*carry below (correct for GAE recurrence).
+        #
+        # The load's mask only needs offs>0 to avoid reading past the buffer at
+        # the boundary lane. truncated==0 is NOT needed in the predicate: the
+        # tl.where below already discards v_next_raw whenever truncated==1 (it
+        # picks bootstrap there regardless of what was loaded), so dropping that
+        # comparison removes one per-lane predicate op with no behavior change —
+        # this load is the one HBM round-trip lambda_returns' equivalent kernel
+        # avoids entirely by taking next_values pre-shifted from the caller.
         v_next_raw = tl.load(values_ptr + base + rev + 1,
-                             mask=mask & (offs > 0) & (truncated == 0.0), other=0.0)
+                             mask=mask & (offs > 0), other=0.0)
         v_next = tl.where((offs == 0) | (truncated == 1.0), bootstrap, v_next_raw)
 
         not_terminated = 1.0 - terminated
@@ -126,7 +144,10 @@ def gae_fused_kernel(
         tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
     else:
         not_terminated = 1.0 - terminated
-        bootstrap      = tl.load(bootstrap_ptr + env_idx)
+        if HAS_BOOTSTRAP:
+            bootstrap = tl.load(bootstrap_ptr + env_idx)
+        else:
+            bootstrap = 0.0
         # Load values[t+1] for interior steps; boundary step (offs==0) gets bootstrap
         # injected as the next-state value so delta[T-1] = r + gamma*(1-term)*bootstrap - v.
         # The scan boundary A[T]=bootstrap is then applied via decay_prod*bootstrap below,

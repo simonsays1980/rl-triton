@@ -14,6 +14,7 @@ def discounted_returns_fused_kernel(
     gamma,
     BLOCK_SIZE: tl.constexpr,
     HAS_TRUNCATIONS: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
     Fully-fused discounted returns kernel: one program per environment.
@@ -43,6 +44,8 @@ def discounted_returns_fused_kernel(
         gamma:           Discount factor.
         BLOCK_SIZE:      Power-of-2 >= seq_len (constexpr).
         HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+                         False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -67,7 +70,10 @@ def discounted_returns_fused_kernel(
         carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
         tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
     else:
-        bootstrap = tl.load(bootstrap_ptr + env_idx)
+        if HAS_BOOTSTRAP:
+            bootstrap = tl.load(bootstrap_ptr + env_idx)
+        else:
+            bootstrap = 0.0
 
         u     = r
         decay = gamma * (1.0 - terminated)

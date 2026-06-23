@@ -171,16 +171,20 @@ def compute_vtrace_fused(
             num_warps=num_warps,
             num_stages=num_stages,
             HAS_TRUNCATIONS=True,
+            HAS_BOOTSTRAP=True,
         )
     else:
         # Fast path: no truncateds tensor, scalar bootstrap per env.
-        # No zero-tensor allocations — truncateds_ptr is constexpr None in the kernel.
+        # No zero-tensor allocations — truncateds_ptr is constexpr None in the kernel,
+        # and when there's no last_value/bootstrap_values either, bootstrap_ptr is
+        # also skipped (HAS_BOOTSTRAP=False) instead of materializing zeros.
         if last_value is not None:
             scalar_bootstrap = last_value.contiguous()
         elif bootstrap_values is not None:
             scalar_bootstrap = bootstrap_values[:, -1].contiguous()
         else:
-            scalar_bootstrap = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
+            scalar_bootstrap = None
+        has_bootstrap = scalar_bootstrap is not None
 
         vtrace_fused_kernel[(num_envs,)](
             log_pi_target, log_pi_behavior,
@@ -197,6 +201,7 @@ def compute_vtrace_fused(
             num_warps=num_warps,
             num_stages=num_stages,
             HAS_TRUNCATIONS=False,
+            HAS_BOOTSTRAP=has_bootstrap,
         )
 
     return vtrace_targets, vtrace_advantages

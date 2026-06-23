@@ -43,6 +43,7 @@ def backward_scan_kernel(
     seq_len,
     stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_BOOTSTRAP: tl.constexpr,
 ):
     """
     Backward scan: A[t] = α[t] + β[t] * A[t+1], A[T] = bootstrap.
@@ -63,6 +64,8 @@ def backward_scan_kernel(
         seq_len:       Number of timesteps (runtime value).
         stride_env:    Row stride in elements.
         BLOCK_SIZE:    Must be >= seq_len and a power of 2.
+        HAS_BOOTSTRAP: Compile-time flag — False skips the bootstrap_ptr read and
+                       uses literal 0.0 (the default A[T]=0 when no bootstrap is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -76,8 +79,11 @@ def backward_scan_kernel(
 
     out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
-    bootstrap = tl.load(bootstrap_ptr + env_idx)
-    out       = out_local + v_prod * bootstrap
+    if HAS_BOOTSTRAP:
+        bootstrap = tl.load(bootstrap_ptr + env_idx)
+    else:
+        bootstrap = 0.0
+    out = out_local + v_prod * bootstrap
 
     tl.store(out_ptr + base + rev_offsets, out, mask=mask)
 
@@ -89,6 +95,7 @@ def forward_scan_kernel(
     seq_len,
     stride_env,
     BLOCK_SIZE: tl.constexpr,
+    HAS_SEED: tl.constexpr,
 ):
     """
     Forward scan: e[t] = α[t] + β[t] * e[t-1], e[-1] = seed.
@@ -108,6 +115,8 @@ def forward_scan_kernel(
         seq_len:    Number of timesteps (runtime value).
         stride_env: Row stride in elements.
         BLOCK_SIZE: Must be >= seq_len and a power of 2.
+        HAS_SEED:   Compile-time flag — False skips the seed_ptr read and uses
+                    literal 0.0 (the default e[-1]=0 when no seed is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -120,7 +129,10 @@ def forward_scan_kernel(
 
     out_local, v_prod = tl.associative_scan((u, v), axis=0, combine_fn=_combine)
 
-    seed = tl.load(seed_ptr + env_idx)
-    out  = out_local + v_prod * seed
+    if HAS_SEED:
+        seed = tl.load(seed_ptr + env_idx)
+    else:
+        seed = 0.0
+    out = out_local + v_prod * seed
 
     tl.store(out_ptr + base + offsets, out, mask=mask)

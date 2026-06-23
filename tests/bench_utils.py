@@ -59,26 +59,41 @@ def _warmup_gpu(fn, *args, n_warmup: int = 20, **kwargs) -> None:
     torch.cuda.synchronize()
 
 
-def _bench_gpu(fn, *args, n_iter: int = 50, **kwargs) -> float:
-    """Time a GPU kernel with CUDA events. Returns MEDIAN milliseconds per call.
+def _bench_gpu(fn, *args, n_iter: int = 50, n_trials: int = 5, **kwargs) -> float:
+    """Time a GPU kernel with CUDA events. Returns the MIN-of-medians across n_trials.
 
     Caller must call _warmup_gpu(fn, *args, **kwargs) before this so that
-    Triton compilation and autotuning are already done.  Measures each
-    iteration individually with a pair of CUDA events and returns the median
-    — robust against occasional scheduler jitter.
+    Triton compilation and autotuning are already done.  Each trial measures
+    n_iter iterations individually with a pair of CUDA events (explicit sync
+    immediately before start AND stop) and takes that trial's MEDIAN — robust
+    against occasional scheduler jitter within a trial.
+
+    Repeating across n_trials and taking the MIN guards against a rarer but
+    confirmed failure mode on this hardware: intermittent multi-millisecond
+    interference episodes (GPU power-state/clock transitions, OS scheduling
+    stalls) that last long enough to corrupt MORE than half of a single
+    trial's iterations, inflating even that trial's median. Such an episode
+    can only ever slow a trial down, never make it faster than true steady
+    state, so the min across independently-warmed trials is a sound estimator
+    of the kernel's real cost and is what eliminates the "smaller config
+    measures slower than a larger one" artifacts this harness was built to
+    catch — set n_trials=1 to fall back to a single plain median.
     """
-    times = []
-    for _ in range(n_iter):
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end   = torch.cuda.Event(enable_timing=True)
-        start.record()
-        fn(*args, **kwargs)
-        end.record()
-        torch.cuda.synchronize()
-        times.append(start.elapsed_time(end))
-    times.sort()
-    return times[len(times) // 2]
+    trial_medians = []
+    for _ in range(n_trials):
+        times = []
+        for _ in range(n_iter):
+            torch.cuda.synchronize()
+            start = torch.cuda.Event(enable_timing=True)
+            end   = torch.cuda.Event(enable_timing=True)
+            start.record()
+            fn(*args, **kwargs)
+            end.record()
+            torch.cuda.synchronize()
+            times.append(start.elapsed_time(end))
+        times.sort()
+        trial_medians.append(times[len(times) // 2])
+    return min(trial_medians)
 
 
 def _bench_gpu_spread(
@@ -89,6 +104,16 @@ def _bench_gpu_spread(
 
     Returns (speedups, ms_a_list, ms_b_list) where speedup[i] = ms_b[i] / ms_a[i].
     Used to measure run-to-run variance before setting performance floors.
+
+    Each of these n_trials calls into _bench_gpu uses _bench_gpu's own default
+    (min-of-5-medians) rather than a single plain median. Confirmed empirically
+    (repeated bench_safeguard.py runs) that without that inner robustness, a
+    single outer trial can land entirely inside one of this GPU's intermittent
+    multi-ms interference episodes and report a wildly low one-off speedup
+    (observed down to ~0.6x on kernels that are reliably >1.5x otherwise) —
+    exactly the artifact this harness exists to filter out. Costs 5x more
+    measurement work per outer trial; worth it so every value in the returned
+    list — including min(speedups) — is trustworthy enough to gate a floor on.
     """
     _warmup_gpu(fn_a, *args_a, n_warmup=n_warmup, **kwargs_a)
     _warmup_gpu(fn_b, *args_b, n_warmup=n_warmup, **kwargs_b)
@@ -116,7 +141,7 @@ def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) ->
     return elapsed / n * 1000.0
 
 
-def _n_iter_gpu(seq_len: int, num_envs: int) -> tuple[int, int]:
+def _n_iter_gpu(seq_len: int, num_envs: int) -> int:
     """Scale iter count so we don't over-benchmark small configs.
 
     Warmup is always handled by explicit _warmup_gpu calls — this only

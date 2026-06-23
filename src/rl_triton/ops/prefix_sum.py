@@ -54,9 +54,8 @@ def compute_episodic_prefix_sum(
     inputs = inputs.contiguous()
     dones  = dones.contiguous()
 
-    if seed_values is None:
-        seed_values = torch.zeros(num_envs, device=inputs.device, dtype=torch.float32)
-    else:
+    has_seed = seed_values is not None
+    if has_seed:
         seed_values = seed_values.contiguous()
 
     out = torch.empty_like(inputs)
@@ -72,5 +71,6 @@ def compute_episodic_prefix_sum(
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
         num_stages=num_stages,
+        HAS_SEED=has_seed,
     )
     return out

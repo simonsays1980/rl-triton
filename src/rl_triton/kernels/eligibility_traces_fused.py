@@ -14,6 +14,7 @@ def eligibility_traces_fused_kernel(
     gamma,
     lambda_,
     BLOCK_SIZE: tl.constexpr,
+    HAS_SEED: tl.constexpr,
 ):
     """
     Fully-fused eligibility traces kernel: one program per environment.
@@ -41,6 +42,8 @@ def eligibility_traces_fused_kernel(
         gamma:         Discount factor.
         lambda_:       Trace decay parameter.
         BLOCK_SIZE:    Power-of-2 >= seq_len (constexpr).
+        HAS_SEED:      Compile-time flag — False skips the seed_ptr read and uses
+                       literal 0.0 (the default z[-1]=0 when no seed_values is given).
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -55,5 +58,8 @@ def eligibility_traces_fused_kernel(
 
     out_local, decay_prod = tl.associative_scan((grad, decay), axis=0, combine_fn=_combine)
 
-    seed = tl.load(seed_ptr + env_idx)
+    if HAS_SEED:
+        seed = tl.load(seed_ptr + env_idx)
+    else:
+        seed = 0.0
     tl.store(out_ptr + base + offs, out_local + decay_prod * seed, mask=mask)

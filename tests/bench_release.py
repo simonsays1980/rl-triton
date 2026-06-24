@@ -280,7 +280,8 @@ def numpy_retrace_np_to_triton(rewards_np, dones_np, q_values_np, next_q_all_np,
     acts = to_gpu_i(actions_np)
     r    = to_gpu_f(rewards_np)
     d    = to_gpu_f(dones_np)
-    out  = compute_retrace(apt, apb, q, nqa, acts, r, d,
+    truncateds = torch.zeros_like(d)
+    out  = compute_retrace(apt, apb, q, nqa, acts, r, d, truncateds,
                                   gamma=gamma, lambda_=lambda_, c_bar=c_bar)
     torch.cuda.synchronize()
     return out.cpu().numpy()
@@ -632,12 +633,26 @@ def bench_vtrace_truncation():
     return rows
 
 
+def _retrace_kernel_args(args_gpu):
+    """Reorder _make_retrace's tuple into compute_retrace's positional order
+    and add a zero truncateds tensor (no truncation by default).
+
+    _make_retrace order: rewards, dones, values, next_q_all, q_values, actions, apt, apb
+    compute_retrace order: action_probs_target, action_probs_behavior, q_values,
+                            next_q_values_all, actions, rewards, terminateds, truncateds
+    """
+    rewards, dones, _values, next_q_all, q_values, actions, apt, apb = args_gpu
+    truncateds = torch.zeros_like(dones)
+    return apt, apb, q_values, next_q_all, actions, rewards, dones, truncateds
+
+
 def bench_retrace():
     compiled_vec  = torch.compile(_vec_retrace)
     compiled_loop = torch.compile(_ref_retrace)
     args = _make_retrace(64, 512)
     compiled_vec(*args, gamma=0.99);  torch.cuda.synchronize()
     compiled_loop(*args, gamma=0.99); torch.cuda.synchronize()
+    compute_retrace(*_retrace_kernel_args(args), gamma=0.99); torch.cuda.synchronize()
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
@@ -657,9 +672,10 @@ def bench_retrace():
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
         ni = _n_iter_gpu(seq_len, num_envs)
 
-        _warmup_gpu(compute_retrace, *args_gpu, gamma=0.99)
+        retrace_kernel_args = _retrace_kernel_args(args_gpu)
+        _warmup_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99)
         _warmup_gpu(compiled_vec,    *args_gpu, gamma=0.99)
-        triton_ms   = _bench_gpu(compute_retrace,       *args_gpu, gamma=0.99, n_iter=ni)
+        triton_ms   = _bench_gpu(compute_retrace,       *retrace_kernel_args, gamma=0.99, n_iter=ni)
         vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_iter=ni)
         compiled_ms = _bench_cpu(compiled_loop,                 *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(numpy_retrace_np_to_triton,    rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)

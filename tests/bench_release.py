@@ -444,6 +444,9 @@ def bench_gae():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
+              f"vs vec={vec_ms/triton_ms:.1f}x vs assoc={assoc_ms/triton_ms:.1f}x "
+              f"vs loop={compiled_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -480,6 +483,7 @@ def bench_gae_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -514,6 +518,8 @@ def bench_vtrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
+              f"vs vec={vec_ms/triton_ms:.1f}x vs loop={compiled_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -550,6 +556,7 @@ def bench_vtrace_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -586,6 +593,8 @@ def bench_retrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
+              f"vs vec={vec_ms/triton_ms:.1f}x vs loop={compiled_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -643,6 +652,10 @@ def bench_returns():
             **base, "triton_ms": trc_ms, "compiled_ms": ctrc_ms, "vec_ms": trc_vec_ms,
             "su_compile": ctrc_ms / trc_ms, "su_vec": trc_vec_ms / trc_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} "
+              f"lambda triton={lam_ms:.3f}ms vs vec={lam_vec_ms/lam_ms:.1f}x | "
+              f"disc triton={disc_ms:.3f}ms vs vec={disc_vec_ms/disc_ms:.1f}x | "
+              f"traces triton={trc_ms:.3f}ms vs vec={trc_vec_ms/trc_ms:.1f}x")
     return rows_lambda, rows_disc, rows_traces
 
 
@@ -679,6 +692,7 @@ def bench_lambda_returns_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -713,6 +727,7 @@ def bench_discounted_returns_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
     return rows
 
 
@@ -737,6 +752,7 @@ def bench_prefix_sum():
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
             "su_compile": compiled_ms / triton_ms,
         })
+        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec={compiled_ms/triton_ms:.1f}x")
     return rows
 
 

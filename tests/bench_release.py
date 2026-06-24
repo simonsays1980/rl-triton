@@ -444,9 +444,12 @@ def bench_gae():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
-              f"vs vec={vec_ms/triton_ms:.1f}x vs assoc={assoc_ms/triton_ms:.1f}x "
-              f"vs loop={compiled_ms/triton_ms:.1f}x")
+        print(f"  {num_envs:>4}x{seq_len:<5} "
+              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms assoc={assoc_ms:.3f}ms "
+              f"loop={compiled_ms:.3f}ms np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
+              f"vs_vec={vec_ms/triton_ms:.1f}x vs_assoc={assoc_ms/triton_ms:.1f}x "
+              f"vs_loop={compiled_ms/triton_ms:.1f}x vs_numpy={numpy_ms/triton_ms:.1f}x "
+              f"e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
     return rows
 
 
@@ -518,8 +521,11 @@ def bench_vtrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
-              f"vs vec={vec_ms/triton_ms:.1f}x vs loop={compiled_ms/triton_ms:.1f}x")
+        print(f"  {num_envs:>4}x{seq_len:<5} "
+              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms loop={compiled_ms:.3f}ms "
+              f"np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
+              f"vs_vec={vec_ms/triton_ms:.1f}x vs_loop={compiled_ms/triton_ms:.1f}x "
+              f"vs_numpy={numpy_ms/triton_ms:.1f}x e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
     return rows
 
 
@@ -593,8 +599,11 @@ def bench_retrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms "
-              f"vs vec={vec_ms/triton_ms:.1f}x vs loop={compiled_ms/triton_ms:.1f}x")
+        print(f"  {num_envs:>4}x{seq_len:<5} "
+              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms loop={compiled_ms:.3f}ms "
+              f"np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
+              f"vs_vec={vec_ms/triton_ms:.1f}x vs_loop={compiled_ms/triton_ms:.1f}x "
+              f"vs_numpy={numpy_ms/triton_ms:.1f}x e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
     return rows
 
 
@@ -652,10 +661,13 @@ def bench_returns():
             **base, "triton_ms": trc_ms, "compiled_ms": ctrc_ms, "vec_ms": trc_vec_ms,
             "su_compile": ctrc_ms / trc_ms, "su_vec": trc_vec_ms / trc_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} "
-              f"lambda triton={lam_ms:.3f}ms vs vec={lam_vec_ms/lam_ms:.1f}x | "
-              f"disc triton={disc_ms:.3f}ms vs vec={disc_vec_ms/disc_ms:.1f}x | "
-              f"traces triton={trc_ms:.3f}ms vs vec={trc_vec_ms/trc_ms:.1f}x")
+        print(f"  {num_envs:>4}x{seq_len:<5}\n"
+              f"    lambda: triton={lam_ms:.3f}ms vec={lam_vec_ms:.3f}ms loop={clam_ms:.3f}ms  "
+              f"vs_vec={lam_vec_ms/lam_ms:.1f}x vs_loop={clam_ms/lam_ms:.1f}x\n"
+              f"    disc:   triton={disc_ms:.3f}ms vec={disc_vec_ms:.3f}ms loop={cdisc_ms:.3f}ms  "
+              f"vs_vec={disc_vec_ms/disc_ms:.1f}x vs_loop={cdisc_ms/disc_ms:.1f}x\n"
+              f"    traces: triton={trc_ms:.3f}ms vec={trc_vec_ms:.3f}ms loop={ctrc_ms:.3f}ms  "
+              f"vs_vec={trc_vec_ms/trc_ms:.1f}x vs_loop={ctrc_ms/trc_ms:.1f}x")
     return rows_lambda, rows_disc, rows_traces
 
 

@@ -1,10 +1,12 @@
 """
 Release benchmark — full sweep across all algorithms and configurations.
 
-Compares rl-triton Triton kernels against:
-  - torch.compile on equivalent PyTorch reference loops (all algorithms)
-  - Pure NumPy CPU loop (GAE, V-Trace, Retrace)
-  - NumPy→GPU→NumPy adoption path (GAE, V-Trace, Retrace)
+Compares rl-triton Triton kernels against torch.compile on both a naive
+per-timestep Python loop and the fastest hand-vectorized PyTorch equivalent
+(plus, for GAE, an associative-scan baseline), against pure NumPy CPU loops,
+and against a NumPy→GPU→NumPy adoption path. Algorithms that support
+truncated episodes (GAE, V-Trace, λ-returns, discounted returns) get an
+additional table benchmarking that path against its own vectorized baseline.
 
 After running, updates the <!-- BENCH_START --> ... <!-- BENCH_END --> section
 in README.md with the latest results.
@@ -38,6 +40,16 @@ from rl_triton.ops.returns import (
 )
 from rl_triton.ops.vtrace import compute_vtrace
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
+
+from test_gae import vectorized_gae, vectorized_gae_with_truncations
+from test_returns import (
+    vectorized_discounted_returns,
+    vectorized_discounted_returns_with_truncations,
+    vectorized_eligibility_traces,
+    vectorized_lambda_returns,
+    vectorized_lambda_returns_with_truncations,
+)
+from test_vtrace import vectorized_vtrace, vectorized_vtrace_with_truncations
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +312,23 @@ def numpy_retrace_cpu(rewards_np, dones_np, q_values_np, next_q_all_np,
 # Input factories
 # ---------------------------------------------------------------------------
 
+def _make_trunc_extras(num_envs, seq_len, terminateds, device="cuda"):
+    """~5% truncated steps (mutually exclusive with terminateds), with
+    bootstrap_values populated at truncated steps and the final boundary.
+
+    Shared across GAE, V-Trace, λ-returns, and discounted returns — the same
+    pattern used by their respective test_*_truncation_performance tests.
+    """
+    trunc_cand = (torch.rand(num_envs, seq_len, device=device) < 0.05).float()
+    truncateds = trunc_cand * (1.0 - terminateds)
+    bootstrap_values = torch.zeros(num_envs, seq_len, device=device)
+    n = int(truncateds.sum().item())
+    if n:
+        bootstrap_values[truncateds.bool()] = torch.rand(n, device=device)
+    bootstrap_values[:, -1] = torch.rand(num_envs, device=device)
+    return truncateds, bootstrap_values
+
+
 def _make_gae(num_envs, seq_len, device="cuda"):
     torch.manual_seed(0)
     d = device
@@ -364,9 +393,18 @@ CONFIGS = [
 # ---------------------------------------------------------------------------
 
 def bench_gae():
-    compiled = torch.compile(_ref_gae)
+    compiled      = torch.compile(_ref_gae)
+    compiled_vec  = torch.compile(vectorized_gae)
+    compiled_assoc = torch.compile(vectorized_gae_with_truncations)
     args_warmup = _make_gae(64, 512)
-    compiled(*args_warmup, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
+    compiled(*args_warmup, gamma=0.99, lambda_=0.95);     torch.cuda.synchronize()
+    compiled_vec(*args_warmup, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
+    _n0, _t0 = args_warmup[0].shape
+    _trunc0_w = torch.zeros(_n0, _t0, device="cuda")
+    _bsv0_w   = torch.zeros(_n0, _t0, device="cuda")
+    _bsv0_w[:, -1] = torch.rand(_n0, device="cuda")
+    compiled_assoc(args_warmup[0], args_warmup[1], args_warmup[2], _trunc0_w, _bsv0_w,
+                   0.99, 0.95); torch.cuda.synchronize()
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -374,8 +412,23 @@ def bench_gae():
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
         ni       = _n_iter_gpu(seq_len, num_envs)
 
+        # Zero-truncation inputs for the assoc-scan baseline — the same
+        # vectorized_gae_with_truncations function used by the truncation
+        # benchmark below, called with no truncations. A real engineer
+        # supporting both regimes would maintain one implementation, not two.
+        trunc0 = torch.zeros(num_envs, seq_len, device="cuda")
+        bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
+        bsv0[:, -1] = torch.rand(num_envs, device="cuda")
+
         _warmup_gpu(compute_gae, *args_gpu, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_vec, *args_gpu, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(compiled_assoc, args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95)
+
         triton_ms   = _bench_gpu(compute_gae,     *args_gpu, gamma=0.99, lambda_=0.95, n_iter=ni)
+        vec_ms      = _bench_gpu(compiled_vec,           *args_gpu, gamma=0.99, lambda_=0.95, n_iter=ni)
+        assoc_ms    = _bench_gpu(compiled_assoc,
+                                  args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95,
+                                  n_iter=ni)
         compiled_ms = _bench_cpu(compiled,               *args_gpu, gamma=0.99, lambda_=0.95)
         e2e_ms      = _bench_cpu(numpy_gae_np_to_triton, *args_np,  gamma=0.99, lambda_=0.95)
         numpy_ms    = _bench_cpu(numpy_gae_cpu,          *args_gpu, gamma=0.99, lambda_=0.95)
@@ -383,18 +436,59 @@ def bench_gae():
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
+            "vec_ms": vec_ms, "assoc_ms": assoc_ms,
             "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
+            "su_vec":     vec_ms      / triton_ms,
+            "su_assoc":   assoc_ms    / triton_ms,
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
     return rows
 
 
+def bench_gae_truncation():
+    compiled_vec_trunc = torch.compile(vectorized_gae_with_truncations)
+    terminateds_warmup = _make_gae(64, 512)[2]
+    truncateds_warmup, bootstrap_warmup = _make_trunc_extras(64, 512, terminateds_warmup)
+    rewards_w, values_w, _ = _make_gae(64, 512)
+    compiled_vec_trunc(rewards_w, values_w, terminateds_warmup, truncateds_warmup,
+                        bootstrap_warmup, 0.99, 0.95)
+    compute_gae(rewards_w, values_w, terminateds_warmup, truncateds_warmup,
+                gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_warmup)
+    torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        rewards, values, terminateds = _make_gae(num_envs, seq_len)
+        truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
+        ni = _n_iter_gpu(seq_len, num_envs)
+
+        _warmup_gpu(compute_gae, rewards, values, terminateds, truncateds,
+                    gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values)
+        _warmup_gpu(compiled_vec_trunc, rewards, values, terminateds, truncateds,
+                    bootstrap_values, gamma=0.99, lambda_=0.95)
+
+        triton_ms = _bench_gpu(compute_gae, rewards, values, terminateds, truncateds,
+                                gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values,
+                                n_iter=ni)
+        vec_ms = _bench_gpu(compiled_vec_trunc, rewards, values, terminateds, truncateds,
+                             bootstrap_values, gamma=0.99, lambda_=0.95, n_iter=ni)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "vec_ms": vec_ms,
+            "su_vec": vec_ms / triton_ms,
+        })
+    return rows
+
+
 def bench_vtrace():
-    compiled = torch.compile(_ref_vtrace)
+    compiled     = torch.compile(_ref_vtrace)
+    compiled_vec = torch.compile(vectorized_vtrace)
     args = _make_vtrace(64, 512)
-    compiled(*args, gamma=0.99); torch.cuda.synchronize()
+    compiled(*args, gamma=0.99);     torch.cuda.synchronize()
+    compiled_vec(*args, gamma=0.99); torch.cuda.synchronize()
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -403,7 +497,9 @@ def bench_vtrace():
         ni       = _n_iter_gpu(seq_len, num_envs)
 
         _warmup_gpu(compute_vtrace_fused, *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,         *args_gpu, gamma=0.99)
         triton_ms   = _bench_gpu(compute_vtrace_fused,          *args_gpu, gamma=0.99, n_iter=ni)
+        vec_ms      = _bench_gpu(compiled_vec,                  *args_gpu, gamma=0.99, n_iter=ni)
         compiled_ms = _bench_cpu(compiled,                      *args_gpu, gamma=0.99)
         e2e_ms      = _bench_cpu(numpy_vtrace_np_to_triton,     *args_np,  gamma=0.99)
         numpy_ms    = _bench_cpu(numpy_vtrace_cpu,              *args_gpu, gamma=0.99)
@@ -411,10 +507,48 @@ def bench_vtrace():
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
+            "vec_ms": vec_ms,
             "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_compile": compiled_ms / triton_ms,
+            "su_vec":     vec_ms      / triton_ms,
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
+        })
+    return rows
+
+
+def bench_vtrace_truncation():
+    compiled_vec_trunc = torch.compile(vectorized_vtrace_with_truncations)
+
+    log_pi_t_w, log_pi_b_w, values_w, rewards_w, terminateds_w = _make_vtrace(64, 512)
+    truncateds_w, bootstrap_w = _make_trunc_extras(64, 512, terminateds_w)
+    compiled_vec_trunc(log_pi_t_w, log_pi_b_w, values_w, rewards_w, terminateds_w,
+                        truncateds_w, bootstrap_w, gamma=0.99)
+    compute_vtrace_fused(log_pi_t_w, log_pi_b_w, values_w, rewards_w, terminateds_w,
+                         truncateds=truncateds_w, gamma=0.99, bootstrap_values=bootstrap_w)
+    torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        log_pi_t, log_pi_b, values, rewards, terminateds = _make_vtrace(num_envs, seq_len)
+        truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
+        ni = _n_iter_gpu(seq_len, num_envs)
+
+        _warmup_gpu(compute_vtrace_fused, log_pi_t, log_pi_b, values, rewards, terminateds,
+                    truncateds=truncateds, gamma=0.99, bootstrap_values=bootstrap_values)
+        _warmup_gpu(compiled_vec_trunc, log_pi_t, log_pi_b, values, rewards, terminateds,
+                    truncateds, bootstrap_values, gamma=0.99)
+
+        triton_ms = _bench_gpu(compute_vtrace_fused, log_pi_t, log_pi_b, values, rewards, terminateds,
+                                truncateds=truncateds, gamma=0.99, bootstrap_values=bootstrap_values,
+                                n_iter=ni)
+        vec_ms = _bench_gpu(compiled_vec_trunc, log_pi_t, log_pi_b, values, rewards, terminateds,
+                             truncateds, bootstrap_values, gamma=0.99, n_iter=ni)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "vec_ms": vec_ms,
+            "su_vec": vec_ms / triton_ms,
         })
     return rows
 
@@ -456,13 +590,19 @@ def bench_retrace():
 
 
 def bench_returns():
-    c_lambda = torch.compile(_ref_lambda)
-    c_disc   = torch.compile(_ref_disc)
-    c_traces = torch.compile(_ref_traces)
+    c_lambda     = torch.compile(_ref_lambda)
+    c_disc       = torch.compile(_ref_disc)
+    c_traces     = torch.compile(_ref_traces)
+    c_lambda_vec = torch.compile(vectorized_lambda_returns)
+    c_disc_vec   = torch.compile(vectorized_discounted_returns)
+    c_traces_vec = torch.compile(vectorized_eligibility_traces)
     r, nv, d = _make_returns(64, 512)
-    c_lambda(r, nv, d, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
-    c_disc(r, d, gamma=0.99);                     torch.cuda.synchronize()
-    c_traces(r, d, gamma=0.99, lambda_=0.95);     torch.cuda.synchronize()
+    c_lambda(r, nv, d, gamma=0.99, lambda_=0.95);     torch.cuda.synchronize()
+    c_disc(r, d, gamma=0.99);                         torch.cuda.synchronize()
+    c_traces(r, d, gamma=0.99, lambda_=0.95);         torch.cuda.synchronize()
+    c_lambda_vec(r, nv, d, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
+    c_disc_vec(r, d, gamma=0.99);                     torch.cuda.synchronize()
+    c_traces_vec(r, d, gamma=0.99, lambda_=0.95);     torch.cuda.synchronize()
 
     rows_lambda, rows_disc, rows_traces = [], [], []
     for num_envs, seq_len in CONFIGS:
@@ -472,21 +612,108 @@ def bench_returns():
         _warmup_gpu(compute_lambda_returns,    rewards, next_values, dones, gamma=0.99, lambda_=0.95)
         _warmup_gpu(compute_discounted_returns, rewards, dones, gamma=0.99)
         _warmup_gpu(compute_eligibility_traces, rewards, dones, gamma=0.99, lambda_=0.9)
+        _warmup_gpu(c_lambda_vec, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        _warmup_gpu(c_disc_vec,   rewards, dones, gamma=0.99)
+        _warmup_gpu(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
+
         lam_ms  = _bench_gpu(compute_lambda_returns,    rewards, next_values, dones,
                              gamma=0.99, lambda_=0.95, n_iter=ni)
         disc_ms = _bench_gpu(compute_discounted_returns, rewards, dones,
                              gamma=0.99, n_iter=ni)
         trc_ms  = _bench_gpu(compute_eligibility_traces, rewards, dones,
                              gamma=0.99, lambda_=0.9, n_iter=ni)
+        lam_vec_ms  = _bench_gpu(c_lambda_vec, rewards, next_values, dones,
+                                  gamma=0.99, lambda_=0.95, n_iter=ni)
+        disc_vec_ms = _bench_gpu(c_disc_vec, rewards, dones, gamma=0.99, n_iter=ni)
+        trc_vec_ms  = _bench_gpu(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9, n_iter=ni)
         clam_ms  = _bench_cpu(c_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
         cdisc_ms = _bench_cpu(c_disc,   rewards, dones, gamma=0.99)
         ctrc_ms  = _bench_cpu(c_traces, rewards, dones, gamma=0.99, lambda_=0.9)
 
         base = {"num_envs": num_envs, "seq_len": seq_len}
-        rows_lambda.append({**base, "triton_ms": lam_ms,  "compiled_ms": clam_ms,  "su_compile": clam_ms  / lam_ms})
-        rows_disc.append(  {**base, "triton_ms": disc_ms, "compiled_ms": cdisc_ms, "su_compile": cdisc_ms / disc_ms})
-        rows_traces.append({**base, "triton_ms": trc_ms,  "compiled_ms": ctrc_ms,  "su_compile": ctrc_ms  / trc_ms})
+        rows_lambda.append({
+            **base, "triton_ms": lam_ms, "compiled_ms": clam_ms, "vec_ms": lam_vec_ms,
+            "su_compile": clam_ms / lam_ms, "su_vec": lam_vec_ms / lam_ms,
+        })
+        rows_disc.append({
+            **base, "triton_ms": disc_ms, "compiled_ms": cdisc_ms, "vec_ms": disc_vec_ms,
+            "su_compile": cdisc_ms / disc_ms, "su_vec": disc_vec_ms / disc_ms,
+        })
+        rows_traces.append({
+            **base, "triton_ms": trc_ms, "compiled_ms": ctrc_ms, "vec_ms": trc_vec_ms,
+            "su_compile": ctrc_ms / trc_ms, "su_vec": trc_vec_ms / trc_ms,
+        })
     return rows_lambda, rows_disc, rows_traces
+
+
+def bench_lambda_returns_truncation():
+    compiled_vec_trunc = torch.compile(vectorized_lambda_returns_with_truncations)
+
+    rewards_w, next_values_w, terminateds_w = _make_returns(64, 512)
+    truncateds_w, bootstrap_w = _make_trunc_extras(64, 512, terminateds_w)
+    compiled_vec_trunc(rewards_w, next_values_w, terminateds_w, truncateds_w, bootstrap_w,
+                        gamma=0.99, lambda_=0.95)
+    compute_lambda_returns(rewards_w, next_values_w, terminateds_w, truncateds=truncateds_w,
+                            gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_w)
+    torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        rewards, next_values, terminateds = _make_returns(num_envs, seq_len)
+        truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
+        ni = _n_iter_gpu(seq_len, num_envs)
+
+        _warmup_gpu(compute_lambda_returns, rewards, next_values, terminateds,
+                    truncateds=truncateds, gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values)
+        _warmup_gpu(compiled_vec_trunc, rewards, next_values, terminateds, truncateds,
+                    bootstrap_values, gamma=0.99, lambda_=0.95)
+
+        triton_ms = _bench_gpu(compute_lambda_returns, rewards, next_values, terminateds,
+                                truncateds=truncateds, gamma=0.99, lambda_=0.95,
+                                bootstrap_values=bootstrap_values, n_iter=ni)
+        vec_ms = _bench_gpu(compiled_vec_trunc, rewards, next_values, terminateds, truncateds,
+                             bootstrap_values, gamma=0.99, lambda_=0.95, n_iter=ni)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "vec_ms": vec_ms,
+            "su_vec": vec_ms / triton_ms,
+        })
+    return rows
+
+
+def bench_discounted_returns_truncation():
+    compiled_vec_trunc = torch.compile(vectorized_discounted_returns_with_truncations)
+
+    rewards_w, _, terminateds_w = _make_returns(64, 512)
+    truncateds_w, bootstrap_w = _make_trunc_extras(64, 512, terminateds_w)
+    compiled_vec_trunc(rewards_w, terminateds_w, truncateds_w, bootstrap_w, gamma=0.99)
+    compute_discounted_returns(rewards_w, terminateds_w, truncateds=truncateds_w,
+                                gamma=0.99, bootstrap_values=bootstrap_w)
+    torch.cuda.synchronize()
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        rewards, _, terminateds = _make_returns(num_envs, seq_len)
+        truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
+        ni = _n_iter_gpu(seq_len, num_envs)
+
+        _warmup_gpu(compute_discounted_returns, rewards, terminateds,
+                    truncateds=truncateds, gamma=0.99, bootstrap_values=bootstrap_values)
+        _warmup_gpu(compiled_vec_trunc, rewards, terminateds, truncateds, bootstrap_values, gamma=0.99)
+
+        triton_ms = _bench_gpu(compute_discounted_returns, rewards, terminateds,
+                                truncateds=truncateds, gamma=0.99,
+                                bootstrap_values=bootstrap_values, n_iter=ni)
+        vec_ms = _bench_gpu(compiled_vec_trunc, rewards, terminateds, truncateds, bootstrap_values,
+                             gamma=0.99, n_iter=ni)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "vec_ms": vec_ms,
+            "su_vec": vec_ms / triton_ms,
+        })
+    return rows
 
 
 def bench_prefix_sum():
@@ -517,50 +744,67 @@ def bench_prefix_sum():
 # Table formatters
 # ---------------------------------------------------------------------------
 
-def _fmt_row(r, include_numpy=False, include_vec=False):
+def _fmt_row(r, include_numpy=False, include_vec=False, include_assoc=False):
     base = (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['compiled_ms']:>11.3f} "
             f"| {r['su_compile']:>8.1f}x |")
+    if include_vec:
+        base += f" {r['vec_ms']:>13.3f} | {r['su_vec']:>6.1f}x |"
+    if include_assoc:
+        base += f" {r['assoc_ms']:>14.3f} | {r['su_assoc']:>8.1f}x |"
     if include_numpy:
         base += (f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
-                 f"| {r['su_e2e']:>7.1f}x |")
-    if include_vec:
-        base += (f" {r['vec_ms']:>13.3f} | {r['e2e_ms']:>17.3f} | {r['numpy_ms']:>10.3f} "
-                 f"| {r['su_vec']:>6.1f}x | {r['su_e2e']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
+                 f"| {r['su_e2e']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
     return base
 
 
-def _table_numpy(title, rows):
-    header = (
-        f"#### {title}\n\n"
-        "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
-        " np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy |\n"
-        "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
-        ":------------------:|:--------------:|:------------------:|"
+def _table_numpy(title, rows, include_vec=False, include_assoc=False):
+    header_cols = "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
+    sep_cols    = "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
+    if include_vec:
+        header_cols += " compile(vec) (ms) | vs vec |"
+        sep_cols    += ":-----------------:|:------:|"
+    if include_assoc:
+        header_cols += " compile(assoc) (ms) | vs assoc |"
+        sep_cols    += ":-------------------:|:--------:|"
+    header_cols += " np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |"
+    sep_cols    += ":------------------:|:--------------:|:-------------------:|:--------:|"
+    header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
+    body = "\n".join(
+        _fmt_row(r, include_numpy=True, include_vec=include_vec, include_assoc=include_assoc)
+        for r in rows
     )
-    body = "\n".join(_fmt_row(r, include_numpy=True) for r in rows)
     return header + "\n" + body
 
 
-def _table_simple(title, rows):
-    header = (
-        f"#### {title}\n\n"
-        "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |\n"
-        "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
-    )
-    body = "\n".join(_fmt_row(r, include_numpy=False) for r in rows)
+def _table_simple(title, rows, include_vec=False):
+    header_cols = "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
+    sep_cols    = "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
+    if include_vec:
+        header_cols += " compile(vec) (ms) | vs vec |"
+        sep_cols    += ":-----------------:|:------:|"
+    header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
+    body = "\n".join(_fmt_row(r, include_numpy=False, include_vec=include_vec) for r in rows)
     return header + "\n" + body
 
 
 def _table_retrace(title, rows):
+    return _table_numpy(title, rows, include_vec=True)
+
+
+def _fmt_trunc_row(r):
+    return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
+            f"| {r['triton_ms']:>10.3f} | {r['vec_ms']:>17.3f} "
+            f"| {r['su_vec']:>9.1f}x |")
+
+
+def _table_truncation(title, rows):
     header = (
         f"#### {title}\n\n"
-        "| num_envs | seq_len | triton (ms) | pt.compile (ms) | vs compile |"
-        " compile(vec) (ms) | np→triton→np (ms) | numpy cpu (ms) | vs vec | np→tri→np vs numpy | vs numpy |\n"
-        "|:--------:|:-------:|:-----------:|:---------------:|:----------:|"
-        ":------------------:|:-----------------:|:--------------:|:------:|:-------------------:|:--------:|"
+        "| num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |\n"
+        "|:--------:|:-------:|:-----------:|:-----------------------:|:------------:|"
     )
-    body = "\n".join(_fmt_row(r, include_vec=True) for r in rows)
+    body = "\n".join(_fmt_trunc_row(r) for r in rows)
     return header + "\n" + body
 
 
@@ -573,7 +817,12 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"*Measured on {gpu} · {date} · "
         f"[`triton`](https://github.com/openai/triton) kernels vs `torch.compile` and NumPy CPU.*\n\n"
         f"**triton**: CUDA events — pure kernel time.  "
-        f"**pt.compile**: wall-clock (dispatches one CUDA op per timestep from Python).  "
+        f"**pt.compile**: wall-clock (naive per-timestep Python loop).  "
+        f"**compile(vec)**: CUDA events (fastest hand-vectorized PyTorch equivalent — "
+        f"the baseline a competent engineer would actually write).  "
+        f"**compile(assoc)**: CUDA events (GAE only — the same associative-scan "
+        f"implementation used for the truncation path, called with zero truncations).  "
+        f"**compile(vec-trunc)**: CUDA events (vectorized baseline for the truncation tables).  "
         f"**np→triton→np**: NumPy → GPU → NumPy adoption path.  "
         f"**numpy cpu**: pure NumPy backward loop on CPU.\n"
     )
@@ -673,14 +922,21 @@ def main():
         dummy = {"num_envs": 128, "seq_len": 1024, "triton_ms": 1.234,
                  "compiled_ms": 2.345, "su_compile": 1.9,
                  "e2e_ms": 5.678, "numpy_ms": 8.901, "su_e2e": 1.6, "su_numpy": 7.2,
-                 "vec_ms": 2.100, "su_vec": 1.7}
+                 "vec_ms": 2.100, "su_vec": 1.7,
+                 "assoc_ms": 2.500, "su_assoc": 1.4}
+        dummy_trunc = {"num_envs": 128, "seq_len": 1024, "triton_ms": 1.234,
+                       "vec_ms": 1.890, "su_vec": 1.5}
         tables = [
-            _table_numpy("GAE (`compute_gae`)", [dummy]),
-            _table_numpy("V-Trace (`compute_vtrace`)", [dummy]),
+            _table_numpy("GAE (`compute_gae`)", [dummy], include_vec=True, include_assoc=True),
+            _table_truncation("GAE — with truncations (`compute_gae`)", [dummy_trunc]),
+            _table_numpy("V-Trace (`compute_vtrace`)", [dummy], include_vec=True),
+            _table_truncation("V-Trace — with truncations (`compute_vtrace`)", [dummy_trunc]),
             _table_retrace("Retrace(λ) (`compute_retrace`)", [dummy]),
-            _table_simple("λ-returns (`compute_lambda_returns`)", [dummy]),
-            _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
-            _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
+            _table_simple("λ-returns (`compute_lambda_returns`)", [dummy], include_vec=True),
+            _table_truncation("λ-returns — with truncations (`compute_lambda_returns`)", [dummy_trunc]),
+            _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy], include_vec=True),
+            _table_truncation("Discounted returns — with truncations (`compute_discounted_returns`)", [dummy_trunc]),
+            _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy], include_vec=True),
             _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
         ]
         print(_section(args.gpu or "dry-run GPU", tables))
@@ -688,22 +944,34 @@ def main():
 
     print("Running GAE benchmark …")
     gae_rows = bench_gae()
+    print("Running GAE truncation-path benchmark …")
+    gae_trunc_rows = bench_gae_truncation()
     print("Running V-Trace benchmark …")
     vtrace_rows = bench_vtrace()
+    print("Running V-Trace truncation-path benchmark …")
+    vtrace_trunc_rows = bench_vtrace_truncation()
     print("Running Retrace(λ) benchmark …")
     retrace_rows = bench_retrace()
     print("Running returns / eligibility-traces benchmark …")
     lambda_rows, disc_rows, traces_rows = bench_returns()
+    print("Running λ-returns truncation-path benchmark …")
+    lambda_trunc_rows = bench_lambda_returns_truncation()
+    print("Running discounted-returns truncation-path benchmark …")
+    disc_trunc_rows = bench_discounted_returns_truncation()
     print("Running episodic prefix sum benchmark …")
     prefix_sum_rows = bench_prefix_sum()
 
     tables = [
-        _table_numpy("GAE (`compute_gae`)", gae_rows),
-        _table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows),
+        _table_numpy("GAE (`compute_gae`)", gae_rows, include_vec=True, include_assoc=True),
+        _table_truncation("GAE — with truncations (`compute_gae`)", gae_trunc_rows),
+        _table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows, include_vec=True),
+        _table_truncation("V-Trace — with truncations (`compute_vtrace`)", vtrace_trunc_rows),
         _table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows),
-        _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows),
-        _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows),
-        _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows),
+        _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows, include_vec=True),
+        _table_truncation("λ-returns — with truncations (`compute_lambda_returns`)", lambda_trunc_rows),
+        _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows, include_vec=True),
+        _table_truncation("Discounted returns — with truncations (`compute_discounted_returns`)", disc_trunc_rows),
+        _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows, include_vec=True),
         _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows),
     ]
 

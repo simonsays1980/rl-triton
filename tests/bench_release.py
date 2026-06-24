@@ -406,6 +406,15 @@ def bench_gae():
     compiled_assoc(args_warmup[0], args_warmup[1], args_warmup[2], _trunc0_w, _bsv0_w,
                    0.99, 0.95); torch.cuda.synchronize()
 
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs assoc':>10} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
+    )
+    print(header)
+    print("-" * len(header))
+
     rows = []
     for num_envs, seq_len in CONFIGS:
         args_gpu = _make_gae(num_envs, seq_len)
@@ -444,12 +453,14 @@ def bench_gae():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} "
-              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms assoc={assoc_ms:.3f}ms "
-              f"loop={compiled_ms:.3f}ms np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
-              f"vs_vec={vec_ms/triton_ms:.1f}x vs_assoc={assoc_ms/triton_ms:.1f}x "
-              f"vs_loop={compiled_ms/triton_ms:.1f}x vs_numpy={numpy_ms/triton_ms:.1f}x "
-              f"e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{assoc_ms:.3f}ms':>15} "
+            f"{f'{compiled_ms:.3f}ms':>15} {f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{assoc_ms/triton_ms:.2f}x':>10} "
+            f"{f'{compiled_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}"
+        )
     return rows
 
 
@@ -463,6 +474,13 @@ def bench_gae_truncation():
     compute_gae(rewards_w, values_w, terminateds_warmup, truncateds_warmup,
                 gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_warmup)
     torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -486,7 +504,10 @@ def bench_gae_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>19} {f'{vec_ms/triton_ms:.2f}x':>9}"
+        )
     return rows
 
 
@@ -496,6 +517,15 @@ def bench_vtrace():
     args = _make_vtrace(64, 512)
     compiled(*args, gamma=0.99);     torch.cuda.synchronize()
     compiled_vec(*args, gamma=0.99); torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -521,11 +551,13 @@ def bench_vtrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} "
-              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms loop={compiled_ms:.3f}ms "
-              f"np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
-              f"vs_vec={vec_ms/triton_ms:.1f}x vs_loop={compiled_ms/triton_ms:.1f}x "
-              f"vs_numpy={numpy_ms/triton_ms:.1f}x e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{compiled_ms:.3f}ms':>15} "
+            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{compiled_ms/triton_ms:.1f}x':>9} "
+            f"{f'{numpy_ms/triton_ms:.1f}x':>10} {f'{numpy_ms/e2e_ms:.1f}x':>11}"
+        )
     return rows
 
 
@@ -539,6 +571,13 @@ def bench_vtrace_truncation():
     compute_vtrace_fused(log_pi_t_w, log_pi_b_w, values_w, rewards_w, terminateds_w,
                          truncateds=truncateds_w, gamma=0.99, bootstrap_values=bootstrap_w)
     torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -562,7 +601,10 @@ def bench_vtrace_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>19} {f'{vec_ms/triton_ms:.2f}x':>9}"
+        )
     return rows
 
 
@@ -572,6 +614,15 @@ def bench_retrace():
     args = _make_retrace(64, 512)
     compiled_vec(*args, gamma=0.99);  torch.cuda.synchronize()
     compiled_loop(*args, gamma=0.99); torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
+        f"{'vs vec':>8} {'vs loop':>9} {'e2e vs np':>11} {'vs numpy':>10}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -599,11 +650,13 @@ def bench_retrace():
             "su_e2e":     numpy_ms    / e2e_ms,
             "su_numpy":   numpy_ms    / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} "
-              f"triton={triton_ms:.3f}ms vec={vec_ms:.3f}ms loop={compiled_ms:.3f}ms "
-              f"np->tri->np={e2e_ms:.3f}ms numpy(cpu)={numpy_ms:.3f}ms  "
-              f"vs_vec={vec_ms/triton_ms:.1f}x vs_loop={compiled_ms/triton_ms:.1f}x "
-              f"vs_numpy={numpy_ms/triton_ms:.1f}x e2e_vs_numpy={numpy_ms/e2e_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{compiled_ms:.3f}ms':>15} "
+            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{compiled_ms/triton_ms:.1f}x':>9} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11} {f'{numpy_ms/triton_ms:.1f}x':>10}"
+        )
     return rows
 
 
@@ -621,6 +674,21 @@ def bench_returns():
     c_lambda_vec(r, nv, d, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
     c_disc_vec(r, d, gamma=0.99);                     torch.cuda.synchronize()
     c_traces_vec(r, d, gamma=0.99, lambda_=0.95);     torch.cuda.synchronize()
+
+    header = (
+        f"\n{'algo':>20} {'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(loop)':>15} "
+        f"{'vs vec':>8} {'vs loop':>9}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    def _print_sub_row(name, num_envs, seq_len, triton_ms, vec_ms, loop_ms):
+        print(
+            f"{name:>20} {num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{loop_ms:.3f}ms':>15} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{loop_ms/triton_ms:.1f}x':>9}"
+        )
 
     rows_lambda, rows_disc, rows_traces = [], [], []
     for num_envs, seq_len in CONFIGS:
@@ -661,13 +729,9 @@ def bench_returns():
             **base, "triton_ms": trc_ms, "compiled_ms": ctrc_ms, "vec_ms": trc_vec_ms,
             "su_compile": ctrc_ms / trc_ms, "su_vec": trc_vec_ms / trc_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5}\n"
-              f"    lambda: triton={lam_ms:.3f}ms vec={lam_vec_ms:.3f}ms loop={clam_ms:.3f}ms  "
-              f"vs_vec={lam_vec_ms/lam_ms:.1f}x vs_loop={clam_ms/lam_ms:.1f}x\n"
-              f"    disc:   triton={disc_ms:.3f}ms vec={disc_vec_ms:.3f}ms loop={cdisc_ms:.3f}ms  "
-              f"vs_vec={disc_vec_ms/disc_ms:.1f}x vs_loop={cdisc_ms/disc_ms:.1f}x\n"
-              f"    traces: triton={trc_ms:.3f}ms vec={trc_vec_ms:.3f}ms loop={ctrc_ms:.3f}ms  "
-              f"vs_vec={trc_vec_ms/trc_ms:.1f}x vs_loop={ctrc_ms/trc_ms:.1f}x")
+        _print_sub_row("lambda-returns",     num_envs, seq_len, lam_ms,  lam_vec_ms,  clam_ms)
+        _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_vec_ms, cdisc_ms)
+        _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms,  trc_vec_ms,  ctrc_ms)
     return rows_lambda, rows_disc, rows_traces
 
 
@@ -681,6 +745,13 @@ def bench_lambda_returns_truncation():
     compute_lambda_returns(rewards_w, next_values_w, terminateds_w, truncateds=truncateds_w,
                             gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_w)
     torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -704,7 +775,10 @@ def bench_lambda_returns_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>19} {f'{vec_ms/triton_ms:.2f}x':>9}"
+        )
     return rows
 
 
@@ -717,6 +791,13 @@ def bench_discounted_returns_truncation():
     compute_discounted_returns(rewards_w, terminateds_w, truncateds=truncateds_w,
                                 gamma=0.99, bootstrap_values=bootstrap_w)
     torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'compile(vec_trunc)':>20} {'speedup':>9}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -739,7 +820,10 @@ def bench_discounted_returns_truncation():
             "triton_ms": triton_ms, "vec_ms": vec_ms,
             "su_vec": vec_ms / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec-trunc={vec_ms/triton_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>19} {f'{vec_ms/triton_ms:.2f}x':>9}"
+        )
     return rows
 
 
@@ -748,6 +832,13 @@ def bench_prefix_sum():
     compiled = torch.compile(vectorized_episodic_prefix_sum)
     r, _, d = _make_returns(64, 512)
     compiled(r, d); torch.cuda.synchronize()
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>10} {'compile(vec)':>14} {'vs vec':>8}"
+    )
+    print(header)
+    print("-" * len(header))
 
     rows = []
     for num_envs, seq_len in CONFIGS:
@@ -764,7 +855,10 @@ def bench_prefix_sum():
             "triton_ms": triton_ms, "compiled_ms": compiled_ms,
             "su_compile": compiled_ms / triton_ms,
         })
-        print(f"  {num_envs:>4}x{seq_len:<5} triton={triton_ms:.3f}ms vs vec={compiled_ms/triton_ms:.1f}x")
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>10} {f'{compiled_ms:.3f}ms':>14} {f'{compiled_ms/triton_ms:.2f}x':>8}"
+        )
     return rows
 
 

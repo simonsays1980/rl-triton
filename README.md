@@ -51,7 +51,7 @@ The release benchmark runs all algorithms across multiple (num_envs, seq_len) co
 and updates the Performance section of this README automatically:
 
 ```bash
-python tests/bench_release.py --gpu "RTX 4090"
+python tests/bench_release.py --gpu "RTX 2000 Ada"
 ```
 
 Use `--no-update` to print results without modifying the README.

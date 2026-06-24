@@ -18,6 +18,10 @@ REPO_URL="https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git"
 WORK_DIR="/root/actions-runner"
 REPO_DIR="/root/rl-triton"
 
+# Some RunPod base images set this, which floods stdout with repeated
+# low-level PyTorch C++ log lines during benchmark/test runs.
+unset TORCH_CPP_LOG_LEVEL
+
 # ---------------------------------------------------------------------------
 # 1. System packages
 # ---------------------------------------------------------------------------

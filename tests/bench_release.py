@@ -281,10 +281,10 @@ def numpy_retrace_np_to_triton(rewards_np, dones_np, q_values_np, next_q_all_np,
     r    = to_gpu_f(rewards_np)
     d    = to_gpu_f(dones_np)
     truncateds = torch.zeros_like(d)
-    out  = compute_retrace(apt, apb, q, nqa, acts, r, d, truncateds,
-                                  gamma=gamma, lambda_=lambda_, c_bar=c_bar)
+    retrace_targets, _ = compute_retrace(apt, apb, q, nqa, acts, r, d, truncateds,
+                                         gamma=gamma, lambda_=lambda_, c_bar=c_bar)
     torch.cuda.synchronize()
-    return out.cpu().numpy()
+    return retrace_targets.cpu().numpy()
 
 
 def numpy_retrace_cpu(rewards_np, dones_np, q_values_np, next_q_all_np,

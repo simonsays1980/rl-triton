@@ -455,9 +455,9 @@ def bench_gae():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} {'loop(gpu)':>11} "
         f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
-        f"{'vs vec':>8} {'vs assoc':>10} {'vs numpy':>10} {'e2e vs np':>11}"
+        f"{'vs vec':>8} {'vs assoc':>10} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -481,25 +481,28 @@ def bench_gae():
         assoc_ms  = _bench_gpu(compiled_assoc,
                                 args_gpu[0], args_gpu[1], args_gpu[2], trunc0, bsv0, 0.99, 0.95,
                                 n_iter=ni)
+        loop_ms   = _bench_cpu(_ref_gae,               *args_gpu, gamma=0.99, lambda_=0.95)
         e2e_ms    = _bench_cpu(numpy_gae_np_to_triton, *args_np,  gamma=0.99, lambda_=0.95)
         numpy_ms  = _bench_cpu(numpy_gae_cpu,          *args_gpu, gamma=0.99, lambda_=0.95)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms,
-            "vec_ms": vec_ms, "assoc_ms": assoc_ms,
+            "vec_ms": vec_ms, "assoc_ms": assoc_ms, "loop_ms": loop_ms,
             "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_vec":   vec_ms   / triton_ms,
             "su_assoc": assoc_ms / triton_ms,
+            "su_loop":  loop_ms  / triton_ms,
             "su_e2e":   numpy_ms / e2e_ms,
             "su_numpy": numpy_ms / triton_ms,
         })
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{assoc_ms:.3f}ms':>15} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
             f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{assoc_ms/triton_ms:.2f}x':>10} "
-            f"{f'{numpy_ms/triton_ms:.1f}x':>10} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
     return rows
@@ -567,9 +570,9 @@ def bench_vtrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} "
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} {'loop(gpu)':>11} "
         f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
-        f"{'vs vec':>8} {'vs assoc':>10} {'vs numpy':>10} {'e2e vs np':>11}"
+        f"{'vs vec':>8} {'vs assoc':>10} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -593,25 +596,28 @@ def bench_vtrace():
         vec_ms    = _bench_gpu(compiled_vec,         *args_gpu, gamma=0.99, n_iter=ni)
         assoc_ms  = _bench_gpu(compiled_assoc, log_pi_t, log_pi_b, values, rewards, terminateds,
                                 trunc0, bsv0, gamma=0.99, n_iter=ni)
+        loop_ms   = _bench_cpu(_ref_vtrace,               *args_gpu, gamma=0.99)
         e2e_ms    = _bench_cpu(numpy_vtrace_np_to_triton, *args_np,  gamma=0.99)
         numpy_ms  = _bench_cpu(numpy_vtrace_cpu,          *args_gpu, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms,
-            "vec_ms": vec_ms, "assoc_ms": assoc_ms,
+            "vec_ms": vec_ms, "assoc_ms": assoc_ms, "loop_ms": loop_ms,
             "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_vec":   vec_ms   / triton_ms,
             "su_assoc": assoc_ms / triton_ms,
+            "su_loop":  loop_ms  / triton_ms,
             "su_e2e":   numpy_ms / e2e_ms,
             "su_numpy": numpy_ms / triton_ms,
         })
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{assoc_ms:.3f}ms':>15} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
             f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{assoc_ms/triton_ms:.2f}x':>10} "
-            f"{f'{numpy_ms/triton_ms:.1f}x':>10} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
     return rows
@@ -685,9 +691,9 @@ def bench_retrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec)':>14} "
+        f"{'triton':>8} {'compile(vec)':>14} {'loop(gpu)':>11} "
         f"{'np->tri->np':>13} {'numpy(cpu)':>12} "
-        f"{'vs vec':>8} {'e2e vs np':>11} {'vs numpy':>10}"
+        f"{'vs vec':>8} {'vs loop':>9} {'e2e vs np':>11} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -703,22 +709,24 @@ def bench_retrace():
         _warmup_gpu(compiled_vec,    *args_gpu, gamma=0.99)
         triton_ms = _bench_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99, n_iter=ni)
         vec_ms    = _bench_gpu(compiled_vec,    *args_gpu,            gamma=0.99, n_iter=ni)
+        loop_ms   = _bench_cpu(_ref_retrace,               *args_gpu, gamma=0.99)
         e2e_ms    = _bench_cpu(numpy_retrace_np_to_triton, rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
         numpy_ms  = _bench_cpu(numpy_retrace_cpu,          rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms,
-            "vec_ms": vec_ms, "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
+            "vec_ms": vec_ms, "loop_ms": loop_ms, "e2e_ms": e2e_ms, "numpy_ms": numpy_ms,
             "su_vec":   vec_ms   / triton_ms,
+            "su_loop":  loop_ms  / triton_ms,
             "su_e2e":   numpy_ms / e2e_ms,
             "su_numpy": numpy_ms / triton_ms,
         })
         print(
             f"{num_envs:>10} {seq_len:>8} "
-            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {f'{loop_ms:.3f}ms':>11} "
             f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms:.3f}ms':>12} "
-            f"{f'{vec_ms/triton_ms:.2f}x':>8} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{loop_ms/triton_ms:.1f}x':>9} "
             f"{f'{numpy_ms/e2e_ms:.1f}x':>11} {f'{numpy_ms/triton_ms:.1f}x':>10}",
             flush=True,
         )
@@ -744,20 +752,21 @@ def bench_returns():
 
     header = (
         f"\n{'algo':>20} {'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} "
-        f"{'numpy(cpu)':>12} {'vs vec':>8} {'vs assoc':>10} {'vs numpy':>10}"
+        f"{'triton':>8} {'compile(vec)':>14} {'compile(assoc)':>15} {'loop(gpu)':>11} "
+        f"{'numpy(cpu)':>12} {'vs vec':>8} {'vs assoc':>10} {'vs loop':>9} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
 
-    def _print_sub_row(name, num_envs, seq_len, triton_ms, vec_ms, numpy_ms, assoc_ms=None):
+    def _print_sub_row(name, num_envs, seq_len, triton_ms, vec_ms, loop_ms, numpy_ms, assoc_ms=None):
         assoc_str = f"{assoc_ms:.3f}ms" if assoc_ms is not None else "n/a"
         assoc_su  = f"{assoc_ms/triton_ms:.2f}x" if assoc_ms is not None else "n/a"
         print(
             f"{name:>20} {num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{vec_ms:.3f}ms':>14} {assoc_str:>15} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{assoc_su:>10} {f'{numpy_ms/triton_ms:.1f}x':>10}",
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {assoc_su:>10} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10}",
             flush=True,
         )
 
@@ -791,32 +800,39 @@ def bench_returns():
         lam_assoc_ms  = _bench_gpu(c_lambda_assoc, rewards, next_values, dones, trunc0, bsv0,
                                    gamma=0.99, lambda_=0.95, n_iter=ni)
         disc_assoc_ms = _bench_gpu(c_disc_assoc,   rewards, dones, trunc0, bsv0, gamma=0.99, n_iter=ni)
-        lam_np_ms   = _bench_cpu(numpy_lambda_returns_cpu,    rewards, next_values, dones,
-                                  gamma=0.99, lambda_=0.95)
-        disc_np_ms  = _bench_cpu(numpy_discounted_returns_cpu, rewards, dones, gamma=0.99)
-        trc_np_ms   = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones,
-                                  gamma=0.99, lambda_=0.9)
+        lam_loop_ms  = _bench_cpu(_ref_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+        disc_loop_ms = _bench_cpu(_ref_disc,   rewards, dones, gamma=0.99)
+        trc_loop_ms  = _bench_cpu(_ref_traces, rewards, dones, gamma=0.99, lambda_=0.9)
+        lam_np_ms    = _bench_cpu(numpy_lambda_returns_cpu,     rewards, next_values, dones,
+                                   gamma=0.99, lambda_=0.95)
+        disc_np_ms   = _bench_cpu(numpy_discounted_returns_cpu, rewards, dones, gamma=0.99)
+        trc_np_ms    = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones,
+                                   gamma=0.99, lambda_=0.9)
 
         base = {"num_envs": num_envs, "seq_len": seq_len}
         rows_lambda.append({
             **base, "triton_ms": lam_ms,
-            "vec_ms": lam_vec_ms, "assoc_ms": lam_assoc_ms, "numpy_ms": lam_np_ms,
+            "vec_ms": lam_vec_ms, "assoc_ms": lam_assoc_ms,
+            "loop_ms": lam_loop_ms, "numpy_ms": lam_np_ms,
             "su_vec": lam_vec_ms / lam_ms, "su_assoc": lam_assoc_ms / lam_ms,
-            "su_numpy": lam_np_ms / lam_ms,
+            "su_loop": lam_loop_ms / lam_ms, "su_numpy": lam_np_ms / lam_ms,
         })
         rows_disc.append({
             **base, "triton_ms": disc_ms,
-            "vec_ms": disc_vec_ms, "assoc_ms": disc_assoc_ms, "numpy_ms": disc_np_ms,
+            "vec_ms": disc_vec_ms, "assoc_ms": disc_assoc_ms,
+            "loop_ms": disc_loop_ms, "numpy_ms": disc_np_ms,
             "su_vec": disc_vec_ms / disc_ms, "su_assoc": disc_assoc_ms / disc_ms,
-            "su_numpy": disc_np_ms / disc_ms,
+            "su_loop": disc_loop_ms / disc_ms, "su_numpy": disc_np_ms / disc_ms,
         })
         rows_traces.append({
-            **base, "triton_ms": trc_ms, "vec_ms": trc_vec_ms, "numpy_ms": trc_np_ms,
-            "su_vec": trc_vec_ms / trc_ms, "su_numpy": trc_np_ms / trc_ms,
+            **base, "triton_ms": trc_ms,
+            "vec_ms": trc_vec_ms, "loop_ms": trc_loop_ms, "numpy_ms": trc_np_ms,
+            "su_vec": trc_vec_ms / trc_ms,
+            "su_loop": trc_loop_ms / trc_ms, "su_numpy": trc_np_ms / trc_ms,
         })
-        _print_sub_row("lambda-returns",     num_envs, seq_len, lam_ms,  lam_vec_ms,  lam_np_ms,  lam_assoc_ms)
-        _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_vec_ms, disc_np_ms, disc_assoc_ms)
-        _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms,  trc_vec_ms,  trc_np_ms)
+        _print_sub_row("lambda-returns",     num_envs, seq_len, lam_ms,  lam_vec_ms,  lam_loop_ms,  lam_np_ms,  lam_assoc_ms)
+        _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_vec_ms, disc_loop_ms, disc_np_ms, disc_assoc_ms)
+        _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms,  trc_vec_ms,  trc_loop_ms,  trc_np_ms)
     return rows_lambda, rows_disc, rows_traces
 
 
@@ -952,30 +968,32 @@ def bench_prefix_sum():
 # ---------------------------------------------------------------------------
 
 def _fmt_row_numpy(r, include_assoc=False):
-    """Row for GAE / V-Trace: triton | vec | [assoc] | np→tri→np | numpy | speedups."""
+    """Row for GAE / V-Trace: triton | vec | [assoc] | loop | np→tri→np | numpy | speedups."""
     base = (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['vec_ms']:>13.3f} | {r['su_vec']:>6.1f}x |")
     if include_assoc:
         base += f" {r['assoc_ms']:>14.3f} | {r['su_assoc']:>8.1f}x |"
-    base += (f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
+    base += (f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
+             f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
              f"| {r['su_e2e']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
     return base
 
 
 def _fmt_row_simple(r, include_assoc=False):
-    """Row for λ-returns / discounted-returns / eligibility-traces: triton | vec | [assoc] | numpy."""
+    """Row for λ-returns / discounted-returns / eligibility-traces: triton | vec | [assoc] | loop | numpy."""
     base = (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['vec_ms']:>13.3f} | {r['su_vec']:>6.1f}x |")
     if include_assoc:
         base += f" {r['assoc_ms']:>14.3f} | {r['su_assoc']:>8.1f}x |"
-    base += f" {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
+    base += f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x | {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
     return base
 
 
 def _fmt_row_retrace(r):
-    """Row for Retrace: triton | vec | np→tri→np | numpy | speedups."""
+    """Row for Retrace: triton | vec | loop | np→tri→np | numpy | speedups."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['vec_ms']:>13.3f} | {r['su_vec']:>6.1f}x |"
+            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
             f" {r['e2e_ms']:>14.3f} | {r['numpy_ms']:>10.3f} "
             f"| {r['su_e2e']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
 
@@ -992,8 +1010,8 @@ def _table_numpy(title, rows, include_assoc=False):
     if include_assoc:
         header_cols += " compile(assoc) (ms) | vs assoc |"
         sep_cols    += ":-------------------:|:--------:|"
-    header_cols += " np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |"
-    sep_cols    += ":------------------:|:--------------:|:-------------------:|:--------:|"
+    header_cols += " loop gpu (ms) | vs loop | np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |"
+    sep_cols    += ":-------------:|:-------:|:------------------:|:--------------:|:-------------------:|:--------:|"
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_numpy(r, include_assoc=include_assoc) for r in rows)
     return header + "\n" + body
@@ -1005,8 +1023,8 @@ def _table_simple(title, rows, include_assoc=False):
     if include_assoc:
         header_cols += " compile(assoc) (ms) | vs assoc |"
         sep_cols    += ":-------------------:|:--------:|"
-    header_cols += " numpy cpu (ms) | vs numpy |"
-    sep_cols    += ":--------------:|:--------:|"
+    header_cols += " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |"
+    sep_cols    += ":-------------:|:-------:|:--------------:|:--------:|"
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_simple(r, include_assoc=include_assoc) for r in rows)
     return header + "\n" + body
@@ -1014,9 +1032,9 @@ def _table_simple(title, rows, include_assoc=False):
 
 def _table_retrace(title, rows):
     header_cols = ("| num_envs | seq_len | triton (ms) | compile(vec) (ms) | vs vec |"
-                   " np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |")
+                   " loop gpu (ms) | vs loop | np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |")
     sep_cols    = ("|:--------:|:-------:|:-----------:|:-----------------:|:------:|"
-                   ":------------------:|:--------------:|:-------------------:|:--------:|")
+                   ":-------------:|:-------:|:------------------:|:--------------:|:-------------------:|:--------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_retrace(r) for r in rows)
     return header + "\n" + body
@@ -1071,6 +1089,9 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"no-truncation path (GAE, V-Trace, λ-returns, discounted returns only).  "
         f"**compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, "
         f"used in the with-truncations tables.  "
+        f"**loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops — "
+        f"the pattern used by CleanRL, RLlib, and most RL codebases today; "
+        f"no `torch.compile`, no vectorization; wall-clock timing.  "
         f"**np→triton→np**: end-to-end wall-clock for the NumPy adoption path "
         f"(CPU → GPU transfer, kernel, GPU → CPU transfer).  "
         f"**numpy cpu**: sequential NumPy loop on CPU — same algorithm as the kernel, "
@@ -1173,7 +1194,8 @@ def main():
                  "compiled_ms": 2.345, "su_compile": 1.9,
                  "e2e_ms": 5.678, "numpy_ms": 8.901, "su_e2e": 1.6, "su_numpy": 7.2,
                  "vec_ms": 2.100, "su_vec": 1.7,
-                 "assoc_ms": 2.500, "su_assoc": 1.4}
+                 "assoc_ms": 2.500, "su_assoc": 1.4,
+                 "loop_ms": 45.678, "su_loop": 37.0}
         dummy_trunc = {"num_envs": 128, "seq_len": 1024, "triton_ms": 1.234,
                        "vec_ms": 1.890, "su_vec": 1.5}
         tables = [

@@ -7,6 +7,12 @@ on:
     branches: [main]          # safeguard benchmarks gate the merge
   release:
     types: [published]        # full benchmark sweep on release tags
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to record in benchmarks.md (e.g. v0.1.0)"
+        required: false
+        default: "unreleased"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -76,7 +82,7 @@ jobs:
   # Release benchmarks — full sweep, updates README.md and benchmarks.md
   # ---------------------------------------------------------------------------
   release-bench:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, gpu]
     permissions:
       contents: write   # needed to push the updated docs back to the repo
@@ -91,9 +97,10 @@ jobs:
           TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
+          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
           python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
-            --version "${{ github.event.release.tag_name }}"
+            --version "$VERSION"
       - name: Commit updated README.md and benchmarks.md
         run: |
           git config user.name  "github-actions[bot]"

@@ -88,9 +88,10 @@ jobs:
       - name: Run full benchmark sweep
         env:
           PYTHONUNBUFFERED: "1"
+          TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
-          python tests/bench_release.py \
+          python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
             --version "${{ github.event.release.tag_name }}"
       - name: Commit updated README.md and benchmarks.md

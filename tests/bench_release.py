@@ -1,12 +1,12 @@
 """
-Release benchmark — full sweep across all algorithms and configurations.
+Release benchmark – full sweep across all algorithms and configurations.
 
 Compares rl-triton Triton kernels against torch.compile on both a naive
 per-timestep Python loop and the fastest hand-vectorized PyTorch equivalent,
 against pure NumPy CPU loops, and against a NumPy→GPU→NumPy adoption path.
 Algorithms that support truncated episodes (GAE, V-Trace, λ-returns,
-discounted returns) also report a third baseline — the same associative-scan
-implementation used for the truncation path, called with zero truncations —
+discounted returns) also report a third baseline – the same associative-scan
+implementation used for the truncation path, called with zero truncations –
 plus an additional table benchmarking the truncation path itself against
 that vectorized baseline.
 
@@ -56,7 +56,7 @@ from test_vtrace import vectorized_vtrace, vectorized_vtrace_with_truncations
 
 
 # ---------------------------------------------------------------------------
-# Reference implementations (PyTorch loops — ground truth & compiled baselines)
+# Reference implementations (PyTorch loops – ground truth & compiled baselines)
 # ---------------------------------------------------------------------------
 
 def _ref_gae(rewards, values, dones, gamma, lambda_):
@@ -122,7 +122,7 @@ def _vec_retrace(rewards, dones, values, next_q_all, q_values, actions,
                  action_probs_target, action_probs_behavior, gamma,
                  lambda_=1.0, c_bar=1.0):
     """
-    Fully vectorized Retrace(λ) via log-space suffix cumsum — strong compiled baseline.
+    Fully vectorized Retrace(λ) via log-space suffix cumsum – strong compiled baseline.
 
     Replaces the Python backward loop in _ref_retrace with a vectorized equivalent.
     The backward scan Δ[t] = u[t] + v[t]*Δ[t+1] is a weighted sum where each
@@ -196,7 +196,7 @@ def numpy_gae_cpu(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """CPU GAE backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU GAE backward loop – moves GPU tensors to CPU and runs a plain Python loop."""
     rewards, values, dones = rewards.cpu(), values.cpu(), dones.cpu()
     next_values = torch.empty_like(values)
     next_values[:, :-1] = values[:, 1:]
@@ -366,7 +366,7 @@ def _make_trunc_extras(num_envs, seq_len, terminateds, device="cuda"):
     """~5% truncated steps (mutually exclusive with terminateds), with
     bootstrap_values populated at truncated steps and the final boundary.
 
-    Shared across GAE, V-Trace, λ-returns, and discounted returns — the same
+    Shared across GAE, V-Trace, λ-returns, and discounted returns – the same
     pattern used by their respective test_*_truncation_performance tests.
     """
     trunc_cand = (torch.rand(num_envs, seq_len, device=device) < 0.05).float()
@@ -495,7 +495,7 @@ def _precompile_triton_kernels():
 
 
 # ---------------------------------------------------------------------------
-# Per-algorithm benchmark runners — return list of result dicts
+# Per-algorithm benchmark runners – return list of result dicts
 # ---------------------------------------------------------------------------
 
 def bench_gae():
@@ -1170,20 +1170,20 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"**Columns.**  "
         f"**triton**: pure kernel time (CUDA events).  "
         f"**compile(vec)**: `torch.compile` applied to the fastest hand-vectorized PyTorch "
-        f"equivalent — cumsum / suffix-product implementations with no Python loop; "
+        f"equivalent – cumsum / suffix-product implementations with no Python loop; "
         f"this is the strongest GPU baseline a competent engineer would write.  "
         f"**compile(assoc)**: `torch.compile` applied to the unified associative-scan "
-        f"implementation that also handles truncations — called here with zero truncations "
+        f"implementation that also handles truncations – called here with zero truncations "
         f"to show the cost of a single regime-agnostic implementation vs the specialized "
         f"no-truncation path (GAE, V-Trace, λ-returns, discounted returns only).  "
         f"**compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, "
         f"used in the with-truncations tables.  "
-        f"**loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops — "
+        f"**loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops – "
         f"the pattern used by CleanRL, RLlib, and most RL codebases today; "
         f"no `torch.compile`, no vectorization; wall-clock timing.  "
         f"**np→triton→np**: end-to-end wall-clock for the NumPy adoption path "
         f"(CPU → GPU transfer, kernel, GPU → CPU transfer).  "
-        f"**numpy cpu**: sequential NumPy loop on CPU — same algorithm as the kernel, "
+        f"**numpy cpu**: sequential NumPy loop on CPU – same algorithm as the kernel, "
         f"no GPU; establishes the CPU reference for each algorithm.\n"
     )
     return header + "\n\n".join(tables) + "\n<!-- BENCH_END -->"
@@ -1227,7 +1227,7 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
     """
     date = datetime.date.today().isoformat()
     gpu  = gpu_label or _detect_gpu()
-    heading = f"## {version} — {date} — {gpu}\n\n"
+    heading = f"## {version} – {date} – {gpu}\n\n"
     body    = "\n\n".join(tables) + "\n"
     new_section = heading + body
 
@@ -1237,9 +1237,9 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
         existing = "# Benchmarks\n\nFull benchmark history across releases.\n\n"
 
     # Replace existing entry for this version if present.
-    # Each section starts with "## <version> —" and ends just before the next "## ".
+    # Each section starts with "## <version> –" and ends just before the next "## ".
     version_re = re.compile(
-        r"(## " + re.escape(version) + r" —[^\n]*\n).*?(?=\n## |\Z)",
+        r"(## " + re.escape(version) + r" –[^\n]*\n).*?(?=\n## |\Z)",
         re.DOTALL,
     )
     if version_re.search(existing):
@@ -1273,12 +1273,12 @@ def main():
     args = parser.parse_args()
 
     if not torch.cuda.is_available() and not args.no_update:
-        print("CUDA not available — aborting.")
+        print("CUDA not available – aborting.")
         sys.exit(1)
 
     if args.no_update and not torch.cuda.is_available():
         # Dry-run without GPU: just render dummy tables to verify formatting.
-        print("CUDA not available — rendering dummy output for format verification.")
+        print("CUDA not available – rendering dummy output for format verification.")
         dummy = {"num_envs": 128, "seq_len": 1024, "triton_ms": 1.234,
                  "compiled_ms": 2.345, "su_compile": 1.9,
                  "e2e_ms": 5.678, "numpy_ms": 8.901, "su_e2e": 1.6, "su_numpy": 7.2,
@@ -1289,14 +1289,14 @@ def main():
                        "vec_ms": 1.890, "su_vec": 1.5}
         tables = [
             _table_numpy("GAE (`compute_gae`)", [dummy], include_assoc=True),
-            _table_truncation("GAE — with truncations (`compute_gae`)", [dummy_trunc]),
+            _table_truncation("GAE – with truncations (`compute_gae`)", [dummy_trunc]),
             _table_numpy("V-Trace (`compute_vtrace`)", [dummy], include_assoc=True),
-            _table_truncation("V-Trace — with truncations (`compute_vtrace`)", [dummy_trunc]),
+            _table_truncation("V-Trace – with truncations (`compute_vtrace`)", [dummy_trunc]),
             _table_retrace("Retrace(λ) (`compute_retrace`)", [dummy]),
             _table_simple("λ-returns (`compute_lambda_returns`)", [dummy], include_assoc=True),
-            _table_truncation("λ-returns — with truncations (`compute_lambda_returns`)", [dummy_trunc]),
+            _table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", [dummy_trunc]),
             _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy], include_assoc=True),
-            _table_truncation("Discounted returns — with truncations (`compute_discounted_returns`)", [dummy_trunc]),
+            _table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", [dummy_trunc]),
             _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
             _table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
         ]
@@ -1336,14 +1336,14 @@ def main():
 
     tables = [
         _table_numpy("GAE (`compute_gae`)", gae_rows, include_assoc=True),
-        _table_truncation("GAE — with truncations (`compute_gae`)", gae_trunc_rows),
+        _table_truncation("GAE – with truncations (`compute_gae`)", gae_trunc_rows),
         _table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows, include_assoc=True),
-        _table_truncation("V-Trace — with truncations (`compute_vtrace`)", vtrace_trunc_rows),
+        _table_truncation("V-Trace – with truncations (`compute_vtrace`)", vtrace_trunc_rows),
         _table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows),
         _table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows, include_assoc=True),
-        _table_truncation("λ-returns — with truncations (`compute_lambda_returns`)", lambda_trunc_rows),
+        _table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", lambda_trunc_rows),
         _table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows, include_assoc=True),
-        _table_truncation("Discounted returns — with truncations (`compute_discounted_returns`)", disc_trunc_rows),
+        _table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", disc_trunc_rows),
         _table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows),
         _table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows),
     ]

@@ -6,7 +6,7 @@ Full benchmark history across releases.
 *No benchmarks recorded yet. Run `python tests/bench_release.py --gpu "Your GPU"` to populate this.*
 <!-- BENCH_END -->
 
-## v0.1.0 — 2026-07-09 — NVIDIA RTX 2000 Ada Generation
+## v0.1.0 – 2026-07-09 – NVIDIA RTX 2000 Ada Generation
 
 #### GAE (`compute_gae`)
 
@@ -18,7 +18,7 @@ Full benchmark history across releases.
 |      512 |    2048 |      0.068 |         0.439 |    6.4x |          1.035 |     15.2x |    172.795 |  2535.1x |          1.616 |    110.270 |    68.2x |   1617.8x |
 |      512 |    4096 |      0.197 |         0.908 |    4.6x |          2.881 |     14.7x |    397.756 |  2023.1x |          3.060 |    226.156 |    73.9x |   1150.3x |
 
-#### GAE — with truncations (`compute_gae`)
+#### GAE – with truncations (`compute_gae`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -38,7 +38,7 @@ Full benchmark history across releases.
 |      512 |    2048 |      0.176 |         0.748 |    4.2x |          1.271 |      7.2x |     51.869 |   294.6x |          2.779 |    108.903 |    39.2x |    618.5x |
 |      512 |    4096 |      0.317 |         1.684 |    5.3x |          3.496 |     11.0x |    106.227 |   335.1x |          5.232 |    164.316 |    31.4x |    518.4x |
 
-#### V-Trace — with truncations (`compute_vtrace`)
+#### V-Trace – with truncations (`compute_vtrace`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -68,7 +68,7 @@ Full benchmark history across releases.
 |      512 |    2048 |      0.067 |         0.439 |    6.5x |          0.991 |     14.8x |    139.139 |  2071.5x |     33.941 |    505.3x |
 |      512 |    4096 |      0.197 |         0.900 |    4.6x |          2.835 |     14.4x |    332.615 |  1689.3x |     77.977 |    396.0x |
 
-#### λ-returns — with truncations (`compute_lambda_returns`)
+#### λ-returns – with truncations (`compute_lambda_returns`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -88,7 +88,7 @@ Full benchmark history across releases.
 |      512 |    2048 |      0.063 |         0.089 |    1.4x |          0.899 |     14.3x |     95.241 |  1513.1x |     22.327 |    354.7x |
 |      512 |    4096 |      0.120 |         0.245 |    2.0x |          2.636 |     21.9x |    206.878 |  1720.8x |     48.039 |    399.6x |
 
-#### Discounted returns — with truncations (`compute_discounted_returns`)
+#### Discounted returns – with truncations (`compute_discounted_returns`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|

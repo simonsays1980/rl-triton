@@ -7,8 +7,8 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 
 | Function | Algorithm | Description |
 |---|---|---|
-| `compute_gae` | GAE | Generalized Advantage Estimation — backward scan over `δ + γλ·A` |
-| `compute_vtrace` | V-Trace | IS-weighted targets and advantages — fused single-kernel for seq_len ≤ 131072 |
+| `compute_gae` | GAE | Generalized Advantage Estimation – backward scan over `δ + γλ·A` |
+| `compute_vtrace` | V-Trace | IS-weighted targets and advantages – fused single-kernel for seq_len ≤ 131072 |
 | `compute_retrace` | Retrace(λ) | Off-policy return estimate with truncated IS ratios |
 | `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo |
 | `compute_discounted_returns` | Returns | Discounted reward-to-go |
@@ -63,7 +63,7 @@ Use `--no-update` to print results without modifying the README.
 
 **Methodology.**  All GPU timings use CUDA events (start/stop around the kernel, explicit sync before start); reported value is the min-of-medians across 5 independent trials to filter clock-state noise.  CPU timings are wall-clock (perf_counter), run until at least 0.5 s of samples.  A `torch.compile` warmup call is issued once per (function, config) pair before timing so JIT compilation, autotuning, and first-touch allocation never land in the timed region.
 
-**Columns.**  **triton**: pure kernel time (CUDA events).  **compile(vec)**: `torch.compile` applied to the fastest hand-vectorized PyTorch equivalent — cumsum / suffix-product implementations with no Python loop; this is the strongest GPU baseline a competent engineer would write.  **compile(assoc)**: `torch.compile` applied to the unified associative-scan implementation that also handles truncations — called here with zero truncations to show the cost of a single regime-agnostic implementation vs the specialized no-truncation path (GAE, V-Trace, λ-returns, discounted returns only).  **compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, used in the with-truncations tables.  **loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops — the pattern used by CleanRL, RLlib, and most RL codebases today; no `torch.compile`, no vectorization; wall-clock timing.  **np→triton→np**: end-to-end wall-clock for the NumPy adoption path (CPU → GPU transfer, kernel, GPU → CPU transfer).  **numpy cpu**: sequential NumPy loop on CPU — same algorithm as the kernel, no GPU; establishes the CPU reference for each algorithm.
+**Columns.**  **triton**: pure kernel time (CUDA events).  **compile(vec)**: `torch.compile` applied to the fastest hand-vectorized PyTorch equivalent – cumsum / suffix-product implementations with no Python loop; this is the strongest GPU baseline a competent engineer would write.  **compile(assoc)**: `torch.compile` applied to the unified associative-scan implementation that also handles truncations – called here with zero truncations to show the cost of a single regime-agnostic implementation vs the specialized no-truncation path (GAE, V-Trace, λ-returns, discounted returns only).  **compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, used in the with-truncations tables.  **loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops – the pattern used by CleanRL, RLlib, and most RL codebases today; no `torch.compile`, no vectorization; wall-clock timing.  **np→triton→np**: end-to-end wall-clock for the NumPy adoption path (CPU → GPU transfer, kernel, GPU → CPU transfer).  **numpy cpu**: sequential NumPy loop on CPU – same algorithm as the kernel, no GPU; establishes the CPU reference for each algorithm.
 #### GAE (`compute_gae`)
 
 | num_envs | seq_len | triton (ms) | compile(vec) (ms) | vs vec | compile(assoc) (ms) | vs assoc | loop gpu (ms) | vs loop | np→triton→np (ms) | numpy cpu (ms) | np→tri→np vs numpy | vs numpy |
@@ -74,7 +74,7 @@ Use `--no-update` to print results without modifying the README.
 |      512 |    2048 |      0.068 |         0.439 |    6.4x |          1.035 |     15.2x |    172.795 |  2535.1x |          1.616 |    110.270 |    68.2x |   1617.8x |
 |      512 |    4096 |      0.197 |         0.908 |    4.6x |          2.881 |     14.7x |    397.756 |  2023.1x |          3.060 |    226.156 |    73.9x |   1150.3x |
 
-#### GAE — with truncations (`compute_gae`)
+#### GAE – with truncations (`compute_gae`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -94,7 +94,7 @@ Use `--no-update` to print results without modifying the README.
 |      512 |    2048 |      0.176 |         0.748 |    4.2x |          1.271 |      7.2x |     51.869 |   294.6x |          2.779 |    108.903 |    39.2x |    618.5x |
 |      512 |    4096 |      0.317 |         1.684 |    5.3x |          3.496 |     11.0x |    106.227 |   335.1x |          5.232 |    164.316 |    31.4x |    518.4x |
 
-#### V-Trace — with truncations (`compute_vtrace`)
+#### V-Trace – with truncations (`compute_vtrace`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -124,7 +124,7 @@ Use `--no-update` to print results without modifying the README.
 |      512 |    2048 |      0.067 |         0.439 |    6.5x |          0.991 |     14.8x |    139.139 |  2071.5x |     33.941 |    505.3x |
 |      512 |    4096 |      0.197 |         0.900 |    4.6x |          2.835 |     14.4x |    332.615 |  1689.3x |     77.977 |    396.0x |
 
-#### λ-returns — with truncations (`compute_lambda_returns`)
+#### λ-returns – with truncations (`compute_lambda_returns`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|
@@ -144,7 +144,7 @@ Use `--no-update` to print results without modifying the README.
 |      512 |    2048 |      0.063 |         0.089 |    1.4x |          0.899 |     14.3x |     95.241 |  1513.1x |     22.327 |    354.7x |
 |      512 |    4096 |      0.120 |         0.245 |    2.0x |          2.636 |     21.9x |    206.878 |  1720.8x |     48.039 |    399.6x |
 
-#### Discounted returns — with truncations (`compute_discounted_returns`)
+#### Discounted returns – with truncations (`compute_discounted_returns`)
 
 | num_envs | seq_len | triton (ms) | compile(vec-trunc) (ms) | vs vec-trunc |
 |:--------:|:-------:|:-----------:|:-----------------------:|:------------:|

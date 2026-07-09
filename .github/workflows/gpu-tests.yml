@@ -86,13 +86,13 @@ jobs:
           token: ${{ secrets.GH_PAT }}
       - run: pip install --quiet --no-deps -e .
       - name: Run full benchmark sweep
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
-          set -o pipefail
           GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
-          python -u tests/bench_release.py \
+          python tests/bench_release.py \
             --gpu  "$GPU_NAME" \
-            --version "${{ github.event.release.tag_name }}" \
-            | stdbuf -oL tee /tmp/bench-release.txt
+            --version "${{ github.event.release.tag_name }}"
       - name: Commit updated README.md and benchmarks.md
         run: |
           git config user.name  "github-actions[bot]"

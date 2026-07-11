@@ -167,6 +167,33 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Paper -- PDF only is committed; LaTeX source stays private until arXiv submission
+# Tracked: paper/rl-triton.pdf
+paper/*.tex
+paper/*.bib
+paper/*.sty
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.toc
+# Also cover any stray LaTeX artefacts in docs/ from earlier build work
+docs/paper.tex
+docs/paper.bib
+docs/arxiv.sty
+docs/paper.aux
+docs/paper.bbl
+docs/paper.blg
+docs/paper.log
+docs/paper.out
+docs/paper_body.tex
+docs/*.synctex.gz
+paper_body.tex
+
 # mypy
 .mypy_cache/
 .dmypy.json

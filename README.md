@@ -15,6 +15,15 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 | `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d)e[t-1]` |
 | `compute_episodic_prefix_sum` | Prefix sum | Episodic cumulative sum with done-mask resets |
 
+## Paper
+
+A preprint describing the kernels, the associative-scan formulation, and the
+benchmark methodology is available:
+[paper/rl-triton.pdf](paper/rl-triton.pdf)
+(preprint — arXiv version forthcoming).
+
+<!-- TODO: swap to arXiv link + add BibTeX + CITATION.cff once posted -->
+
 ## Installation
 
 ```bash

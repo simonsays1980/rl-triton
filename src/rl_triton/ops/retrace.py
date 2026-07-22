@@ -3,6 +3,30 @@ import torch
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 from rl_triton.ops.retrace_fused import compute_retrace_fused
 
+# retrace_fused_kernel reads the [num_envs, seq_len, num_actions] action-prob
+# tensors per timestep; at long seq_len this pins ptxas at 128 regs/thread and
+# spills to local memory (confirmed 132 spills/thread, 25% occupancy at
+# seq_len=4096). A fix that shifts the already-loaded pi(a_t|s_t) through a
+# small scratch buffer instead of re-reading the shifted 3D tensor for c[t+1]
+# cuts spills to 100/thread, but ptxas still saturates the SM register file at
+# num_warps=16 (128*512=65536=full register file), so occupancy stays pinned
+# at 25% and the kernel remains SLOWER than torch.compile from seq_len=4096
+# onward (measured 0.63-0.73x at 4096, 0.16-0.24x at 8192 — worse, not
+# better, as seq_len grows further). Below this ceiling the fused kernel is a
+# confirmed, measured win (>=1.08x at seq_len=2048 across tested env counts).
+# Route long sequences through the same materialize-u/v + _run_scan path
+# already used (and already correct/tested) for seq_len > _FLAT_MAX_SEQ_LEN:
+# _run_scan dispatches internally to the generic flat associative-scan kernel
+# for seq_len <= 131072 and the chunked kernel above that. The generic scan
+# kernel only ever sees precomputed 2D u/v tensors — it never reads the 3D
+# action-prob tensors in-kernel — so it does not hit retrace_fused_kernel's
+# register-pressure ceiling. (An earlier version of this fix used a
+# log-space-cumsum PyTorch fallback instead; that produced inf/nan over long
+# horizons from float32 underflow in the suffix log-sum and was discarded —
+# reusing already-proven scan infrastructure avoids inventing new failure
+# modes.)
+_TRITON_SEQ_LEN_CEILING = 2048
+
 
 def compute_retrace(
     action_probs_target: torch.Tensor,
@@ -111,10 +135,12 @@ def compute_retrace(
 
     num_envs, seq_len = rewards.shape
 
-    # Fused kernel for seq_len <= 131072; chunked fallback for longer sequences.
+    # Fused Triton kernel for seq_len <= _TRITON_SEQ_LEN_CEILING (confirmed win);
+    # vectorized torch.compile path for _TRITON_SEQ_LEN_CEILING < seq_len <= 131072
+    # (fused kernel is a confirmed loss there — see _TRITON_SEQ_LEN_CEILING comment).
     # done[t] = terminated[t] | truncated[t] is computed in-kernel from the two
     # raw flags for the fused path — no separate PyTorch combine here.
-    if seq_len <= _FLAT_MAX_SEQ_LEN:
+    if seq_len <= _TRITON_SEQ_LEN_CEILING:
         return compute_retrace_fused(
             action_probs_target, action_probs_behavior,
             q_values, next_q_values_all, actions,
@@ -122,9 +148,10 @@ def compute_retrace(
             gamma=gamma, lambda_=lambda_, c_bar=c_bar, rho_bar=rho_bar,
         )
 
-    # Chunked fallback for seq_len > 131072. _run_scan takes precomputed u/v,
-    # so dones is materialized here (this path's PyTorch-op overhead is
-    # negligible relative to the chunked kernel's cost at long seq_len).
+    # seq_len > _TRITON_SEQ_LEN_CEILING: materialize u/v with plain PyTorch ops
+    # (bandwidth-bound, no in-kernel 3D reads) and hand off to the generic
+    # scan kernel via _run_scan, which internally picks the flat associative
+    # scan for seq_len <= 131072 or the chunked kernel above that.
     dones = (terminateds + truncateds).clamp(max=1.0)
     expected_next_q = (action_probs_target * next_q_values_all).sum(dim=-1)
     u = rewards + gamma * expected_next_q * (1.0 - terminateds) - q_values

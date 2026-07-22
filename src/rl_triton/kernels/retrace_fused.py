@@ -16,6 +16,7 @@ def retrace_fused_kernel(
     terminated_ptr,
     out_ptr,
     advantages_ptr,
+    pi_at_scratch_ptr,
     seq_len,
     num_actions,
     stride_env,
@@ -58,10 +59,19 @@ def retrace_fused_kernel(
     real array index rev+1 (since rev = seq_len-1-offs, rev+1 = t+1).
     For offs=0 (t=T-1), c[T] is out-of-bounds → c_next=0.
 
-    To compute c[t+1] we load action_probs_target[rev+1, :] and action[rev+1] from
-    the next real timestep (rev = seq_len-1-offs, so rev+1 is real index t+1).
-    This costs an extra read of the 3D probs array per timestep.  The tradeoff:
-    we save writing and re-reading the full intermediate a, b, c_next tensors.
+    c[t+1] reuses pi_at_t = π(a_t|s_t), the per-timestep action-probability
+    already computed in registers for rho at every block position, instead of
+    re-reading action_probs_target[t+1, :] (the full 3D tensor) a second time.
+    pi_at_t is stored to a small [num_envs, seq_len] scratch buffer and
+    reloaded at the shifted real index t+1 (same store->debug_barrier->reload
+    idiom used below for next_q_ret) — this is exactly pi(a_{t+1}|s_{t+1})
+    since the scratch buffer is indexed by real timestep, not block position.
+    Previously this loaded the full [BLOCK_SIZE, ACTION_BLOCK] 3D tensor a
+    second time (overlapping the window already loaded for pi_all), which
+    forced both copies to be simultaneously register-resident and was the
+    direct cause of spilling to local memory at long seq_len (measured 128
+    regs/thread, 132 spills/thread, 25% occupancy at seq_len=4096). Only one
+    [BLOCK_SIZE, ACTION_BLOCK] tensor (pi_all) needs to be live now.
 
     Advantage computation
     ---------------------
@@ -151,25 +161,20 @@ def retrace_fused_kernel(
     not_done = 1.0 - done
     u = r + gamma * expected_next_q * not_term - q_t
 
-    # --- c[t+1]: load action_probs_target and action at next real timestep (rev+1) ---
+    # --- c[t+1]: shift pi_at_t by one real timestep instead of re-reading the 3D tensor ---
     # Indexing: rev = seq_len-1-offs = real array index of t.
     # t+1 lives at real array index t+1 = (seq_len-1-offs)+1 = rev+1.
-    # For offs=0 (t=T-1): c[T] is undefined → c_next=0 (no trace beyond trajectory end).
+    # For offs=0 (t=T-1): c[T] is undefined -> c_next=0 (no trace beyond trajectory end).
     # For offs>0 (t<T-1): t+1 is at real array index rev+1, which is valid.
+    tl.store(pi_at_scratch_ptr + base_2d + rev, pi_at_t, mask=mask)
+    tl.debug_barrier()
+
     next_mask_2d = mask & (offs > 0)
-    next_mask_3d = full_mask & (offs[:, None] > 0)
+    rev_next     = rev + 1                              # real array index of t+1 (valid for offs>0)
 
-    rev_next      = rev + 1                            # real array index of t+1 (valid for offs>0)
-    row_base_next = base_3d + rev_next[:, None] * num_actions + a_offs[None, :]
-
-    pi_next_all  = tl.load(action_probs_target_ptr + row_base_next, mask=next_mask_3d, other=0.0)
-    action_next  = tl.load(actions_ptr               + base_2d + rev_next, mask=next_mask_2d, other=0)
+    pi_at_next   = tl.load(pi_at_scratch_ptr         + base_2d + rev_next, mask=next_mask_2d, other=0.0)
     mu_next      = tl.load(action_probs_behavior_ptr + base_2d + rev_next, mask=next_mask_2d, other=1.0)
 
-    pi_at_next   = tl.sum(
-        pi_next_all * (a_offs[None, :] == action_next[:, None]).to(tl.float32),
-        axis=1,
-    )
     is_ratio_next = pi_at_next / mu_next
     c_next = tl.where(offs > 0, lambda_ * tl.minimum(is_ratio_next, c_bar), 0.0)
 

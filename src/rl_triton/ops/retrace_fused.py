@@ -65,8 +65,9 @@ def compute_retrace_fused(
         f"seq_len={seq_len} exceeds flat kernel limit {_FLAT_MAX_SEQ_LEN}."
     )
 
-    out        = torch.empty_like(rewards)
-    advantages = torch.empty_like(rewards)
+    out            = torch.empty_like(rewards)
+    advantages     = torch.empty_like(rewards)
+    pi_at_scratch  = torch.empty_like(rewards)
 
     BLOCK_SIZE   = triton.next_power_of_2(seq_len)
     ACTION_BLOCK = triton.next_power_of_2(num_actions)
@@ -84,6 +85,7 @@ def compute_retrace_fused(
         terminated,
         out,
         advantages,
+        pi_at_scratch,
         seq_len,
         num_actions,
         rewards.stride(0),

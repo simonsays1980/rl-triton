@@ -207,3 +207,34 @@ left-to-right and carrying `e[chunk_end]` forward across boundaries instead of
 backward.  It was not built for the same reason as the chunked fused V-Trace
 kernel: sequences longer than 131072 are uncommon in RL, and the implementation
 complexity is not justified until users report it as a bottleneck.
+
+---
+
+## Double HBM read of the values tensor in gae_fused_kernel
+
+The GAE fused kernel (`gae_fused_kernel`) loads the values tensor twice from
+HBM in the `HAS_TRUNCATIONS=True` path:
+
+1. `tl.load(values_ptr + base + rev, ...)` — gives `v_t`
+2. `tl.load(values_ptr + base + rev + 1, ...)` — gives `v_{t+1}`
+
+These are two separate `tl.load` calls at different pointer offsets; they are
+**not** loaded once into SRAM and then indexed at two positions.  SRAM in
+Triton is used for inter-thread communication during the scan, not as a
+random-access scratchpad.
+
+The `lambda_returns_fused_kernel` avoids this second load entirely by accepting
+a pre-shifted `next_values` tensor from the caller (where `next_values[t] =
+values[t+1]` is pre-computed by the Python wrapper in a single vectorised
+slice).  That approach trades one extra HBM tensor argument for one fewer
+in-kernel HBM load — net-neutral on HBM traffic but avoids the pointer
+arithmetic inside the kernel.
+
+### v0.2 optimisation candidate
+
+Investigate whether `gae_fused_kernel` can adopt the same pre-shifted
+`next_values` strategy as `lambda_returns_fused_kernel`, or alternatively
+whether a single vectorised load of the values tensor into SRAM (followed by
+two in-SRAM indexed reads at `rev` and `rev+1`) would reduce HBM traffic at
+large `BLOCK_SIZE`.  Profile at `128×1024` and `512×4096` to quantify the
+potential gain before implementing.

@@ -210,31 +210,57 @@ complexity is not justified until users report it as a bottleneck.
 
 ---
 
-## Double HBM read of the values tensor in gae_fused_kernel
+## Double HBM read of the values tensor in gae_fused_kernel — investigated, not a win
 
 The GAE fused kernel (`gae_fused_kernel`) loads the values tensor twice from
-HBM in the `HAS_TRUNCATIONS=True` path:
+HBM — in *both* the `HAS_TRUNCATIONS=True` and `HAS_TRUNCATIONS=False` paths
+(and in the older non-fused `gae_kernel`), not only the truncations path as
+originally noted here:
 
 1. `tl.load(values_ptr + base + rev, ...)` — gives `v_t`
 2. `tl.load(values_ptr + base + rev + 1, ...)` — gives `v_{t+1}`
 
 These are two separate `tl.load` calls at different pointer offsets; they are
-**not** loaded once into SRAM and then indexed at two positions.  SRAM in
+**not** loaded once into SRAM and then indexed at two positions. SRAM in
 Triton is used for inter-thread communication during the scan, not as a
 random-access scratchpad.
 
-The `lambda_returns_fused_kernel` avoids this second load entirely by accepting
-a pre-shifted `next_values` tensor from the caller (where `next_values[t] =
-values[t+1]` is pre-computed by the Python wrapper in a single vectorised
-slice).  That approach trades one extra HBM tensor argument for one fewer
-in-kernel HBM load — net-neutral on HBM traffic but avoids the pointer
-arithmetic inside the kernel.
+**Measured (H100, `tests/h100_short_horizon_l2_retrace_ppo_report.md`-style
+methodology): adopting the `lambda_returns_fused_kernel` pre-shift strategy
+makes this slower, not faster.** Implemented as an A/B kernel
+(`gae_fused_kernel_preshift`, taking a caller-supplied `next_values` tensor
+instead of the second in-kernel load) and benchmarked against the shipped
+kernel:
 
-### v0.2 optimisation candidate
+- **Correctness:** bit-identical output (max diff = 0.0) across 64×512,
+  512×4096, 128×8192 — confirms the two formulations compute the same math.
+- **ptxas metadata @ 512×4096:** identical — 84 regs/thread, 0 spills, in
+  *both* variants. Unlike Retrace's redundant 3D reload (which fed a
+  register-hungry `[BLOCK_SIZE, ACTION_BLOCK]` reduction), `v_next` here is a
+  single scalar-per-lane float — removing its load doesn't touch register
+  pressure at all. GAE was never spilling in the first place.
+- **Kernel-only device time** (pre-shift kernel vs shipped kernel, excluding
+  the cost of building `next_values`): pre-shift is *slightly slower* at
+  seq_len≥4096 (0.90–0.94x). The two loads in the current kernel are offset
+  by exactly one element — well within a single L1/L2 cache line — so they
+  already share most of their traffic; there was no real second HBM
+  round-trip to eliminate. Reading from a separate `next_values` tensor
+  instead loses that locality.
+- **Full path including materialization** (`next_values[:, :-1] =
+  values[:, 1:]`, one extra kernel launch + full read/write pass, mirroring
+  what a caller or wrapper would have to do since `compute_gae`'s public API
+  takes only `values`, not a pre-shifted `next_values` like
+  `compute_lambda_returns` does): **0.52–0.73x — 30–90% slower** across
+  64×512 through 512×8192. The extra launch dominates any theoretical
+  bandwidth saving, consistent with this project's repeated finding
+  (short-horizon sweep, Retrace ceiling fallback) that added kernel launches
+  are costly relative to a few extra bytes of already-cached HBM traffic.
 
-Investigate whether `gae_fused_kernel` can adopt the same pre-shifted
-`next_values` strategy as `lambda_returns_fused_kernel`, or alternatively
-whether a single vectorised load of the values tensor into SRAM (followed by
-two in-SRAM indexed reads at `rev` and `rev+1`) would reduce HBM traffic at
-large `BLOCK_SIZE`.  Profile at `128×1024` and `512×4096` to quantify the
-potential gain before implementing.
+**Verdict: not applied.** The premise (this is meaningfully "double HBM
+traffic") doesn't hold up under measurement — it's two cache-friendly loads
+of adjacent addresses, not two independent full tensor reads — and the
+proposed fix is a net loss once the caller-side cost is counted honestly. No
+further action recommended here; `lambda_returns_fused_kernel`'s pre-shift
+design is *not* a copyable win for GAE, because `lambda_returns`'s design
+gets its `next_values` "for free" from the caller's own rollout bookkeeping,
+whereas GAE would have to synthesize it internally at real extra cost.

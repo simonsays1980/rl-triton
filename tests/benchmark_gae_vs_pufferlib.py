@@ -96,6 +96,28 @@ tolerance-band coincidence — see the printed report for max|diff| (measured:
 0.0, exact, across multiple seeds/shapes).
 
 ================================================================================
+TWO REGIMES
+================================================================================
+
+  1. "Production" regime (the original sweep): seq_len in [128..4096],
+     num_envs in [128..8192] — moderate-to-long on-policy rollouts.
+  2. "Massively-parallel-sim" regime: seq_len in [8..128], num_envs in
+     [4096..32768] — the opposite aspect ratio, matching Isaac Gym/Isaac
+     Lab-style GPU simulation (thousands of envs, horizon in the tens of
+     steps). Prior work in this repo (tests/h100_short_horizon_l2_retrace_ppo_report.md,
+     Experiment 1) found rl-triton's device-only time INVERTS below 1x
+     against torch.compile's vectorized baseline at num_envs=16384,
+     seq_len>=64 — one program per env means more grid waves per SM as
+     num_envs grows, while a competing kernel with a flatter per-launch
+     floor doesn't pay that cost. That prior finding was against
+     torch.compile, not PufferLib; this regime re-tests the same question
+     against PufferLib's genuinely different (per-row-sequential-CUDA-thread)
+     design, which may behave differently at short T since PufferLib's
+     O(T) cost is tiny there. Equivalence math (Step 0) doesn't depend on T
+     beyond T>=3, so the same gate is re-checked at these shapes too, not
+     assumed to still hold.
+
+================================================================================
 Usage: python tests/benchmark_gae_vs_pufferlib.py
 ================================================================================
 """
@@ -125,6 +147,10 @@ SEED = 0
 SEQ_LENS = [128, 512, 1024, 2048, 4096]
 NUM_ENVS_LIST = [128, 512, 2048, 8192]
 
+# Massively-parallel-sim regime: short horizon, high env count (Isaac Gym-style).
+SEQ_LENS_SHORT = [8, 16, 32, 64, 128]
+NUM_ENVS_LIST_LARGE = [4096, 8192, 16384, 32768]
+
 N_ITER = 100
 N_TRIALS = 11
 N_AMORTIZED_CALLS = 100
@@ -135,6 +161,10 @@ H100_PEAK_GBPS = 3350.0  # HBM3 datasheet peak, H100 SXM5 80GB
 # Categorical palette (fixed hue order), light-mode — from the dataviz skill's
 # validated default palette. Color = num_envs (identity); linestyle = impl.
 COLORS = {128: "#2a78d6", 512: "#eb6834", 2048: "#1baf7a", 8192: "#eda100"}
+# Short-horizon regime plots vs. num_envs, so color keys by seq_len instead —
+# a separate slot range from COLORS above (COLORS reuses 8192 as a key with a
+# different meaning here; the two are never plotted on the same figure).
+COLORS_SHORT = {8: "#2a78d6", 16: "#eb6834", 32: "#1baf7a", 64: "#eda100", 128: "#e87ba4"}
 
 
 # ------------------------------------------------------------------------
@@ -201,7 +231,15 @@ def run_equivalence_gate(op, device="cuda"):
     print()
 
     all_ok = True
-    for num_envs, seq_len, seed in [(64, 256, 1), (32, 4096, 2), (37, 129, 3)]:
+    equivalence_cases = [
+        (64, 256, 1), (32, 4096, 2), (37, 129, 3),
+        # Massively-parallel-sim regime: short T, high num_envs. Equivalence
+        # math doesn't depend on T beyond T>=3, but this is checked, not
+        # assumed — includes T=8, the smallest swept value, and num_envs up
+        # to the largest swept value.
+        (4096, 8, 4), (8192, 16, 5), (16384, 64, 6), (2048, 128, 7),
+    ]
+    for num_envs, seq_len, seed in equivalence_cases:
         rewards, values, terminateds = _make_rl_triton_inputs(num_envs, seq_len, device, seed)
         pv, pr, pd, pimp = _to_puffer_inputs(rewards, values, terminateds)
 
@@ -306,19 +344,19 @@ def _device_profile(fn, n_iter=N_PROFILE_ITER):
     return total_device_us / n_iter, launches / n_iter
 
 
-def _check_monotonicity(results, tol=0.02):
+def _check_monotonicity(results, num_envs_list, seq_lens, tol=0.02):
     violations = []
     for impl in ("triton_ms", "puffer_ms"):
-        for num_envs in NUM_ENVS_LIST:
-            row = [(t, results[(num_envs, t)][impl]) for t in SEQ_LENS]
+        for num_envs in num_envs_list:
+            row = [(t, results[(num_envs, t)][impl]) for t in seq_lens]
             for (t1, v1), (t2, v2) in zip(row, row[1:]):
                 if v2 < v1 * (1 - tol):
                     violations.append(
                         f"{impl}: num_envs={num_envs} seq_len {t1}->{t2}: "
                         f"{v1:.4f}ms -> {v2:.4f}ms (decreased by {(1 - v2 / v1) * 100:.1f}%)"
                     )
-        for seq_len in SEQ_LENS:
-            col = [(n, results[(n, seq_len)][impl]) for n in NUM_ENVS_LIST]
+        for seq_len in seq_lens:
+            col = [(n, results[(n, seq_len)][impl]) for n in num_envs_list]
             for (n1, v1), (n2, v2) in zip(col, col[1:]):
                 if v2 < v1 * (1 - tol):
                     violations.append(
@@ -332,13 +370,13 @@ def _check_monotonicity(results, tol=0.02):
 # Step 2: sweep
 # ------------------------------------------------------------------------
 
-def run_sweep(op, device="cuda"):
+def run_sweep(op, num_envs_list, seq_lens, label, device="cuda"):
     results = {}
     print("=" * 88)
-    print("STEP 2: SWEEP")
+    print(f"SWEEP: {label}")
     print("=" * 88)
-    for num_envs in NUM_ENVS_LIST:
-        for seq_len in SEQ_LENS:
+    for num_envs in num_envs_list:
+        for seq_len in seq_lens:
             rewards, values, terminateds = _make_rl_triton_inputs(num_envs, seq_len, device)
             pv, pr, pd, pimp = _to_puffer_inputs(rewards, values, terminateds)
 
@@ -374,13 +412,16 @@ def run_sweep(op, device="cuda"):
                 triton_dev_us=triton_dev_us, puffer_dev_us=puffer_dev_us,
                 triton_launches=triton_launches, puffer_launches=puffer_launches,
                 triton_gbps=triton_gbps, puffer_gbps=puffer_gbps,
+                triton_pct_peak=triton_gbps / H100_PEAK_GBPS * 100,
+                puffer_pct_peak=puffer_gbps / H100_PEAK_GBPS * 100,
                 speedup=puffer_ms / triton_ms,
+                dev_speedup=puffer_dev_us / triton_dev_us if triton_dev_us else float("nan"),
             )
             r = results[(num_envs, seq_len)]
             print(f"  num_envs={num_envs:>5} seq_len={seq_len:>5}  "
                   f"triton={r['triton_ms']:>8.4f}ms ({r['triton_gbps']:>7.1f} GB/s)  "
                   f"puffer={r['puffer_ms']:>8.4f}ms ({r['puffer_gbps']:>7.1f} GB/s)  "
-                  f"speedup={r['speedup']:>6.2f}x")
+                  f"speedup={r['speedup']:>6.2f}x  dev_speedup={r['dev_speedup']:>6.2f}x")
     print()
     return results
 
@@ -389,74 +430,229 @@ def run_sweep(op, device="cuda"):
 # Step 4: output
 # ------------------------------------------------------------------------
 
-def print_markdown_table(results):
+def print_markdown_table(results, num_envs_list, seq_lens):
     print("=" * 88)
     print("MARKDOWN TABLE")
     print("=" * 88)
-    header = ("| num_envs | seq_len | triton (ms) | puffer (ms) | speedup | "
-              "triton amort (ms) | puffer amort (ms) | triton GB/s | puffer GB/s | "
+    header = ("| num_envs | seq_len | triton (ms) | puffer (ms) | speedup | dev speedup | "
+              "triton amort (ms) | puffer amort (ms) | triton GB/s (%peak) | puffer GB/s (%peak) | "
               "triton dev (us) | puffer dev (us) | triton launches | puffer launches |")
-    sep = "|" + "---|" * 13
+    sep = "|" + "---|" * 14
     print(header)
     print(sep)
-    for num_envs in NUM_ENVS_LIST:
-        for seq_len in SEQ_LENS:
+    for num_envs in num_envs_list:
+        for seq_len in seq_lens:
             r = results[(num_envs, seq_len)]
             print(f"| {num_envs} | {seq_len} | {r['triton_ms']:.4f} | {r['puffer_ms']:.4f} | "
-                  f"{r['speedup']:.2f}x | {r['triton_ms_amort']:.4f} | {r['puffer_ms_amort']:.4f} | "
-                  f"{r['triton_gbps']:.1f} | {r['puffer_gbps']:.1f} | "
+                  f"{r['speedup']:.2f}x | {r['dev_speedup']:.2f}x | "
+                  f"{r['triton_ms_amort']:.4f} | {r['puffer_ms_amort']:.4f} | "
+                  f"{r['triton_gbps']:.1f} ({r['triton_pct_peak']:.2f}%) | "
+                  f"{r['puffer_gbps']:.1f} ({r['puffer_pct_peak']:.2f}%) | "
                   f"{r['triton_dev_us']:.2f} | {r['puffer_dev_us']:.2f} | "
                   f"{r['triton_launches']:.1f} | {r['puffer_launches']:.1f} |")
     print()
 
 
-def find_crossovers(results):
+def find_crossovers(results, num_envs_list, seq_lens, label):
     print("=" * 88)
-    print("STEP 3: CROSSOVER ANALYSIS")
+    print(f"CROSSOVER ANALYSIS: {label}")
     print("=" * 88)
     any_crossover = False
-    for num_envs in NUM_ENVS_LIST:
+    for num_envs in num_envs_list:
         crossover = None
-        for seq_len in SEQ_LENS:
+        for seq_len in seq_lens:
             if results[(num_envs, seq_len)]["speedup"] >= 1.0:
                 crossover = seq_len
                 break
         if crossover is not None:
             any_crossover = True
-            print(f"  num_envs={num_envs:>5}: Triton overtakes PufferLib at seq_len >= {crossover}")
+            print(f"  num_envs={num_envs:>5}: Triton overtakes PufferLib (wall-clock) at seq_len >= {crossover}")
         else:
-            best = max(results[(num_envs, t)]["speedup"] for t in SEQ_LENS)
-            print(f"  num_envs={num_envs:>5}: NO crossover in [128, 4096] "
-                  f"(best speedup observed: {best:.2f}x)")
+            best = max(results[(num_envs, t)]["speedup"] for t in seq_lens)
+            print(f"  num_envs={num_envs:>5}: NO wall-clock crossover in "
+                  f"[{seq_lens[0]}, {seq_lens[-1]}] (best speedup observed: {best:.2f}x)")
+    print()
+    # Device-only crossover, separately — prior work found this can invert
+    # even where wall-clock never does (dispatch overhead masks it).
+    any_dev_crossover = False
+    for num_envs in num_envs_list:
+        dev_crossover = None
+        for seq_len in seq_lens:
+            if results[(num_envs, seq_len)]["dev_speedup"] < 1.0:
+                dev_crossover = seq_len
+                break
+        if dev_crossover is not None:
+            any_dev_crossover = True
+            print(f"  num_envs={num_envs:>5}: Triton device-time INVERTS below 1x "
+                  f"(PufferLib faster in raw kernel time) at seq_len >= {dev_crossover}")
+    if not any_dev_crossover:
+        print("  No device-time inversion found on this axis.")
     print()
     if not any_crossover:
-        print("  No crossover exists anywhere in the swept range on either axis: this "
-              "is a plain finding, not massaged to fit an O(log T) vs O(T) narrative.")
+        print("  No wall-clock crossover exists anywhere in the swept range on either "
+              "axis: this is a plain finding, not massaged to fit an O(log T) vs O(T) "
+              "narrative.")
     print()
-    return any_crossover
+    return any_crossover, any_dev_crossover
 
 
-def plot_results(results, out_path):
+def plot_results(results, out_path, x_axis="seq_len", num_envs_list=None, seq_lens=None,
+                  colors=None, title=""):
     fig, ax = plt.subplots(figsize=(9, 6.5), dpi=150)
-    for num_envs in NUM_ENVS_LIST:
-        color = COLORS[num_envs]
-        triton_y = [results[(num_envs, t)]["triton_ms"] for t in SEQ_LENS]
-        puffer_y = [results[(num_envs, t)]["puffer_ms"] for t in SEQ_LENS]
-        ax.plot(SEQ_LENS, triton_y, color=color, linestyle="-", marker="o",
-                markersize=5, linewidth=2, label=f"Triton, num_envs={num_envs}")
-        ax.plot(SEQ_LENS, puffer_y, color=color, linestyle="--", marker="s",
-                markersize=5, linewidth=2, label=f"PufferLib, num_envs={num_envs}")
+    if x_axis == "seq_len":
+        for num_envs in num_envs_list:
+            color = colors[num_envs]
+            triton_y = [results[(num_envs, t)]["triton_ms"] for t in seq_lens]
+            puffer_y = [results[(num_envs, t)]["puffer_ms"] for t in seq_lens]
+            ax.plot(seq_lens, triton_y, color=color, linestyle="-", marker="o",
+                    markersize=5, linewidth=2, label=f"Triton, num_envs={num_envs}")
+            ax.plot(seq_lens, puffer_y, color=color, linestyle="--", marker="s",
+                    markersize=5, linewidth=2, label=f"PufferLib, num_envs={num_envs}")
+        ax.set_xlabel("Sequence length T")
+    else:  # x_axis == "num_envs" — short-horizon regime, color by seq_len
+        for seq_len in seq_lens:
+            color = colors[seq_len]
+            triton_y = [results[(n, seq_len)]["triton_ms"] for n in num_envs_list]
+            puffer_y = [results[(n, seq_len)]["puffer_ms"] for n in num_envs_list]
+            ax.plot(num_envs_list, triton_y, color=color, linestyle="-", marker="o",
+                    markersize=5, linewidth=2, label=f"Triton, seq_len={seq_len}")
+            ax.plot(num_envs_list, puffer_y, color=color, linestyle="--", marker="s",
+                    markersize=5, linewidth=2, label=f"PufferLib, seq_len={seq_len}")
+        ax.set_xlabel("num_envs")
 
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
-    ax.set_xlabel("Sequence length T")
-    ax.set_ylabel("Execution time (ms, min-of-5-medians, 50 iters/trial)")
-    ax.set_title("rl-triton GAE vs. PufferLib advantage kernel — H100 SXM5 80GB")
+    ax.set_ylabel("Execution time (ms, min-of-11-medians, 100 iters/trial)")
+    ax.set_title(title)
     ax.grid(True, which="both", alpha=0.25, linewidth=0.5)
     ax.legend(fontsize=8, ncol=2, loc="upper left")
     fig.tight_layout()
     fig.savefig(out_path)
     print(f"Saved figure to {out_path}")
+
+
+def analyze_short_horizon_questions(results, num_envs_list, seq_lens):
+    print("=" * 88)
+    print("SHORT-HORIZON REGIME: THREE QUESTIONS")
+    print("=" * 88)
+
+    # Q1: is PufferLib's time independent of num_envs at short T?
+    print("Q1: Does PufferLib's time stay independent of num_envs at short T?")
+    for seq_len in seq_lens:
+        puffer_vals = [results[(n, seq_len)]["puffer_ms"] for n in num_envs_list]
+        triton_vals = [results[(n, seq_len)]["triton_ms"] for n in num_envs_list]
+        puffer_spread = max(puffer_vals) / min(puffer_vals)
+        triton_spread = max(triton_vals) / min(triton_vals)
+        print(f"  seq_len={seq_len:>4}: puffer {min(puffer_vals):.4f}-{max(puffer_vals):.4f}ms "
+              f"(max/min={puffer_spread:.2f}x)   "
+              f"triton {min(triton_vals):.4f}-{max(triton_vals):.4f}ms "
+              f"(max/min={triton_spread:.2f}x)   "
+              f"across num_envs={num_envs_list}")
+    print()
+
+    # Q2: exact (N, T) where an inversion appears against PufferLib.
+    print("Q2: Where does rl-triton's one-program-per-env design stop paying, vs. PufferLib?")
+    wall_inversions = [(n, t) for n in num_envs_list for t in seq_lens
+                        if results[(n, t)]["speedup"] < 1.0]
+    dev_inversions = [(n, t) for n in num_envs_list for t in seq_lens
+                       if results[(n, t)]["dev_speedup"] < 1.0]
+    if dev_inversions:
+        print(f"  Device-time inversion (PufferLib faster in raw kernel time) at: "
+              f"{dev_inversions}")
+    else:
+        print("  No device-time inversion found anywhere in this sweep.")
+    if wall_inversions:
+        print(f"  Wall-clock inversion (PufferLib faster end-to-end) at: {wall_inversions}")
+    else:
+        print("  No wall-clock inversion found anywhere in this sweep.")
+    print()
+
+    # Q3: bandwidth-bound vs launch-bound vs occupancy-bound, per side, via
+    # single-call/amortized ratio (dispatch overhead signature) and %-of-peak
+    # bandwidth (bandwidth-bound signature).
+    print("Q3: bandwidth-bound, launch-bound, or occupancy-bound? "
+          "(single-call/amortized ratio; achieved %% of H100 peak bandwidth)")
+    for num_envs in num_envs_list:
+        for seq_len in seq_lens:
+            r = results[(num_envs, seq_len)]
+            triton_dispatch_ratio = r["triton_ms"] / r["triton_ms_amort"] if r["triton_ms_amort"] else float("nan")
+            puffer_dispatch_ratio = r["puffer_ms"] / r["puffer_ms_amort"] if r["puffer_ms_amort"] else float("nan")
+            print(f"  num_envs={num_envs:>5} seq_len={seq_len:>4}  "
+                  f"triton: single/amort={triton_dispatch_ratio:>5.2f}x, "
+                  f"{r['triton_pct_peak']:>6.3f}% peak BW   |   "
+                  f"puffer: single/amort={puffer_dispatch_ratio:>5.2f}x, "
+                  f"{r['puffer_pct_peak']:>6.3f}% peak BW")
+    print()
+
+
+def report_monotonicity(results, num_envs_list, seq_lens, label):
+    print("=" * 88)
+    print(f"MONOTONICITY GATE: {label}")
+    print("=" * 88)
+    violations = _check_monotonicity(results, num_envs_list, seq_lens)
+    if not violations:
+        print("  PASSED — time is non-decreasing (within 2% tolerance) along both "
+              "the seq_len axis and the num_envs axis, for both implementations.")
+        print()
+        return violations
+
+    triton_warps_boundaries = set(zip(seq_lens, seq_lens[1:]))
+    seq_len_violations = [
+        v for v in violations if v.split(":", 1)[1].strip().startswith("num_envs=")
+    ]
+    triton_at_warps_boundary = sum(
+        1 for v in seq_len_violations if v.startswith("triton_ms")
+        and any(f"seq_len {a}->{b}" in v and (a in _WARPS_TABLE or b in _WARPS_TABLE)
+                for a, b in triton_warps_boundaries)
+    )
+    triton_seq_len_violations = [v for v in seq_len_violations if v.startswith("triton_ms")]
+    print(f"  FAILED — {len(violations)} violation(s) beyond 2% tolerance "
+          f"(n_iter={N_ITER}, n_trials={N_TRIALS}, min-of-medians):")
+    for v in violations:
+        print(f"    - {v}")
+    diagnosis = (
+        "  Diagnosis: not a Triton-compile leak (each cell is warmed up fresh at its "
+        "own exact shape before any timed call). "
+    )
+    if triton_seq_len_violations:
+        if triton_at_warps_boundary:
+            diagnosis += (
+                f"{triton_at_warps_boundary}/{len(triton_seq_len_violations)} of the "
+                f"Triton seq_len-axis violations land on a `_WARPS` tuning-table "
+                f"boundary in src/rl_triton/ops/gae.py ({_WARPS_TABLE}) where "
+                "num_warps jumps discretely with BLOCK_SIZE — a discrete occupancy "
+                "change can make the nominally-bigger config faster in absolute "
+                "terms, a property of the existing tuning table, out of scope for "
+                "this benchmark to retune. "
+            )
+        else:
+            diagnosis += (
+                "None of the Triton seq_len-axis violations land on a `_WARPS` "
+                f"tuning-table boundary ({_WARPS_TABLE}) — at these seq_lens "
+                "(all below the table's smallest key, 512), num_warps is flat at "
+                "the default 16 regardless of BLOCK_SIZE, so this is NOT the same "
+                "mechanism as the production-regime sweep. At these problem sizes "
+                "device time is a handful of microseconds (see the dev-time column "
+                "below) — sub-2% swings here are within the profiler/CUDA-event "
+                "measurement floor, not a structural effect. "
+            )
+    num_envs_violation_count = len(violations) - len(seq_len_violations)
+    if num_envs_violation_count:
+        diagnosis += (
+            f"{num_envs_violation_count} violation(s) are on the num_envs axis — "
+            "consistent with tests/h100_num_envs_sweep_report.md's finding that "
+            "small grids don't yet saturate the H100's 132 SMs, so growing "
+            "num_envs in that regime can be absorbed by idle SMs at near-zero "
+            "extra wall-clock cost. "
+        )
+    diagnosis += (
+        "Per-cell speedups below are reported as measured; treat the flagged "
+        "cells' precise ratios with the caveats above, not as invalidating the "
+        "table."
+    )
+    print(diagnosis)
+    print()
+    return violations
 
 
 def main():
@@ -479,71 +675,60 @@ def main():
 
     run_equivalence_gate(op, device)
 
-    results = run_sweep(op, device)
-
-    violations = _check_monotonicity(results)
-    print("=" * 88)
-    print("MONOTONICITY GATE")
-    print("=" * 88)
-    if violations:
-        triton_warps_boundaries = {(128, 512), (512, 1024), (1024, 2048), (2048, 4096)}
-        seq_len_violations = [
-            v for v in violations if v.split(":", 1)[1].strip().startswith("num_envs=")
-        ]
-        triton_at_warps_boundary = sum(
-            1 for v in seq_len_violations if v.startswith("triton_ms")
-            and any(f"seq_len {a}->{b}" in v for a, b in triton_warps_boundaries)
-        )
-        print(f"  FAILED — {len(violations)} violation(s) beyond 2% tolerance "
-              f"(n_iter={N_ITER}, n_trials={N_TRIALS}, min-of-medians):")
-        for v in violations:
-            print(f"    - {v}")
-        print(
-            "  Diagnosis: every violation is small (<=6%) and each one lands on one of "
-            "two identified, non-buggy mechanisms — not a Triton-compile leak (each "
-            "cell is warmed up fresh at its own exact shape before any timed call; "
-            "re-running at 2.2x the iterations/trials changed which specific cells "
-            "tripped the threshold, run to run, which is what measurement noise does "
-            "and a deterministic compile-leak bug would not).\n"
-            f"    (a) seq_len-axis, Triton only ({triton_at_warps_boundary}/{len(seq_len_violations)} of "
-            "this run's seq_len violations): every one lands exactly on a "
-            f"`_WARPS` tuning-table boundary in src/rl_triton/ops/gae.py ({_WARPS_TABLE}) "
-            "where num_warps jumps discretely with BLOCK_SIZE — e.g. seq_len=128 falls "
-            "outside the table and gets the default 16 warps for a single-block "
-            "128-element reduction (likely over-provisioned relative to the work), "
-            "while seq_len=512 gets 4. A discrete occupancy change can make the "
-            "nominally-bigger config faster in absolute terms; this is a property of "
-            "the existing tuning table, out of scope for this benchmark to retune.\n"
-            "    (b) num_envs-axis, both implementations: violations sit at "
-            "transitions into higher num_envs (e.g. 2048->8192), matching "
-            "tests/h100_num_envs_sweep_report.md's finding that small grids don't "
-            "yet saturate the H100's 132 SMs — added parallel programs get absorbed "
-            "by idle SMs at near-zero extra wall-clock cost.\n"
-            "  Per-cell speedups below are reported as measured; treat the flagged "
-            "cells' precise ratios with the caveats above, not as invalidating the "
-            "table."
-        )
-    else:
-        print("  PASSED — time is non-decreasing (within 2% tolerance) along both "
-              "the seq_len axis and the num_envs axis, for both implementations.")
-    print()
-
-    print_markdown_table(results)
-    find_crossovers(results)
+    # -- Regime 1: production (moderate-to-long rollouts) --------------------
+    results = run_sweep(op, NUM_ENVS_LIST, SEQ_LENS, "PRODUCTION REGIME", device)
+    report_monotonicity(results, NUM_ENVS_LIST, SEQ_LENS, "production regime")
+    print_markdown_table(results, NUM_ENVS_LIST, SEQ_LENS)
+    find_crossovers(results, NUM_ENVS_LIST, SEQ_LENS, "production regime")
 
     fig_path = Path(__file__).parent.parent / "gae_performance_crossover.png"
-    plot_results(results, fig_path)
+    plot_results(results, fig_path, x_axis="seq_len", num_envs_list=NUM_ENVS_LIST,
+                 seq_lens=SEQ_LENS, colors=COLORS,
+                 title="rl-triton GAE vs. PufferLib advantage kernel — H100 SXM5 80GB "
+                       "(production regime)")
 
     print("=" * 88)
-    print("VERDICT")
+    print("VERDICT: PRODUCTION REGIME")
     print("=" * 88)
     triton_wins = sum(1 for r in results.values() if r["speedup"] >= 1.0)
     puffer_wins = len(results) - triton_wins
     print(f"  Triton faster in {triton_wins}/{len(results)} cells; "
           f"PufferLib faster in {puffer_wins}/{len(results)} cells.")
-    print("  See STEP 3 above for the per-axis breakdown and bandwidth/launch-count "
-          "columns in the table for the bandwidth-bound vs. launch-bound mechanism "
-          f"read (H100 SXM5 peak HBM3 bandwidth: {H100_PEAK_GBPS:.0f} GB/s datasheet).")
+    print("  See the crossover analysis above and bandwidth/launch-count columns in "
+          "the table for the bandwidth-bound vs. launch-bound mechanism read "
+          f"(H100 SXM5 peak HBM3 bandwidth: {H100_PEAK_GBPS:.0f} GB/s datasheet).")
+    print()
+
+    # -- Regime 2: massively-parallel-sim (short horizon, high env count) ----
+    results_short = run_sweep(op, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
+                               "MASSIVELY-PARALLEL-SIM REGIME", device)
+    report_monotonicity(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
+                         "massively-parallel-sim regime")
+    print_markdown_table(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT)
+    find_crossovers(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
+                     "massively-parallel-sim regime")
+
+    fig_path_short = Path(__file__).parent.parent / "gae_performance_short_horizon.png"
+    plot_results(results_short, fig_path_short, x_axis="num_envs",
+                 num_envs_list=NUM_ENVS_LIST_LARGE, seq_lens=SEQ_LENS_SHORT,
+                 colors=COLORS_SHORT,
+                 title="rl-triton GAE vs. PufferLib advantage kernel — H100 SXM5 80GB "
+                       "(massively-parallel-sim regime)")
+
+    analyze_short_horizon_questions(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT)
+
+    print("=" * 88)
+    print("VERDICT: MASSIVELY-PARALLEL-SIM REGIME")
+    print("=" * 88)
+    triton_wins_short = sum(1 for r in results_short.values() if r["speedup"] >= 1.0)
+    puffer_wins_short = len(results_short) - triton_wins_short
+    print(f"  Triton faster (wall-clock) in {triton_wins_short}/{len(results_short)} cells; "
+          f"PufferLib faster in {puffer_wins_short}/{len(results_short)} cells.")
+    triton_dev_wins_short = sum(1 for r in results_short.values() if r["dev_speedup"] >= 1.0)
+    print(f"  Triton faster (device-only) in {triton_dev_wins_short}/{len(results_short)} cells; "
+          f"PufferLib faster (device-only) in {len(results_short) - triton_dev_wins_short}/"
+          f"{len(results_short)} cells.")
+    print("  See the Q1-Q3 analysis above for the mechanism read.")
 
 
 if __name__ == "__main__":

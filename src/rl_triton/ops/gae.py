@@ -4,7 +4,22 @@ import triton
 from rl_triton.kernels.gae import gae_kernel, gae_fused_kernel
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
-_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+# Below 512, next_power_of_2(seq_len) used to fall through .get()'s default
+# (16 warps = 512 threads) regardless of BLOCK_SIZE, e.g. scanning 8 elements
+# with 512 threads resident (~98% masked-off lanes). Measured on H100 SXM5
+# (tests/benchmark_gae_vs_pufferlib.py massively-parallel-sim regime, Step 1
+# of the warps-floor investigation): device time is FLAT for num_warps in
+# {1, 2, 4} at BLOCK_SIZE 8-128 (they all hit the same 32-blocks/SM hard cap
+# on Hopper) and degrades 2.1x-2.7x at the old default of 16 warps, worse at
+# higher num_envs (fewer resident blocks per SM -> more grid waves to cover
+# the same total env count). 128 specifically must NOT use 4 warps: it wins
+# by ~2% at num_envs=4096 but REGRESSES ~11% at num_envs=32768 versus 2 warps
+# — 2 is the robust choice, tied with 1 at both scales. 256 is the opposite:
+# 4 warps wins outright at large num_envs (44.6us vs 45.4-45.9us at 1-2).
+_WARPS = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 
 def compute_gae(

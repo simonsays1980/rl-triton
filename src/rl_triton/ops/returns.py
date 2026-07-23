@@ -6,12 +6,24 @@ from rl_triton.kernels.eligibility_traces_fused import eligibility_traces_fused_
 from rl_triton.kernels.lambda_returns_fused import lambda_returns_fused_kernel
 from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
+# Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) on
+# both tables below — see src/rl_triton/ops/gae.py's _WARPS for the H100
+# measurement basis (flat device time for num_warps in {1,2,4} at BLOCK_SIZE
+# 8-128, driven by the 32-blocks/SM hard cap on Hopper, register-count-
+# independent at this scale since none of these kernels spill at low warps).
+
 # Lambda returns carries more registers (next_values, u computation) — same budget as GAE.
-_WARPS_LAMBDA = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+_WARPS_LAMBDA = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 # Discounted returns and eligibility traces carry very few registers (2 loads, 1 scan).
 # More warps fit without spilling, giving the scan tree more parallelism.
-_WARPS_LIGHT = {512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+_WARPS_LIGHT = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 
 def compute_lambda_returns(

@@ -48,7 +48,17 @@ from rl_triton.kernels.scan_chunked import chunked_backward_scan_kernel
 _FLAT_MAX_SEQ_LEN = 131072
 _CHUNK_SIZE = triton.next_power_of_2(1024)
 
-_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+# Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) —
+# see src/rl_triton/ops/gae.py's _WARPS for the H100 measurement basis. In
+# current callers _run_scan/_run_scan_forward are only reached above
+# _FLAT_MAX_SEQ_LEN (or similarly large chunked-path thresholds), so
+# BLOCK_SIZE < 512 is unreachable dead code today via any public op — fixed
+# here anyway for consistency with the other 7 affected tables and defensive
+# correctness if a future caller invokes this directly with a short sequence.
+_WARPS = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 
 def _run_scan(

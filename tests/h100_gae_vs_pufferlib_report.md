@@ -275,23 +275,107 @@ See `gae_performance_short_horizon.png` (x-axis num_envs, one line pair per seq_
 PufferLib's dashed lines are flat; Triton's solid lines rise and cross them at different points
 depending on T, visually reproducing the crossover thresholds above.
 
+*(Tables and figures above are the baseline that motivated the fix below; the sections after this
+one supersede the per-cell numbers, though not the qualitative regime-1-wins/regime-2-mixed
+finding, which the fix narrows rather than eliminates.)*
+
+---
+
+## Fix: the short-`seq_len` performance floor was over-provisioned warps, not the grid design
+
+**Prime suspect.** `BLOCK_SIZE = triton.next_power_of_2(seq_len)`, and every `_WARPS` table in
+this codebase (`gae.py`, `vtrace_fused.py`, `retrace_fused.py`, `prefix_sum.py`, both tables in
+`returns.py`, and `_scan.py`'s shared flat-scan table — **8 launch sites, the identical bug in
+every one**) has its smallest key at 512. Every `seq_len` in {8,16,32,64,128,256} falls through
+`.get(BLOCK_SIZE, 16)` to the same default: **16 warps = 512 threads reserved to scan as few as
+8 elements**, ~98% masked-off lanes.
+
+**Step 1 — isolated the effect** (fixed shapes, explicit `num_warps` at the kernel launch,
+bypassing the table entirely; `torch.profiler` device time, `CompiledKernel.n_regs`/`n_spills`/
+`metadata.shared` for register/shared-memory footprint, an analytical occupancy estimate since
+`ncu` is blocked in this container — `ERR_NVGPUCTRPERM`, same as `h100_profiling_report.md`):
+
+| num_envs | seq_len | warps=1 | warps=2 | warps=4 | warps=8 | warps=16 (old default) |
+|---|---|---|---|---|---|---|
+| 4096 | 8 | 3.57µs | 3.59µs | 3.58µs | 4.18µs | 7.70µs |
+| 32768 | 8 | 20.84µs | 20.85µs | 20.85µs | 25.86µs | 53.68µs |
+| 4096 | 128 | 4.00µs | 3.91µs | 3.83µs | 5.69µs | 10.64µs |
+| 32768 | 128 | 23.06µs | 23.11µs | 25.59µs | 42.95µs | 85.16µs |
+
+(device-only time, `torch.profiler`; full sweep also covered 16, 32, 64, 256 — all in the same
+shape). **Every cell bit-identical to the old default across all five `num_warps` values tested**
+(max|diff|=0.0) — this is a pure occupancy change, not a masking or reduction bug: `n_regs`≤48
+and `n_spills`=0 everywhere in this range, so it isn't register pressure either. Mechanism:
+Hopper caps concurrent blocks at 32/SM; at `num_warps<=2` that cap binds directly
+(132 SMs × 32 = **4224 resident blocks**), while `num_warps=16` only allows 4 blocks/SM (528
+resident) — `num_envs=32768` then needs ~62 waves instead of ~8, and the measured 2.6x
+device-time penalty tracks that ratio. One correction to the naive "double it per octave"
+guess: **BLOCK_SIZE=128 must use `num_warps=2`, not 4** — 4 wins by ~2% at N=4096 but
+*regresses 11%* at N=32768 (25.59µs vs. 23.06-23.11µs); 2 is the robust choice, tied with 1 at
+every scale tested. Spot-checked on `vtrace_fused` (more registers than GAE) before generalizing
+— same flat-then-degrade shape, same bit-identical correctness.
+
+**Step 2 — extended the table**, based on that data, in all 8 affected files:
+
+```
+{8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4, 512: <unchanged>, ...}
+```
+
+`gae.py`, `vtrace_fused.py`, `retrace_fused.py`, `_scan.py`'s shared table (`_run_scan` is
+currently only reached above `_FLAT_MAX_SEQ_LEN` in existing callers, so this entry is presently
+dead code — fixed anyway for consistency and defensive correctness), `returns.py`'s
+`_WARPS_LAMBDA`, and `returns.py`'s `_WARPS_LIGHT` (kept its higher 512+ values, e.g. `512: 8`
+vs. the others' `512: 4` — only the new `<512` entries are shared). Full test suite:
+**134/134 pass** with `RL_TRITON_CORRECTNESS_WARNINGS=1`. `bench_safeguard`: 3 failures,
+confirmed via `git stash` to be **identical with and without this change** (pre-existing,
+unrelated — `NUM_ENVS=128, seq_len=1024` isn't even in the affected BLOCK_SIZE range).
+
+**Step 3 — re-ran both regimes.** Production regime unaffected at `seq_len>=512` (as required)
+and *improved* at `seq_len=128`, which shares the fixed table (e.g. (8192,128): 2.63x -> 3.40x
+wall-clock, 5.9x -> 18.2x device). Massively-parallel-sim regime, before -> after:
+
+| | before | after |
+|---|---|---|
+| Wall-clock wins | 9/20 | **11/20** |
+| Device-only wins | 11/20 | **15/20** |
+| Crossover, N=16384 | `seq_len>=64` | **`seq_len>=32`** |
+| Crossover, N=32768 | `seq_len>=128` | **`seq_len>=64`** |
+| Device-time inversions | 9 cells | **5 cells** — (8192,8), (16384,8), (16384,16), (32768,8), (32768,16) |
+
+Monotonicity gate: still fails with a handful of small (<=9.5%) violations in both regimes, same
+two benign mechanisms as before (num_envs-axis SM saturation; one seq_len-axis violation
+straddling the new 128->256 warps-table boundary itself — the same class of effect this fix
+introduces, now documented, not a new bug).
+
+**Step 4 — analysis only, not implemented.** The remaining gap fits a clean wave-count model:
+device time ≈ `floor_time × ceil(num_envs / 4224)` (measured: 1/2/4/8 waves at N=4096/8192/
+16384/32768, T=8 → ~3.6/6.2/11.1/21.4µs — tracks almost exactly). **Multi-env-per-program tiling**
+(K envs per Triton program instead of 1) would divide the effective grid by K — e.g. K=8 at
+N=32768 gives 4096 effective programs, back to a single wave, plausibly dropping device time from
+~21µs toward the ~4-8µs range (some growth from real per-row work, cheap at these T). That would
+likely close or reverse the gap at the worst remaining cells (PufferLib measures 5.09µs at
+(32768,8)) — worth pursuing, but needs its own 2D masking, correctness pass, and warps
+re-tuning; explicitly out of scope for this investigation.
+
 ---
 
 ## Overall verdict
 
-Two regimes, two different answers — reported honestly rather than picking the one that flatters
-either kernel:
+Two regimes, two different answers, now narrower after the warps-floor fix but not eliminated —
+reported honestly rather than picking the one that flatters either kernel:
 
 - **Production regime** (`seq_len>=128`, `num_envs<=8192`): Triton wins all 20/20 cells,
-  2.09x-81.49x, no crossover.
-- **Massively-parallel-sim regime** (`seq_len<=128`, `num_envs>=4096`): PufferLib wins 11/20
-  wall-clock cells, up to ~3x, concentrated at short horizons and high env counts.
+  2.19x-86.7x post-fix, no crossover, seq_len=128 cells improved by the fix.
+- **Massively-parallel-sim regime** (`seq_len<=128`, `num_envs>=4096`): PufferLib wins 9/20
+  wall-clock cells post-fix (down from 11/20), concentrated at the shortest horizons
+  (`seq_len<=16`) combined with the highest env counts (`num_envs>=8192`).
 
 Neither result is the product of handicapping either side — PufferLib's kernel is real,
 hand-written CUDA, JIT-compiled unmodified from the official source, and both kernels were
 verified numerically equivalent (Step 0) before any timing was taken, at the shapes used in
 *both* regimes. The boundary between the two outcomes is real and load-bearing for anyone
 choosing between these kernels for a specific workload: rl-triton's one-program-per-env grid
-design is the right choice for long-horizon on-policy rollouts, and the wrong one for
-short-horizon massively-parallel simulation at current env counts — a genuine, actionable
+design is the right choice for long-horizon on-policy rollouts, and — even after fixing the
+warps floor — still the wrong one for the shortest-horizon, highest-env-count corner of
+massively-parallel simulation, a genuine, actionable
 limitation of the current grid design, not a benchmarking artifact.

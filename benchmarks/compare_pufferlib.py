@@ -1,14 +1,17 @@
 """Standalone, optional comparison: rl-triton's GAE kernel vs. PufferLib's advantage kernel.
 
-NOT part of bench_release.py and NOT part of the test suite — this is a separate,
-best-effort script. It prefers the real `pufferlib` pip package's prebuilt CUDA
-extension if installed; if not (the common case — `pip install pufferlib` pulls
-in raylib, Box2D, pinned old gym/gymnasium, wandb, neptune, and mutates
-process-wide state on import just to get one kernel), it falls back to the
-same vendored, sha256-pinned JIT build already used by tests/pufferlib_ext/
-(that module's docstring has the full provenance/rationale) rather than adding
-a second copy of the same mechanism. Only if neither is available does it skip
-cleanly.
+NOT part of bench_release.py and NOT part of the test suite, NOT installed or built by
+CI or .runpod/start.sh — this is a separate, run-on-demand, one-time-study script. It
+imports the real `pufferlib` pip package ONLY; it does not vendor, JIT-build, or
+otherwise carry any PufferLib source, and has no fallback that does. If `pufferlib` is
+not installed, it skips cleanly — see benchmarks/pufferlib.md for the already-recorded
+results from the one-time run that did have it available (that file notes the exact
+version and method used, since this script's own behavior has changed since then).
+
+(A vendored, sha256-pinned copy of PufferLib's CUDA source exists separately at
+tests/pufferlib_ext/, predating this script, used only by the separate, non-pytest-
+collected tests/benchmark_gae_vs_pufferlib.py. Neither is referenced by this script, by
+bench_release.py, by bench_safeguard.py, by any test_*.py file, or by CI.)
 
 Frame: capability + design comparison, not a scoreboard. PufferLib's advantage
 kernel is a genuine hand-written CUDA kernel — one thread per environment row,
@@ -63,34 +66,30 @@ BOUNDARY_SEQ_LENS = [8, 16, 32]
 
 
 def _try_load_pufferlib():
-    """Prefer the real pip package's prebuilt extension. If pufferlib isn't
-    pip-installed (the common case), fall back to the same vendored,
-    sha256-pinned JIT build tests/pufferlib_ext/ already uses (see that
-    module's docstring for exactly why JIT-building two source files is
-    preferred there over `pip install pufferlib`'s full dependency set —
-    raylib, Box2D, pinned old gym/gymnasium, wandb, neptune, plus process-wide
-    side effects on import). Returns (op, version_str) on success,
-    (None, reason) if unavailable for any reason."""
+    """Pip package ONLY — no vendored/JIT-built fallback. Returns (op,
+    version_str) on success, (None, reason) if unavailable for any reason."""
     try:
         import pufferlib
-        from pufferlib import _C  # noqa: F401
-        if hasattr(torch.ops.pufferlib, "compute_puff_advantage"):
-            return torch.ops.pufferlib.compute_puff_advantage, getattr(pufferlib, "__version__", "unknown")
     except ImportError:
-        pass
+        return None, "`pufferlib` is not installed (pip show pufferlib: not found)."
 
     try:
-        sys.path.insert(0, str(Path(__file__).parent.parent / "tests" / "pufferlib_ext"))
-        from build import load_puff_advantage
-    except ImportError as e:
-        return None, f"pufferlib_ext build helper unavailable ({e}) — skipping cleanly."
+        from pufferlib import _C  # noqa: F401
+    except ImportError:
+        return None, (
+            f"`pufferlib` {getattr(pufferlib, '__version__', '?')} is installed, but its "
+            "compiled CUDA extension (`pufferlib._C`) is not available — the pip package "
+            "does not always build it. This script does not vendor/JIT-build PufferLib's "
+            "CUDA source itself — skipping cleanly."
+        )
 
-    try:
-        op, source_desc = load_puff_advantage()
-    except Exception as e:  # JIT compilation failure, missing nvcc, etc.
-        return None, f"vendored JIT build of PufferLib's CUDA kernel failed ({e}) — skipping cleanly."
+    if not hasattr(torch.ops.pufferlib, "compute_puff_advantage"):
+        return None, (
+            "`pufferlib._C` imported, but torch.ops.pufferlib.compute_puff_advantage is not "
+            "registered — skipping cleanly."
+        )
 
-    return op, source_desc
+    return torch.ops.pufferlib.compute_puff_advantage, getattr(pufferlib, "__version__", "unknown")
 
 
 def _make_rl_triton_inputs(num_envs, seq_len, device, seed=SEED):
@@ -282,8 +281,8 @@ def main():
         print("=" * 88)
         print(version_or_reason)
         print()
-        print("No numeric comparison was run. Tried: the pip package's prebuilt extension, then ")
-        print("the vendored/JIT-built fallback via tests/pufferlib_ext/ — neither was available.")
+        print("No numeric comparison was run — this script only uses a pip-installed pufferlib's ")
+        print("own prebuilt extension; it does not vendor or build any PufferLib source itself.")
         out_path = Path(__file__).parent / "pufferlib.md"
         out_path.write_text(
             f"# rl-triton vs. PufferLib — GAE advantage kernel\n\n"

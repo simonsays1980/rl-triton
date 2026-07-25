@@ -1,6 +1,24 @@
 # rl-triton vs. PufferLib — GAE advantage kernel
 
-*Measured on NVIDIA H100 80GB HBM3 · 2026-07-25 · pufferlib vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled.*
+*Measured on NVIDIA H100 80GB HBM3 · 2026-07-25 · PufferLib 3.0.0.*
+
+**One-time study, not a recurring benchmark.** This is a single, manually-run comparison —
+it is not wired into `bench_release.py`, CI, or any regenerated-on-every-release table.
+`benchmarks/compare_pufferlib.py` is a standalone, run-on-demand script.
+
+**Method used to produce the numbers below**: PufferLib's pip package does not always ship
+a prebuilt CUDA extension, and was not installed in the environment this study ran in. For
+this one-time run only, `puff_advantage_row_cuda` was obtained by JIT-compiling a
+sha256-pinned, verbatim copy of PufferLib 3.0.0's own `pufferlib.cpp`/`pufferlib.cu` source
+(vendored separately at `tests/pufferlib_ext/`, predating this study, used there by the
+separate, non-pytest-collected `tests/benchmark_gae_vs_pufferlib.py`) — the exact code
+PufferLib ships, just compiled locally instead of via pip. **This is not how
+`compare_pufferlib.py` behaves going forward**: the script now imports the real
+`pufferlib` pip package only and has no vendored/JIT-build fallback, so it will skip
+cleanly rather than reproduce this path unless a future run has `pufferlib` actually
+pip-installed with its prebuilt extension available. PufferLib's source (used here only
+to compile its own published kernel, unmodified) is available at its own repository under
+its own license terms: https://github.com/PufferAI/PufferLib.
 
 Capability + design comparison, not a scoreboard. PufferLib's `puff_advantage_row_cuda` is a real hand-written CUDA kernel: one thread per environment row, sequential O(T) scan within the thread. rl-triton's `compute_gae` is a Triton kernel: one program per environment row, O(log T) in-SRAM tree reduction via `tl.associative_scan`. Different mechanisms, different tradeoffs — PufferLib's flat per-thread cost tends to win at very short horizons; rl-triton's parallel scan tends to win as horizon grows.
 

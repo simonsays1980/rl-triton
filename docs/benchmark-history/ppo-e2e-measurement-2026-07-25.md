@@ -1,0 +1,57 @@
+# PPO end-to-end measurement — 2026-07-25
+
+ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.
+GPU: NVIDIA H100 80GB HBM3 · torch 2.4.1+cu124
+num_envs=4096, seq_len=128, 4 epochs x 4 minibatches, 30 interleaved-A/B iterations (10 warmup).
+
+### hidden=(256, 256), net mode=eager
+
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
+|---|---|---|
+| forward | 11.8166 ms (16.2%) | 11.6767 ms (16.1%) |
+| gae | 0.2150 ms (0.3%) | 0.3193 ms (0.4%) |
+| loss | 8.9288 ms (12.3%) | 8.9107 ms (12.3%) |
+| backward | 42.9122 ms (59.0%) | 43.0027 ms (59.2%) |
+| optimizer | 8.8757 ms (12.2%) | 8.7866 ms (12.1%) |
+| **total** | **72.7482 ms** | **72.6960 ms** |
+
+GAE share of step: 0.30% (triton arm) / 0.44% (baseline arm). End-to-end speedup: 0.999x.
+
+### hidden=(256, 256), net mode=torch.compile
+
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
+|---|---|---|
+| forward | 19.2250 ms (20.3%) | 19.3544 ms (20.3%) |
+| gae | 0.2927 ms (0.3%) | 0.3508 ms (0.4%) |
+| loss | 14.1401 ms (14.9%) | 14.2384 ms (14.9%) |
+| backward | 47.3165 ms (49.9%) | 47.6077 ms (49.9%) |
+| optimizer | 13.7987 ms (14.6%) | 13.9097 ms (14.6%) |
+| **total** | **94.7730 ms** | **95.4609 ms** |
+
+GAE share of step: 0.31% (triton arm) / 0.37% (baseline arm). End-to-end speedup: 1.007x.
+
+### hidden=(1024, 1024), net mode=eager
+
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
+|---|---|---|
+| forward | 41.9345 ms (26.0%) | 41.1001 ms (25.8%) |
+| gae | 0.1475 ms (0.1%) | 0.2311 ms (0.1%) |
+| loss | 6.8226 ms (4.2%) | 6.8488 ms (4.3%) |
+| backward | 105.0068 ms (65.1%) | 103.7922 ms (65.1%) |
+| optimizer | 7.4709 ms (4.6%) | 7.3948 ms (4.6%) |
+| **total** | **161.3824 ms** | **159.3669 ms** |
+
+GAE share of step: 0.09% (triton arm) / 0.15% (baseline arm). End-to-end speedup: 0.988x.
+
+### hidden=(1024, 1024), net mode=torch.compile
+
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
+|---|---|---|
+| forward | 42.8405 ms (27.9%) | 41.9889 ms (27.7%) |
+| gae | 0.1106 ms (0.1%) | 0.1301 ms (0.1%) |
+| loss | 4.6259 ms (3.0%) | 4.7257 ms (3.1%) |
+| backward | 100.6329 ms (65.6%) | 99.3890 ms (65.5%) |
+| optimizer | 5.1325 ms (3.3%) | 5.3930 ms (3.6%) |
+| **total** | **153.3424 ms** | **151.6267 ms** |
+
+GAE share of step: 0.07% (triton arm) / 0.09% (baseline arm). End-to-end speedup: 0.989x.

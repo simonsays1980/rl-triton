@@ -19,7 +19,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_gpu_spread, _n_iter_gpu
+from bench_utils import _bench_gpu, _bench_gpu_spread, _n_iter_gpu, _warmup_gpu, check_monotonic_grid
 from rl_triton.ops.gae import compute_gae
 from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 from rl_triton.ops.retrace import compute_retrace
@@ -366,3 +366,141 @@ def test_perf_prefix_sum():
         f"Prefix-sum Triton median {speedup:.2f}x vs torch.compile(episodic) — below {_PREFIX_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Monotonicity gate — a larger problem must never measure faster than a
+# smaller one (2% band). This was missing entirely from the previous gate
+# set; added here as a new CI-failing check without touching any existing
+# _FLOOR constant. One small and one large config per algorithm;
+# check_monotonic_grid (the same helper bench_release.py's production sweep
+# uses) does the actual 2%-band comparison.
+# ---------------------------------------------------------------------------
+
+_MONO_SMALL = (128, 512)   # (num_envs, seq_len)
+_MONO_LARGE = (512, 4096)
+
+
+def _sized_gae_inputs(num_envs, seq_len):
+    torch.manual_seed(0)
+    d = "cuda"
+    rewards = torch.randn(num_envs, seq_len, device=d)
+    values  = torch.randn(num_envs, seq_len, device=d)
+    dones   = (torch.rand(num_envs, seq_len, device=d) < 0.05).float()
+    return rewards, values, dones
+
+
+def _sized_vtrace_inputs(num_envs, seq_len):
+    torch.manual_seed(0)
+    d = "cuda"
+    return (
+        -torch.rand(num_envs, seq_len, device=d),
+        -torch.rand(num_envs, seq_len, device=d),
+        torch.randn(num_envs, seq_len, device=d),
+        torch.randn(num_envs, seq_len, device=d),
+        (torch.rand(num_envs, seq_len, device=d) < 0.05).float(),
+    )
+
+
+def _sized_retrace_inputs(num_envs, seq_len, num_actions=4):
+    torch.manual_seed(0)
+    d = "cuda"
+    terminateds = (torch.rand(num_envs, seq_len, device=d) < 0.05).float()
+    truncateds  = ((torch.rand(num_envs, seq_len, device=d) < 0.05) & ~terminateds.bool()).float()
+    return (
+        torch.softmax(torch.randn(num_envs, seq_len, num_actions, device=d), dim=-1),
+        torch.rand(num_envs, seq_len, device=d) * 0.8 + 0.1,
+        torch.randn(num_envs, seq_len, device=d),
+        torch.randn(num_envs, seq_len, num_actions, device=d),
+        torch.randint(0, num_actions, (num_envs, seq_len), device=d),
+        torch.randn(num_envs, seq_len, device=d),
+        terminateds,
+        truncateds,
+    )
+
+
+def _sized_returns_inputs(num_envs, seq_len):
+    torch.manual_seed(0)
+    d = "cuda"
+    rewards     = torch.randn(num_envs, seq_len, device=d)
+    next_values = torch.randn(num_envs, seq_len, device=d)
+    dones       = (torch.rand(num_envs, seq_len, device=d) < 0.05).float()
+    return rewards, next_values, dones
+
+
+def _sized_prefix_sum_inputs(num_envs, seq_len):
+    torch.manual_seed(0)
+    d = "cuda"
+    inputs = torch.randn(num_envs, seq_len, device=d)
+    dones  = (torch.rand(num_envs, seq_len, device=d) < 0.05).float()
+    return inputs, dones
+
+
+def _mono_row(fn, args, kwargs, num_envs, seq_len):
+    _warmup_gpu(fn, *args, **kwargs)
+    ni = _n_iter_gpu(seq_len, num_envs)
+    ms = _bench_gpu(fn, *args, n_iter=ni, **kwargs)
+    return {"num_envs": num_envs, "seq_len": seq_len, "triton_ms": ms}
+
+
+@cuda_only
+@pytest.mark.perf
+def test_monotonicity_gate():
+    """A larger problem must never measure faster than a smaller one (2% band),
+    checked directly against each Triton kernel (not a baseline comparison)."""
+    small_ne, small_sl = _MONO_SMALL
+    large_ne, large_sl = _MONO_LARGE
+
+    rows = [_mono_row(compute_gae, _sized_gae_inputs(ne, sl),
+                       {"gamma": 0.99, "lambda_": 0.95}, ne, sl)
+            for ne, sl in (_MONO_SMALL, _MONO_LARGE)]
+    gae_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = [_mono_row(compute_vtrace_fused, _sized_vtrace_inputs(ne, sl),
+                       {"gamma": 0.99}, ne, sl)
+            for ne, sl in (_MONO_SMALL, _MONO_LARGE)]
+    vtrace_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = [_mono_row(compute_retrace, _sized_retrace_inputs(ne, sl),
+                       {"gamma": 0.99}, ne, sl)
+            for ne, sl in (_MONO_SMALL, _MONO_LARGE)]
+    retrace_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = []
+    for ne, sl in (_MONO_SMALL, _MONO_LARGE):
+        rewards, next_values, dones = _sized_returns_inputs(ne, sl)
+        rows.append(_mono_row(compute_lambda_returns, (rewards, next_values, dones),
+                               {"gamma": 0.99, "lambda_": 0.95}, ne, sl))
+    lambda_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = []
+    for ne, sl in (_MONO_SMALL, _MONO_LARGE):
+        rewards, _, dones = _sized_returns_inputs(ne, sl)
+        rows.append(_mono_row(compute_discounted_returns, (rewards, dones),
+                               {"gamma": 0.99}, ne, sl))
+    disc_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = []
+    for ne, sl in (_MONO_SMALL, _MONO_LARGE):
+        rewards, _, dones = _sized_returns_inputs(ne, sl)
+        rows.append(_mono_row(compute_eligibility_traces, (rewards, dones),
+                               {"gamma": 0.99, "lambda_": 0.9}, ne, sl))
+    elig_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    rows = []
+    for ne, sl in (_MONO_SMALL, _MONO_LARGE):
+        inputs, dones = _sized_prefix_sum_inputs(ne, sl)
+        rows.append(_mono_row(compute_episodic_prefix_sum, (inputs, dones), {}, ne, sl))
+    prefix_violations = check_monotonic_grid(rows, ms_key="triton_ms")
+
+    all_violations = {
+        "gae": gae_violations, "vtrace": vtrace_violations, "retrace": retrace_violations,
+        "lambda_returns": lambda_violations, "discounted_returns": disc_violations,
+        "eligibility_traces": elig_violations, "prefix_sum": prefix_violations,
+    }
+    failed = {k: v for k, v in all_violations.items() if v}
+    print(f"\nMonotonicity gate ({small_ne}x{small_sl} -> {large_ne}x{large_sl}, 2% band):")
+    for algo, violations in all_violations.items():
+        status = "FAILED" if violations else "PASSED"
+        print(f"  {algo}: {status}" + (f" — {violations}" if violations else ""))
+    assert not failed, f"Monotonicity gate failed for: {failed}"

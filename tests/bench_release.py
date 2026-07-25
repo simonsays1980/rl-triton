@@ -1678,19 +1678,21 @@ def _headline(rows):
     return [r for r in rows if (r["num_envs"], r["seq_len"]) in wanted]
 
 
-def _section(gpu_label: str, tables: list[str]) -> str:
+def _methodology_text(gpu_label: str) -> str:
+    """Shared methodology header — used by both _section() (README/console)
+    and update_benchmarks_md() (benchmarks.md), so benchmarks.md carries the
+    full dtype/gamma-lambda/truncation-density/harness explanation too, not
+    just the README's copy of it."""
     date = datetime.date.today().isoformat()
     gpu  = gpu_label or _detect_gpu()
-    header = (
-        f"<!-- BENCH_START -->\n"
-        f"## Performance\n\n"
+    return (
         f"*Measured on {gpu} · {date} · "
         f"[`triton`](https://github.com/openai/triton) kernels vs `torch.compile` baselines and NumPy CPU.*\n\n"
         f"**Configuration.**  "
         f"dtype float32 (all kernels require it; see NOTES.md on bf16 and autocast).  "
         f"gamma=0.99, lambda=0.95 (lambda=0.9 for eligibility traces).  "
-        f"Termination probability ~5%% per step; truncation-path tables additionally inject "
-        f"~5%% interior truncated steps (mutually exclusive with terminations) with populated "
+        f"Termination probability ~5% per step; truncation-path tables additionally inject "
+        f"~5% interior truncated steps (mutually exclusive with terminations) with populated "
         f"`bootstrap_values`.\n\n"
         f"**Methodology.**  "
         f"All GPU full-call timings use CUDA events (start/stop around the complete "
@@ -1701,7 +1703,7 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"timed region. A tolerance-based correctness gate (atol=rtol=1e-4 vs. a sequential "
         f"reference implementation) runs before every timed config — not bit-identical, since "
         f"`tl.associative_scan` reorders float ops depending on num_warps/block layout, so "
-        f"cross-config last-bit differences are legitimate. A monotonicity gate (2%% band) then "
+        f"cross-config last-bit differences are legitimate. A monotonicity gate (2% band) then "
         f"asserts a larger problem never measures faster than a smaller one along either swept "
         f"axis. CPU timings are wall-clock (perf_counter), run until at least 0.5 s of samples.\n\n"
         f"**Two timing granularities.**  "
@@ -1739,6 +1741,10 @@ def _section(gpu_label: str, tables: list[str]) -> str:
         f"(small/parity, mid, main-grid-large, production-adjacent-large); the full CONFIGS grid "
         f"is reproducible via `python tests/bench_release.py`.\n"
     )
+
+
+def _section(gpu_label: str, tables: list[str]) -> str:
+    header = f"<!-- BENCH_START -->\n## Performance\n\n" + _methodology_text(gpu_label)
     return header + "\n\n".join(tables) + "\n<!-- BENCH_END -->"
 
 
@@ -1788,7 +1794,7 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
     """
     date = datetime.date.today().isoformat()
     gpu  = gpu_label or _detect_gpu()
-    heading = f"## {version} – {date} – {gpu}\n\n"
+    heading = f"## {version} – {date} – {gpu}\n\n" + _methodology_text(gpu_label)
     body    = "\n\n".join(tables) + "\n"
     new_section = heading + body
 
@@ -1798,7 +1804,12 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
         existing = "# Benchmarks\n\nLatest release only — see docs/benchmark-history/ for prior releases.\n\n"
 
     # Archive whatever release section currently occupies the file (if any)
-    # before overwriting it.
+    # before overwriting it. The fixed preamble is rewritten from scratch each
+    # time (not preserved from `existing`), so any stale leftover content
+    # before the first "## " heading — e.g. a "no benchmarks recorded yet"
+    # placeholder — does not linger once a real release lands; benchmarks.md
+    # holds ONLY the latest release, in full, nothing else.
+    preamble = "# Benchmarks\n\nLatest release only — see docs/benchmark-history/ for prior releases.\n\n"
     prior_match = _RELEASE_SECTION_RE.search(existing)
     if prior_match:
         prior_text = prior_match.group(0)
@@ -1808,9 +1819,7 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
         archive_path = BENCHMARK_HISTORY_DIR / f"{prior_version}.md"
         archive_path.write_text(f"# Benchmarks archive: {prior_version}\n\n" + prior_text)
         print(f"  (archived prior release '{prior_version}' -> {archive_path})")
-        updated = existing[:prior_match.start()] + new_section + existing[prior_match.end():]
-    else:
-        updated = existing.rstrip() + "\n\n" + new_section
+    updated = preamble + new_section
 
     BENCHMARKS_MD.write_text(updated)
     print(f"\nbenchmarks.md updated ({BENCHMARKS_MD}) — replaced current-release section only")

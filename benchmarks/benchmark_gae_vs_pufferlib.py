@@ -9,8 +9,8 @@ passes. Two independent, genuinely-fast kernels are compared:
     `tl.associative_scan`.
   - PufferLib:  `puff_advantage_row_cuda()` (a real, hand-written CUDA kernel —
     NOT a Python loop), one CUDA thread per environment row, sequential O(T)
-    scan within the thread. See tests/pufferlib_ext/build.py for exactly where
-    this lives in the real PufferLib source and why it is compiled from
+    scan within the thread. See benchmarks/pufferlib_ext/build.py for exactly
+    where this lives in the real PufferLib source and why it is compiled from
     vendored source rather than `pip install pufferlib`.
 
     NOTE on naming: the task briefing that prompted this script referred to
@@ -118,7 +118,7 @@ TWO REGIMES
      assumed to still hold.
 
 ================================================================================
-Usage: python tests/benchmark_gae_vs_pufferlib.py
+Usage: python benchmarks/benchmark_gae_vs_pufferlib.py
 ================================================================================
 """
 import sys
@@ -131,9 +131,10 @@ import torch
 import triton
 from torch.profiler import ProfilerActivity, profile
 
-sys.path.insert(0, str(Path(__file__).parent))
-from bench_utils import _bench_gpu, _warmup_gpu
+sys.path.insert(0, str(Path(__file__).parent))  # this dir — for pufferlib_ext
 from pufferlib_ext.build import load_puff_advantage
+sys.path.insert(0, str(Path(__file__).parent.parent / "tests"))  # for bench_utils
+from bench_utils import _bench_gpu, _warmup_gpu
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from rl_triton.ops.gae import compute_gae

@@ -1831,26 +1831,31 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict]) -> st
     autonomy boundary. Caller should write this to a draft file for human review
     and manual inclusion in README.md, never call update_readme() with it directly
     during an unattended run.
+
+    All rows use the SAME (num_envs, seq_len) so the table is a genuine
+    apples-to-apples comparison across algorithms — mixing different sizes per
+    row (an earlier version of this function did) makes speedups incomparable
+    and risks reading as cherry-picked even when it isn't.
     """
     gpu = gpu_label or _detect_gpu()
     date = datetime.date.today().isoformat()
-    # ~4 production-relevant rows: pick a spread across algo/num_envs/seq_len.
-    picks = [
-        ("GAE", 4096, 128), ("V-Trace", 16384, 128),
-        ("Retrace", 4096, 80), ("lambda-returns", 38400, 128),
-    ]
+    fixed_num_envs, fixed_seq_len = 4096, 128  # PufferLib/Gigaflow-default rollout size
+    algos = ["GAE", "V-Trace", "Retrace", "lambda-returns"]
     lines = [
         f"<!-- README_BENCH_DRAFT: NOT auto-applied. Prepared {date} on {gpu}. -->",
         "",
-        "| algorithm | num_envs | seq_len | speedup vs torch.compile (full-call) |",
-        "|:---|:---:|:---:|:---:|",
+        f"All rows at num_envs={fixed_num_envs}, seq_len={fixed_seq_len} (PufferLib/Gigaflow-default "
+        f"rollout size) for a genuine apples-to-apples comparison across algorithms.",
+        "",
+        "| algorithm | speedup vs torch.compile (full-call) |",
+        "|:---|:---:|",
     ]
     by_key = {(r["algo"], r["num_envs"], r["seq_len"]): r for r in production_rows}
-    for algo, num_envs, seq_len in picks:
-        r = by_key.get((algo, num_envs, seq_len))
+    for algo in algos:
+        r = by_key.get((algo, fixed_num_envs, fixed_seq_len))
         if r is None:
             continue
-        lines.append(f"| {algo} | {num_envs} | {seq_len} | {r['su_vec']:.1f}× |")
+        lines.append(f"| {algo} | {r['su_vec']:.1f}× |")
     lines.append("")
     lines.append("See [benchmarks.md](benchmarks.md) for the full sweep, methodology, and truncation-path results.")
     return "\n".join(lines)

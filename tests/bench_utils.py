@@ -1,7 +1,9 @@
 """Shared timing helpers for all benchmarks."""
+import os
 import time
 
 import torch
+from torch.profiler import ProfilerActivity, profile
 
 
 def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -150,3 +152,190 @@ def _n_iter_gpu(seq_len: int, num_envs: int) -> int:
     elements = seq_len * num_envs
     n_iter = max(20, min(200, 20_000_000 // elements))
     return n_iter
+
+
+# ---------------------------------------------------------------------------
+# Two timing granularities: full-call wall time (headline) vs device-only
+# kernel time (diagnostic), plus the amortized (N-calls-per-region) variant.
+# ---------------------------------------------------------------------------
+
+def _bench_gpu_amortized(fn, *args, n_calls: int = 100, n_trials: int = 5, **kwargs) -> float:
+    """N calls inside ONE timed region (one sync before, one after); ms/call.
+
+    Separates harness per-call sync overhead from genuine per-call cost —
+    the full-call single-shot number in _bench_gpu pays one cudaDeviceSynchronize
+    per iteration, which at very short seq_len can be a large fraction of the
+    measured time. This does not replace _bench_gpu as the speedup basis
+    (single-call full-call wall remains that); it is reported alongside it,
+    primarily for the short-seq_len production rows. Returns the min-of-medians
+    across n_trials, same robustness rationale as _bench_gpu.
+    """
+    trial_vals = []
+    for _ in range(n_trials):
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        for _ in range(n_calls):
+            fn(*args, **kwargs)
+        end.record()
+        torch.cuda.synchronize()
+        trial_vals.append(start.elapsed_time(end) / n_calls)
+    trial_vals.sort()
+    return trial_vals[len(trial_vals) // 2] if n_trials == 1 else min(trial_vals)
+
+
+def _device_profile(fn, *args, n_iter: int = 20, n_warmup: int = 5, **kwargs) -> tuple[float, float]:
+    """Device-only CUDA time (ms/call) and kernel-launch count (launches/call).
+
+    Uses torch.profiler CUDA activity around steady-state calls (ncu/nsys are
+    unusable in typical containerized GPU environments — RmProfilingAdminOnly
+    restrictions). This captures ONLY time the GPU spends executing kernels,
+    excluding Python dispatch / wrapper setup / launch overhead — the gap
+    between this and _bench_gpu's full-call wall time IS that overhead, which
+    callers still pay every invocation and which this function deliberately
+    does not hide.
+    """
+    for _ in range(n_warmup):
+        fn(*args, **kwargs)
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        for _ in range(n_iter):
+            fn(*args, **kwargs)
+        torch.cuda.synchronize()
+    events = [e for e in prof.key_averages() if e.self_device_time_total > 0]
+    total_device_us = sum(e.self_device_time_total for e in events)
+    launches = sum(e.count for e in events)
+    return total_device_us / n_iter / 1000.0, launches / n_iter
+
+
+# ---------------------------------------------------------------------------
+# Correctness / determinism gates
+# ---------------------------------------------------------------------------
+
+def assert_correctness(triton_out, ref_out, label: str, atol: float = 1e-4, rtol: float = 1e-4) -> None:
+    """Tolerance-based correctness gate vs the sequential reference.
+
+    NOT bit-identical: the associative-scan kernels reorder float ops
+    depending on num_warps/block layout, so cross-config last-bit
+    differences are legitimate and expected. This is the gate that must
+    hold at every swept config, before any timing is trusted.
+    """
+    if isinstance(triton_out, tuple):
+        for i, (t, r) in enumerate(zip(triton_out, ref_out)):
+            torch.testing.assert_close(
+                t, r, atol=atol, rtol=rtol,
+                msg=lambda m, i=i: f"[{label}] output[{i}] mismatch vs reference: {m}",
+            )
+    else:
+        torch.testing.assert_close(
+            triton_out, ref_out, atol=atol, rtol=rtol,
+            msg=lambda m: f"[{label}] mismatch vs reference: {m}",
+        )
+
+
+def assert_deterministic(fn, *args, label: str, n_repeats: int = 3, **kwargs) -> None:
+    """Same-shape, same-num_warps repeat-run determinism check (bit-identical).
+
+    Narrow scope on purpose: bit-identical is valid ONLY as a same-configuration
+    check. It is NOT valid across configs (see assert_correctness docstring).
+    """
+    first = fn(*args, **kwargs)
+    for i in range(1, n_repeats):
+        again = fn(*args, **kwargs)
+        if isinstance(first, tuple):
+            for j, (a, b) in enumerate(zip(first, again)):
+                if not torch.equal(a, b):
+                    raise AssertionError(
+                        f"[{label}] run {i} output[{j}] not bit-identical to run 0 "
+                        f"at the same shape/config — kernel is non-deterministic."
+                    )
+        else:
+            if not torch.equal(first, again):
+                raise AssertionError(
+                    f"[{label}] run {i} not bit-identical to run 0 at the same "
+                    f"shape/config — kernel is non-deterministic."
+                )
+
+
+# ---------------------------------------------------------------------------
+# Monotonicity gate (2% band): a larger problem must not measure faster than
+# a smaller one along a single swept axis.
+# ---------------------------------------------------------------------------
+
+def _check_monotonic_series(labeled_ms: list[tuple], tol: float = 0.02) -> list[str]:
+    """labeled_ms: [(size_label, ms), ...] already sorted ascending by size.
+
+    Returns a list of human-readable violation strings (empty if none).
+    """
+    violations = []
+    for (l1, v1), (l2, v2) in zip(labeled_ms, labeled_ms[1:]):
+        if v2 < v1 * (1 - tol):
+            violations.append(
+                f"{l1} -> {l2}: {v1:.4f}ms -> {v2:.4f}ms "
+                f"(decreased by {(1 - v2 / v1) * 100:.1f}%, beyond {tol * 100:.0f}% tolerance)"
+            )
+    return violations
+
+
+def check_monotonic_grid(rows: list[dict], ms_key: str = "triton_ms", tol: float = 0.02) -> list[str]:
+    """Monotonicity gate over a list of {'num_envs', 'seq_len', ms_key} rows.
+
+    Checks two axes independently: for each fixed num_envs, ms should be
+    non-decreasing (within tol) as seq_len grows; for each fixed seq_len, ms
+    should be non-decreasing (within tol) as num_envs grows. Only uses pairs
+    that actually exist in `rows` (grids need not be a full cross product).
+    """
+    violations = []
+    by_num_envs: dict = {}
+    by_seq_len: dict = {}
+    for r in rows:
+        by_num_envs.setdefault(r["num_envs"], []).append((r["seq_len"], r[ms_key]))
+        by_seq_len.setdefault(r["seq_len"], []).append((r["num_envs"], r[ms_key]))
+
+    for num_envs, series in by_num_envs.items():
+        series = sorted(series)
+        labeled = [(f"num_envs={num_envs},seq_len={sl}", ms) for sl, ms in series]
+        violations += _check_monotonic_series(labeled, tol=tol)
+    for seq_len, series in by_seq_len.items():
+        series = sorted(series)
+        labeled = [(f"seq_len={seq_len},num_envs={ne}", ms) for ne, ms in series]
+        violations += _check_monotonic_series(labeled, tol=tol)
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# Startup environment print (GPU, torch/triton versions, cache warmth)
+# ---------------------------------------------------------------------------
+
+def print_environment_header(script_name: str) -> None:
+    """Print GPU name, torch/triton versions, and TRITON_CACHE_DIR, flushed
+    immediately, and warn if the cache dir looks cold/ephemeral — a cold
+    cache silently spends minutes recompiling every kernel variant, which
+    looks like a hang to anyone watching a long unattended sweep."""
+    print(f"=== {script_name} ===", flush=True)
+    if torch.cuda.is_available():
+        print(f"GPU:              {torch.cuda.get_device_name(0)}", flush=True)
+    else:
+        print("GPU:              none (CUDA not available)", flush=True)
+    print(f"torch:            {torch.__version__}", flush=True)
+    try:
+        import triton
+        print(f"triton:           {triton.__version__}", flush=True)
+    except ImportError:
+        print("triton:           not installed", flush=True)
+
+    cache_env = os.environ.get("TRITON_CACHE_DIR")
+    cache_dir = cache_env or os.path.expanduser("~/.triton/cache")
+    print(f"TRITON_CACHE_DIR: {cache_env or '(unset, default: ~/.triton/cache)'} -> {cache_dir}", flush=True)
+    if os.path.isdir(cache_dir):
+        n_entries = len(os.listdir(cache_dir))
+        print(f"cache state:      exists, {n_entries} entries", flush=True)
+        if n_entries == 0:
+            print("WARNING: cache dir exists but is EMPTY — first kernel launches "
+                  "will trigger LLVM compilation (can take minutes, looks like a hang).",
+                  flush=True)
+    else:
+        print(f"WARNING: cache dir does not exist yet ({cache_dir}) — cold cache, "
+              f"first run will compile every kernel variant from scratch.", flush=True)
+    print(flush=True)

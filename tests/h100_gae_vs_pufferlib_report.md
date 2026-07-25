@@ -2,7 +2,7 @@
 
 Standalone hardware micro-benchmark comparing rl-triton's fused GAE kernel against
 PufferLib's real advantage-calculation CUDA kernel, isolated from env stepping and network
-forward passes. Produced by `tests/benchmark_gae_vs_pufferlib.py`. Two regimes, two figures:
+forward passes. Produced by `benchmarks/benchmark_gae_vs_pufferlib.py`. Two regimes, two figures:
 
 - **Production regime** — `gae_performance_crossover.png` — moderate-to-long on-policy
   rollouts (`seq_len` 128-4096, `num_envs` 128-8192).
@@ -15,7 +15,7 @@ forward passes. Produced by `tests/benchmark_gae_vs_pufferlib.py`. Two regimes, 
 `pufferlib/pufferl.py` (Python wrapper) and `puff_advantage_row_cuda()` in
 `pufferlib/extensions/cuda/pufferlib.cu` — a genuine hand-written CUDA kernel (one thread per
 environment row, sequential O(T) scan within the thread), not a Python loop. Compiled from
-vendored, sha256-pinned source (`tests/pufferlib_ext/`) rather than `pip install pufferlib`,
+vendored, sha256-pinned source (`benchmarks/pufferlib_ext/`) rather than `pip install pufferlib`,
 which also builds raylib/Box2D/dozens of unrelated env bindings and mutates process-wide state
 (`SIGINT` handler, warning filters) on import.
 

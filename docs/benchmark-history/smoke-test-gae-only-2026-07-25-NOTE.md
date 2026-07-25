@@ -26,7 +26,8 @@ All violations are in the sub-0.2ms absolute-time regime (tens of microseconds a
 the same clock-state-jitter range this repository already documents as a known measurement-floor
 effect on this hardware (`bench_utils.py`'s min-of-5-medians rationale; near-identical monotonicity
 dips already diagnosed as noise, not a structural regression, in
-`tests/benchmark_gae_vs_pufferlib.py`'s `report_monotonicity()` — H100 idles at 210MHz and boosts
+`benchmarks/benchmark_gae_vs_pufferlib.py`'s `report_monotonicity()` (moved from tests/ since) —
+H100 idles at 210MHz and boosts
 to 3105MHz, and a single clock-state transition can swing a measurement well past a 2% band at
 these tiny absolute times). This assessment is offered as context, not as a unilateral override —
 per the autonomy boundary, a smoke-test gate failure is a STOP-and-report item, so the remaining

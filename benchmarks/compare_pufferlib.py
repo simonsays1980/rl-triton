@@ -9,9 +9,9 @@ results from the one-time run that did have it available (that file notes the ex
 version and method used, since this script's own behavior has changed since then).
 
 (A vendored, sha256-pinned copy of PufferLib's CUDA source exists separately at
-tests/pufferlib_ext/, predating this script, used only by the separate, non-pytest-
-collected tests/benchmark_gae_vs_pufferlib.py. Neither is referenced by this script, by
-bench_release.py, by bench_safeguard.py, by any test_*.py file, or by CI.)
+benchmarks/pufferlib_ext/, predating this script, used only by the separate, non-pytest-
+collected benchmarks/benchmark_gae_vs_pufferlib.py. Neither is referenced by this script,
+by bench_release.py, by bench_safeguard.py, by any test_*.py file, or by CI.)
 
 Frame: capability + design comparison, not a scoreboard. PufferLib's advantage
 kernel is a genuine hand-written CUDA kernel — one thread per environment row,
@@ -102,8 +102,8 @@ def _make_rl_triton_inputs(num_envs, seq_len, device, seed=SEED):
 
 def _to_puffer_inputs(rewards, values, terminateds):
     """PufferLib's rewards/dones are indexed one slot ahead of values (see
-    module docstring in the historical tests/benchmark_gae_vs_pufferlib.py for
-    the full derivation) — a real PufferLib caller's buffer is already laid
+    module docstring in the historical benchmarks/benchmark_gae_vs_pufferlib.py
+    for the full derivation) — a real PufferLib caller's buffer is already laid
     out this way, so this reshuffle is a property of test-data generation,
     not a cost PufferLib actually pays at call time."""
     num_envs, seq_len = rewards.shape

@@ -10,8 +10,8 @@ it is not wired into `bench_release.py`, CI, or any regenerated-on-every-release
 a prebuilt CUDA extension, and was not installed in the environment this study ran in. For
 this one-time run only, `puff_advantage_row_cuda` was obtained by JIT-compiling a
 sha256-pinned, verbatim copy of PufferLib 3.0.0's own `pufferlib.cpp`/`pufferlib.cu` source
-(vendored separately at `tests/pufferlib_ext/`, predating this study, used there by the
-separate, non-pytest-collected `tests/benchmark_gae_vs_pufferlib.py`) — the exact code
+(vendored separately at `benchmarks/pufferlib_ext/`, predating this study, used there by
+the separate, non-pytest-collected `benchmarks/benchmark_gae_vs_pufferlib.py`) — the exact code
 PufferLib ships, just compiled locally instead of via pip. **This is not how
 `compare_pufferlib.py` behaves going forward**: the script now imports the real
 `pufferlib` pip package only and has no vendored/JIT-build fallback, so it will skip

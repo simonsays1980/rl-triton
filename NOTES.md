@@ -264,3 +264,73 @@ further action recommended here; `lambda_returns_fused_kernel`'s pre-shift
 design is *not* a copyable win for GAE, because `lambda_returns`'s design
 gets its `next_values` "for free" from the caller's own rollout bookkeeping,
 whereas GAE would have to synthesize it internally at real extra cost.
+
+---
+
+## Two `torch.compile` correctness bugs found in the benchmark PyTorch baselines (not this project's kernels)
+
+While fixing the vectorized PyTorch baselines used as comparison points in
+`benchmarks.md`/`bench_safeguard.py` (see the log-space-underflow note
+below), two separate `torch.compile`/Inductor/Dynamo bugs surfaced. Both
+produce **silently wrong numeric output — not NaN/inf, not a crash** — which
+is why they went unnoticed: the baseline's own output was previously never
+checked for correctness, only timed. Neither is a bug in this project's
+Triton kernels or in `parallel_suffix_scan`/`parallel_prefix_scan`
+themselves (both verified correct, eager and compiled, in isolation).
+
+### Bug 1 — allocating `torch.zeros_like(...)` inside a `torch.compile`'d function corrupts results
+
+`torch.compile(vectorized_gae)` (a thin wrapper that did
+`truncateds = torch.zeros_like(terminateds)` *inside* the function body
+before calling `vectorized_gae_with_truncations`) gave up to 17% of output
+elements wrong (max abs diff ~8, not a rounding-level discrepancy) at some
+shapes — even on a single, freshly-compiled shape with no prior compilation
+history. Bisected via a 4-way split (zeros built inside vs. outside the
+compiled region, with/without an unrelated `if x is not None` branch):
+**only "zeros allocated inside the compiled region, then fed into
+`parallel_suffix_scan`'s loop" reproduces it.** The same zeros built in eager
+code and passed in as a plain tensor argument to the compiled function is
+correct. Suspected cause: Inductor's memory planner treating the
+always-zero tensor as a reusable/aliasable buffer candidate, corrupting the
+scan's many loop-local temporaries. Affected `vectorized_gae` and
+`vectorized_discounted_returns` (both allocate an unconditional all-zero
+buffer fed wholesale into the scan); `vectorized_vtrace`,
+`vectorized_lambda_returns`, and `vectorized_eligibility_traces` do the same
+kind of allocation but were not observed to trigger it — inconsistent
+enough across functions that the fix was applied everywhere as a precaution,
+not just where it was caught.
+
+**Fix:** never `torch.compile` a wrapper that allocates tensors internally.
+Compile `vectorized_X_with_truncations` directly; build `truncateds`/
+`bootstrap_values` (or any other constant/zero tensor) in eager code at the
+call site, always as arguments, never inside the traced function.
+
+### Bug 2 — reusing one `torch.compile`'d object across shapes with different padding behavior corrupts results
+
+Separately: reusing a single `torch.compile(...)`-wrapped object across
+*different* input shapes — the normal pattern in a benchmark sweep that
+iterates many `(num_envs, seq_len)` configs — silently gives wrong output
+for some shape transitions, even after fixing Bug 1. Specifically observed
+between a shape that needs `parallel_suffix_scan`'s padding path
+(`seq_len=80`, padded to `T_pad=128`) and one that doesn't (`seq_len=512`,
+already a power of 2) when compiled by the *same* object in sequence. A
+freshly-compiled object used for only one shape is always correct; the same
+"fresh" object created *inside a loop that has already compiled other
+shapes in the same process* can still be wrong — so this isn't simply
+"don't reuse objects," it's cross-compilation contamination in Dynamo's
+process-global caching/guard state.
+
+**Fix:** call `torch._dynamo.reset()` immediately before warming up a
+compiled baseline at a new shape (reusing the same wrapped object
+otherwise). Verified across 11+ shapes spanning both the headline `CONFIGS`
+grid and the production-regime grid, including the specific failing pair,
+with zero mismatches after the reset. Must run *before* warmup for that
+shape, never between warmup and the timed calls (that would force a
+mid-measurement recompile and corrupt the timing).
+
+**Takeaway for future benchmark code in this repo:** any `torch.compile`
+baseline that (a) wraps a function allocating its own tensors, or (b) gets
+reused across more than one input shape in the same process, needs both of
+these guards. Neither is specific to the scan algorithms here — worth
+checking for elsewhere if `torch.compile` baselines are added to future
+benchmarks.

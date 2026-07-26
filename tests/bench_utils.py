@@ -49,6 +49,25 @@ def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return a[:, :T]
 
 
+def parallel_prefix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Log-depth parallel PREFIX associative scan — mirrors parallel_suffix_scan
+    for FORWARD recurrences (e.g. eligibility traces): z[t] = a[t] + b[t]*z[t-1],
+    z[-1] implicitly 0 (inject a seed via a[:, 0] += b[:, 0] * seed before calling).
+
+    Time-reversal duality: reversing both inputs to parallel_suffix_scan and
+    reversing its output back converts the suffix recurrence G[t]=a[t]+b[t]G[t+1]
+    into exactly this prefix recurrence — see the derivation in this session's
+    fix-plan discussion (docs/benchmark-history/ if archived). Reuses the
+    already-validated parallel_suffix_scan rather than a second hand-rolled
+    doubling-loop implementation.
+
+    Shape: a, b are [N, T].  Returns a_out [N, T].
+    """
+    return torch.flip(
+        parallel_suffix_scan(torch.flip(a, [1]), torch.flip(b, [1])), [1]
+    )
+
+
 def _warmup_gpu(fn, *args, n_warmup: int = 20, **kwargs) -> None:
     """Run n_warmup untimed iterations and synchronize.
 

@@ -624,29 +624,37 @@ def vectorized_gae(
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Fully vectorized GAE via log-space suffix cumsum — strong compiled baseline.
+    Fully vectorized GAE — strong compiled baseline. Thin wrapper around
+    vectorized_gae_with_truncations (truncateds=0), which uses parallel_suffix_scan
+    (linear-space, log2(T)-doubling, no log/exp) instead of a log-space suffix
+    cumsum.
 
-    Replaces the Python backward loop with a vectorized equivalent using the same
-    log-space suffix-product trick as vectorized_vtrace. Not production-hardened;
-    only used for benchmarking.
+    This function used to compute a log-space suffix product directly
+    (log(decay) suffix-summed, then exp()'d) and was BROKEN: at this project's
+    real termination rate (~5%/step), any window with 2+ termination events —
+    which is nearly guaranteed at every seq_len actually benchmarked, not just
+    long ones — pushes the suffix log-sum past float32's underflow floor
+    (each termination contributes log(1e-38)~=-87.5 via the done-boundary
+    clamp; two of them already exceed the ~-103 underflow threshold). Measured
+    directly: 90-99% of output elements were inf/nan at every size in
+    benchmarks.md (64x512 through 16384x512), silently, because this baseline's
+    own output was never correctness/finiteness-checked anywhere — only timed.
+    vectorized_gae_with_truncations doesn't have this failure mode (verified
+    finite up to seq_len=524288) and, called with truncateds=0, matches the
+    sequential reference to float32 precision (~2e-6 max abs diff) — it is the
+    correct baseline for both regimes, so there is no reason to maintain two
+    implementations. bootstrap_values here accepts the old [num_envs]-shaped
+    "final column only" convenience form (unused by any caller in this repo,
+    kept for signature compatibility) and is expanded into the [num_envs,
+    seq_len] boundary-column form vectorized_gae_with_truncations expects.
     """
-    not_done    = 1.0 - terminateds
-    next_values = _make_next_values(values, bootstrap_values)
-    deltas      = rewards + gamma * not_done * next_values - values
-    decays      = gamma * lambda_ * not_done
-
-    log_suffix = torch.flip(
-        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights = torch.exp(log_suffix)
-    adv     = torch.flip(
-        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
-    ) / weights
-
+    truncateds = torch.zeros_like(terminateds)
+    full_bootstrap = torch.zeros_like(rewards)
     if bootstrap_values is not None:
-        adv = adv + weights * bootstrap_values.unsqueeze(1)
-
-    return adv
+        full_bootstrap[:, -1] = bootstrap_values
+    return vectorized_gae_with_truncations(
+        rewards, values, terminateds, truncateds, full_bootstrap, gamma, lambda_
+    )
 
 
 

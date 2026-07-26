@@ -621,36 +621,22 @@ def vectorized_vtrace(
     bootstrap_values: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Fully vectorized V-Trace via log-space suffix cumsum — strong compiled baseline.
-
-    Derives next_values as values[:, t+1] with bootstrap at the boundary, matching
-    the kernel semantics.  Not production-hardened; only used for benchmarking.
+    Fully vectorized V-Trace — strong compiled baseline. Thin wrapper around
+    vectorized_vtrace_with_truncations (truncateds=0) — see vectorized_gae's
+    docstring (test_gae.py) for why: the log-space suffix-cumsum formula this
+    used to compute directly was broken (90%+ non-finite output at every size
+    actually benchmarked, never checked), and parallel_suffix_scan isn't.
+    bootstrap_values here keeps the old [num_envs]-shaped "final column only"
+    convenience form for signature compatibility.
     """
-    next_values = _make_next_values(values, bootstrap_values)
-
-    is_ratios = torch.exp(log_pi_target - log_pi_behavior)
-    rho    = torch.clamp(is_ratios, max=rho_bar)
-    c      = torch.clamp(is_ratios, max=c_bar)
-    deltas = rho * (rewards + gamma * next_values * (1.0 - terminateds) - values)
-    decays = gamma * c * (1.0 - terminateds)
-
-    log_suffix = torch.flip(
-        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights      = torch.exp(log_suffix)
-    value_deltas = torch.flip(
-        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
-    ) / weights
-
+    truncateds = torch.zeros_like(terminateds)
+    full_bootstrap = torch.zeros_like(rewards)
     if bootstrap_values is not None:
-        value_deltas = value_deltas + weights * bootstrap_values.unsqueeze(1)
-
-    vtrace_targets              = value_deltas + values
-    next_vtrace_targets         = torch.empty_like(vtrace_targets)
-    next_vtrace_targets[:, :-1] = vtrace_targets[:, 1:]
-    next_vtrace_targets[:, -1]  = 0.0 if bootstrap_values is None else bootstrap_values
-    vtrace_advantages = rho * (rewards + gamma * next_vtrace_targets * (1.0 - terminateds) - values)
-    return vtrace_targets, vtrace_advantages
+        full_bootstrap[:, -1] = bootstrap_values
+    return vectorized_vtrace_with_truncations(
+        log_pi_target, log_pi_behavior, values, rewards, terminateds, truncateds,
+        full_bootstrap, gamma, rho_bar=rho_bar, c_bar=c_bar,
+    )
 
 
 # ---------------------------------------------------------------------------

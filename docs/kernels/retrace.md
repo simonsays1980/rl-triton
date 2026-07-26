@@ -123,6 +123,8 @@ The caller supplies `terminateds[env, t] = 1` at true episode endings and `trunc
 | **Truncated** | 1 | 0 | Kept: $r_t + \gamma\mathbb{E}_\pi[Q(s_{t+1},\cdot)] - Q_t$ | $0$ — scan stops |
 | **Window end** | 0 | 0 | Kept: $r_{T-1} + \gamma\mathbb{E}_\pi[Q(s_T,\cdot)] - Q_{T-1}$ | $0$ — $c_T$ undefined |
 
+**Performance note.** Unlike GAE/V-Trace, `retrace_fused_kernel` has no `HAS_TRUNCATIONS`-style compile-time specialization — it unconditionally loads both `terminated_ptr` and `truncated_ptr` on every call. Measured directly (H100 SXM, num_envs=4096, seq_len=128): full-call and device time are identical whether `truncateds` is all-zero or has real truncations mixed in (0.0114ms device either way, full-call within noise across repeated runs). Truncation support costs zero marginal runtime here.
+
 ---
 
 ## 5. Mapping to the Associative Scan

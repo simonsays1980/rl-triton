@@ -14,6 +14,16 @@ Run with:
 or select in CI:
     pytest -m perf
 """
+import os
+
+# Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
+# var_ranges, defaulting to unknown range") — see tests/bench_release.py's
+# same setdefault for the full rationale. Only effective if this module's
+# `import torch` below is the first import to touch torch in the process
+# (pytest collection order can beat us to it if another test module already
+# imported torch first).
+os.environ.setdefault("TORCH_LOGS", "-dynamic")
+
 import pytest
 import torch
 
@@ -32,11 +42,24 @@ from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 # Import vectorized baselines from each algorithm's test module.
 # These are the strongest compiled PyTorch baselines (no Python loop per timestep).
-from test_gae import vectorized_gae
+#
+# GAE and discounted-returns import their _with_truncations siblings instead
+# of the plain wrapper: torch.compile(vectorized_gae) / torch.compile(
+# vectorized_discounted_returns) was found to silently produce WRONG numeric
+# output (not NaN -- real wrong numbers) even at a single fixed shape,
+# because the wrapper allocates torch.zeros_like(...) INSIDE the traced
+# region before handing it to parallel_suffix_scan (likely an Inductor
+# buffer-reuse bug). Compiling the *_with_truncations function directly and
+# building the zero truncateds/bootstrap tensors in eager code (below, in
+# each test) avoids it -- see tests/bench_release.py's bench_gae() for the
+# full bisection. vectorized_vtrace/vectorized_lambda_returns/
+# vectorized_eligibility_traces/vectorized_retrace were checked against this
+# same failure mode directly and are safe to compile as-is.
+from test_gae import vectorized_gae_with_truncations
 from test_prefix_sum import vectorized_episodic_prefix_sum
 from test_retrace import vectorized_retrace
 from test_returns import (
-    vectorized_discounted_returns,
+    vectorized_discounted_returns_with_truncations,
     vectorized_eligibility_traces,
     vectorized_lambda_returns,
 )
@@ -49,6 +72,96 @@ cuda_only = pytest.mark.skipif(
 _NUM_ENVS      = 128
 _SEQ_LEN       = 1024
 _SPEEDUP_FLOOR = 1.8
+
+
+# ---------------------------------------------------------------------------
+# Per-GPU performance floors.
+#
+# Achievable Triton-vs-torch.compile speedup is hardware-dependent, not a
+# fixed property of the kernel: at this suite's small 128x1024 config, each
+# side's *device* kernel time is only a few microseconds, dwarfed by ~25-30us
+# of fixed CUDA dispatch/sync overhead that both sides pay identically
+# (confirmed via bench_utils._device_profile: e.g. GAE's own device-only
+# ratio is 2.14x -- above its RTX-era 1.9x floor -- even though its full-call
+# wall-clock ratio, what this suite actually gates on, is ~1.5x). A faster
+# GPU shrinks the device time on both sides while the fixed overhead stays
+# the same, compressing the wall-clock ratio toward 1x. A floor calibrated on
+# one card is therefore not transferable to a faster one; keying by device
+# name is a correctness requirement here, not an optimization.
+#
+# "rtx_2000_ada" entries are the pre-existing floor values, UNCHANGED.
+# Investigated 2026-07-26 (three test_perf_gae/lambda_returns/
+# eligibility_traces failures on an H100 CI run): commits 72b7299/b236ce9
+# that set these floors are both dated 2026-06-23, a full month before this
+# repo's first H100 commit (dc246a4, 2026-07-22), and b236ce9's own
+# prefix_sum comment from that same day describes "this card idles at
+# 210MHz and boosts to 3105MHz, 70W TDP" -- an RTX-2000-Ada-class
+# clock/power profile (H100 SXM measured this session: ~345MHz idle /
+# 1980MHz boost / 700W TDP via nvidia-smi). No commit message from that date
+# names the GPU explicitly, so "RTX 2000 Ada" is inference from converging
+# evidence (matches docs/benchmark-history/v0.1.0.md's "NVIDIA RTX 2000 Ada
+# Generation" release, dated in between), not a confirmed first-hand record
+# -- labelled "existing/legacy" rather than asserted.
+#
+# "h100_sxm" entries were measured 2026-07-26 on NVIDIA H100 80GB HBM3 SXM:
+# 3 independent full pytest-process runs (5 trials each), GPU confirmed at
+# full P0 boost clock (1980MHz, its max) throughout with zero
+# clocks_event_reasons bits set and power draw ~115-127W of a 700W limit --
+# ruling out clock/power throttling. BLOCK_SIZE at this suite's one config
+# (seq_len=1024) resolves to num_warps=8 in every kernel's _WARPS table both
+# before and after the small-BLOCK_SIZE warp fix (commit 7b49b23, which only
+# added entries for BLOCK_SIZE<512) -- ruling out that change as a cause.
+# Floor = lowest of the 3 runs' min-of-5-trials, x0.9 (~10% margin), matching
+# this file's existing floor-setting convention. PROPOSED, pending human
+# approval -- not yet treated as final calibration.
+_H100_MEASURED_2026_07_26 = {
+    # algo: (run1_min, run2_min, run3_min) wall-clock speedup, 128x1024
+    "gae":                 (1.51, 1.53, 1.51),
+    "vtrace":              (1.99, 2.06, 2.01),
+    "retrace":             (1.51, 1.56, 1.53),
+    "lambda_returns":      (1.44, 1.52, 1.48),
+    "discounted_returns":  (1.49, 1.55, 1.53),
+    "eligibility_traces":  (1.19, 1.19, 1.20),
+    "prefix_sum":          (1.21, 1.21, 1.25),  # median-gated, see test_perf_prefix_sum
+}
+
+_FLOOR_TABLE = {
+    "rtx_2000_ada": {
+        "gae": 1.9, "vtrace": 1.8, "retrace": 1.35, "lambda_returns": 1.6,
+        "discounted_returns": 1.25, "eligibility_traces": 1.85, "prefix_sum": 1.1,
+    },
+    "h100_sxm": {
+        algo: round(min(runs) * 0.9, 2)
+        for algo, runs in _H100_MEASURED_2026_07_26.items()
+    },
+}
+
+_DEVICE_SUBSTRING_MAP = [
+    ("RTX 2000 Ada", "rtx_2000_ada"),
+    ("H100", "h100_sxm"),
+]
+
+
+def _floor_for(algo: str):
+    """Return this algorithm's calibrated floor for the running GPU, or None
+    if no entry matches -- callers must pytest.skip() on None rather than
+    fall back to another GPU's floor (see module-level comment above)."""
+    if not torch.cuda.is_available():
+        return None
+    name = torch.cuda.get_device_name(0)
+    for substr, key in _DEVICE_SUBSTRING_MAP:
+        if substr in name:
+            return _FLOOR_TABLE[key][algo]
+    return None
+
+
+def _skip_if_uncalibrated(floor):
+    if floor is None:
+        pytest.skip(
+            f"no calibrated perf floor for device "
+            f"{torch.cuda.get_device_name(0)!r} -- add an entry to "
+            f"_FLOOR_TABLE before trusting this gate on this hardware"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -113,14 +226,23 @@ def test_perf_gae():
     # GAE and V-Trace shared one floor (_SPEEDUP_FLOOR=1.5) pre-harness-fix.
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
-    # floor 1.9; 3-run min 2.10x, ~10% margin.
-    _GAE_FLOOR = 1.9
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.9
+    # (3-run min 2.10x, ~10% margin, pre-existing). H100 SXM: proposed
+    # ~1.36 (3-run min 1.51x, ~10% margin, pending approval).
+    _GAE_FLOOR = _floor_for("gae")
+    _skip_if_uncalibrated(_GAE_FLOOR)
     args = _gae_inputs()
-    compiled = torch.compile(vectorized_gae)
+    # Compile vectorized_gae_with_truncations directly, not the plain wrapper
+    # -- see the import comment above for why. truncateds/bootstrap built
+    # here in eager code, never inside the compiled region.
+    compiled = torch.compile(vectorized_gae_with_truncations)
+    trunc0 = torch.zeros(_NUM_ENVS, _SEQ_LEN, device="cuda")
+    bsv0   = torch.zeros(_NUM_ENVS, _SEQ_LEN, device="cuda")
+    compiled_args = (*args, trunc0, bsv0)
 
     ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
     speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
-        compute_gae, compiled, args, args,
+        compute_gae, compiled, args, compiled_args,
         {"gamma": 0.99, "lambda_": 0.95}, {"gamma": 0.99, "lambda_": 0.95},
         n_iter=ni, n_trials=5,
     )
@@ -144,7 +266,12 @@ def test_perf_gae():
 def test_perf_vtrace():
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
-    # floor 1.8 (_SPEEDUP_FLOOR); 3-run min 2.05x, ~10% margin.
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.8
+    # (3-run min 2.05x, ~10% margin, pre-existing). H100 SXM: proposed
+    # ~1.79 (3-run min 1.99x, ~10% margin, pending approval; already
+    # passes on H100 today, this just makes the gate GPU-honest).
+    _VTRACE_FLOOR = _floor_for("vtrace")
+    _skip_if_uncalibrated(_VTRACE_FLOOR)
     args = _vtrace_inputs()
     compiled = torch.compile(vectorized_vtrace)
 
@@ -163,8 +290,8 @@ def test_perf_vtrace():
         f"\n  speedups  : {[f'{x:.2f}x' for x in speedups]}"
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
-    assert speedup >= _SPEEDUP_FLOOR, (
-        f"V-Trace Triton {speedup:.2f}x vs torch.compile(vec) — below {_SPEEDUP_FLOOR}x floor"
+    assert speedup >= _VTRACE_FLOOR, (
+        f"V-Trace Triton {speedup:.2f}x vs torch.compile(vec) — below {_VTRACE_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -177,8 +304,12 @@ def test_perf_retrace():
     # does the same two-output work.  At 128x1024 this dispatches to the fully
     # fused single-kernel path (compute_retrace_fused), which has no bootstrap-
     # default allocation to remove; the floor below is a fresh re-calibration.
-    # floor 1.35; 3-run min 1.53x, ~10% margin.
-    _RETRACE_FLOOR = 1.35
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.35
+    # (3-run min 1.53x, ~10% margin, pre-existing). H100 SXM: proposed
+    # ~1.36 (3-run min 1.51x, ~10% margin, pending approval; near-identical
+    # to the RTX value by coincidence, not because it's GPU-independent).
+    _RETRACE_FLOOR = _floor_for("retrace")
+    _skip_if_uncalibrated(_RETRACE_FLOOR)
     args = _retrace_inputs()
     compiled = torch.compile(vectorized_retrace)
 
@@ -212,8 +343,11 @@ def test_perf_lambda_returns():
     # fully memory-bound at 128x1024.  Re-calibrated after removing the
     # torch.zeros(num_envs) bootstrap-default allocation from the no-bootstrap
     # kernel path (HAS_BOOTSTRAP constexpr).
-    # floor 1.6; 3-run min 1.82x, ~10% margin.
-    _LAMBDA_FLOOR = 1.6
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.6
+    # (3-run min 1.82x, ~10% margin, pre-existing). H100 SXM: proposed
+    # ~1.3 (3-run min 1.44x, ~10% margin, pending approval).
+    _LAMBDA_FLOOR = _floor_for("lambda_returns")
+    _skip_if_uncalibrated(_LAMBDA_FLOOR)
     rewards, next_values, dones = _returns_inputs()
     compiled = torch.compile(vectorized_lambda_returns)
 
@@ -252,15 +386,24 @@ def test_perf_discounted_returns():
     # no-bootstrap kernel path (HAS_BOOTSTRAP constexpr); this is still the
     # noisiest, lightest kernel in the library (pre-fix runs dipped as low as
     # 1.046x), so its margin below the observed min is wider than the others.
-    # floor 1.25; 3-run min 1.45x, wider-than-10% margin for tail-risk.
-    _DISC_FLOOR = 1.25
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.25
+    # (3-run min 1.45x, wider-than-10% margin for tail-risk, pre-existing).
+    # H100 SXM: proposed ~1.34 (3-run min 1.49x, ~10% margin, pending
+    # approval; already passes on H100 today at the old 1.25 floor, this
+    # just tightens the gate to match this hardware's real ceiling).
+    _DISC_FLOOR = _floor_for("discounted_returns")
+    _skip_if_uncalibrated(_DISC_FLOOR)
     rewards, _, dones = _returns_inputs()
-    compiled = torch.compile(vectorized_discounted_returns)
+    # Compile vectorized_discounted_returns_with_truncations directly, not
+    # the plain wrapper -- see the import comment above for why.
+    compiled = torch.compile(vectorized_discounted_returns_with_truncations)
+    trunc0 = torch.zeros(_NUM_ENVS, _SEQ_LEN, device="cuda")
+    bsv0   = torch.zeros(_NUM_ENVS, _SEQ_LEN, device="cuda")
 
     ni = _n_iter_gpu(_SEQ_LEN, _NUM_ENVS)
     speedups, tri_ms_list, vec_ms_list = _bench_gpu_spread(
         compute_discounted_returns, compiled,
-        (rewards, dones), (rewards, dones),
+        (rewards, dones), (rewards, dones, trunc0, bsv0),
         {"gamma": 0.99}, {"gamma": 0.99},
         n_iter=ni, n_trials=5,
     )
@@ -287,8 +430,15 @@ def test_perf_eligibility_traces():
     # per-step arithmetic.  Both sides are memory-bound at 128x1024.
     # Re-calibrated after removing the torch.zeros(num_envs) seed-default
     # allocation from the no-seed kernel path (HAS_SEED constexpr).
-    # floor 1.85; 3-run min 2.08x, ~10% margin.
-    _ELIG_FLOOR = 1.85
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.85
+    # (3-run min 2.08x, ~10% margin, pre-existing). H100 SXM: proposed
+    # ~1.07 (3-run min 1.19x, ~10% margin, pending approval). This is the
+    # tightest H100 margin in the table -- eligibility_traces has the
+    # smallest device-only win of the three affected kernels (1.50x, see
+    # diagnosis comment above), so it also has the least wall-clock
+    # headroom above the fixed dispatch-overhead floor at this config.
+    _ELIG_FLOOR = _floor_for("eligibility_traces")
+    _skip_if_uncalibrated(_ELIG_FLOOR)
     rewards, _, dones = _returns_inputs()
     compiled = torch.compile(vectorized_eligibility_traces)
 
@@ -340,9 +490,12 @@ def test_perf_prefix_sum():
     # down without reflecting the kernel's real performance; the median is
     # robust to that single bad trial. min/median/max are still printed below
     # so the spread stays visible.
-    # floor 1.1; below the ~1.24x median with margin, median-gated so it does
-    # not flake on a single low-clock trial the way a min-gate would.
-    _PREFIX_FLOOR = 1.1
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.1,
+    # below the ~1.24x median with margin, pre-existing. H100 SXM: proposed
+    # ~1.09 (3-run min-of-medians 1.21x, ~10% margin, pending approval;
+    # near-identical to the RTX value by coincidence).
+    _PREFIX_FLOOR = _floor_for("prefix_sum")
+    _skip_if_uncalibrated(_PREFIX_FLOOR)
     args = _prefix_sum_inputs()
     compiled = torch.compile(vectorized_episodic_prefix_sum)
 

@@ -36,8 +36,14 @@ or README.md.
 """
 import argparse
 import datetime
+import os
 import sys
 from pathlib import Path
+
+# Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
+# var_ranges, defaulting to unknown range") — see tests/bench_release.py's
+# same setdefault for the full rationale. Must precede `import torch`.
+os.environ.setdefault("TORCH_LOGS", "-dynamic")
 
 import torch
 

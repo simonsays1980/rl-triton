@@ -3,7 +3,7 @@ import torch
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, parallel_prefix_scan
 from rl_triton.ops.prefix_sum import compute_episodic_prefix_sum
 
 cuda_only = pytest.mark.skipif(
@@ -242,24 +242,23 @@ def vectorized_episodic_prefix_sum(
     dones: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Episodic prefix sum via torch.cumsum with a segment-correction trick.
+    Episodic prefix sum via parallel_prefix_scan — a strong compiled baseline
+    a competent PyTorch user would write to avoid a Python timestep loop.
 
-    Used as a strong compiled baseline: a competent PyTorch user would write
-    something like this to avoid a Python timestep loop.  Not production-
-    hardened for all edge cases — only used for benchmarking.
+    reference_episodic_prefix_sum's (and the kernel's, per its own ground-
+    truth tests e.g. test_prefix_sum_known_values_reset_at_start) convention
+    is carry = inputs[t] + (1-dones[t])*carry -- dones[t]=1 means the reset
+    already applies to step t itself (out[t] = inputs[t] alone, no carry-in),
+    not "t is the last step before a reset takes effect". This is exactly
+    the recurrence parallel_prefix_scan(a, b) computes: z[t] = a[t] + b[t]*z[t-1].
 
-    The idea: global cumsum minus the cumsum value carried in from the start
-    of each episode segment.
-
-      running  = cumsum(inputs)               # global, ignores resets
-      boundary = running * dones              # value at each terminal step
-      offset   = cumsum(boundary).shift(1)   # value to subtract per segment
-      result   = running - offset
+    An earlier cumsum-difference formula here effectively deferred the reset
+    by one step, and was wrong at ~95% of elements at EVERY shape ever
+    benchmarked -- never caught because this file's own CONFIGS loop only
+    ever checked the Triton kernel against the reference, never this vec
+    baseline's own output (see NOTES.md).
     """
-    running  = torch.cumsum(inputs, dim=1)
-    boundary = running * dones
-    offset   = torch.cumsum(boundary, dim=1) - boundary
-    return running - offset
+    return parallel_prefix_scan(inputs, 1.0 - dones)
 
 
 @cuda_only

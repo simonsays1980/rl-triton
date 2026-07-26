@@ -20,9 +20,12 @@ Usage:
 """
 import argparse
 import datetime
+import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
@@ -37,6 +40,22 @@ import numpy as np
 import torch
 import torch._dynamo
 import triton
+
+# This sweep compiles ~15 distinct torch.compile(...) wrapper objects, several
+# reused across every shape in CONFIGS (12) plus PRODUCTION_CONFIGS+BOUNDARY_
+# CONFIG (11) -- ~200 (function, shape) compiles total across the process.
+# Raising Dynamo's cache limits well above that avoids one confirmed failure
+# mode (recompiles past the default cache_size_limit=8 silently falling back
+# instead of compiling) even though it turned out NOT to be the cause of the
+# cross-shape wrong-output bug (that one is a genuine Inductor buffer-reuse
+# bug around parallel_suffix_scan's internal padding branch -- confirmed
+# still present with these limits raised; see _needs_pad()'s comment and the
+# targeted torch._dynamo.reset() at the actual transition points). Keeping
+# both limits high is still worthwhile: it avoids silent eager fallback
+# (slow, not wrong, but undermines the whole point of the sweep) and costs
+# nothing.
+torch._dynamo.config.cache_size_limit = 128
+torch._dynamo.config.accumulated_cache_size_limit = 512
 
 # Ensure the tests/ directory is on sys.path so bench_utils is importable.
 sys.path.insert(0, str(Path(__file__).parent))
@@ -523,6 +542,25 @@ ALL_ALGOS = [
 ]
 
 
+def _needs_pad(seq_len):
+    """Whether parallel_suffix_scan/parallel_prefix_scan will pad seq_len up
+    to the next power of 2 (its doubling scan requires T_pad a power of 2).
+
+    Confirmed root cause of the cross-shape torch.compile correctness bug
+    (see the comment at the first use below): the padding branch allocates a
+    zero tensor INSIDE the compiled region (torch.cat([x, torch.zeros(...)]))
+    -- the same class of Inductor buffer-reuse/aliasing bug as the
+    always-zero-argument bug fixed elsewhere in this file, just triggered
+    internally rather than by a caller-supplied zero tensor. Only PRODUCTION_
+    SEQ_LENS' seq_len=80 hits this branch anywhere in this sweep; every
+    CONFIGS/HEADLINE_CONFIGS/BOUNDARY_CONFIG seq_len is already a power of 2.
+    """
+    t_pad = 1
+    while t_pad < seq_len:
+        t_pad *= 2
+    return t_pad != seq_len
+
+
 def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_inputs_fn, kwargs):
     """Shared production-regime + boundary-marker sweep for algorithms whose
     triton/compiled/reference callables all accept the SAME positional args
@@ -538,24 +576,48 @@ def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_in
     the timing.
     """
     rows = []
+    # compiled_fn was already used across CONFIGS beforehand in every current
+    # caller, and every CONFIGS seq_len is a power of 2 (no padding) -- so the
+    # object arrives here having never taken the padding branch.
+    prev_needs_pad = False
     for num_envs, seq_len in PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]:
         is_boundary = (num_envs, seq_len) == BOUNDARY_CONFIG
         args_gpu = make_inputs_fn(num_envs, seq_len)
         ni = _n_iter_gpu(seq_len, num_envs)
 
-        # torch.compile has a confirmed cross-shape cache-contamination bug:
-        # reusing one torch.compile(...)-wrapped object across shapes where
-        # padding behavior differs (e.g. seq_len=80 needs parallel_suffix_scan
-        # to pad to 128, seq_len=128 doesn't) silently produces WRONG numeric
-        # output (not NaN) at some of the shapes -- confirmed via bisection
-        # (see bench_gae()'s docstring note). torch._dynamo.reset() before
-        # each new shape's warmup, reusing the same wrapped object otherwise,
-        # reliably avoids it -- verified across 5 shapes including the
-        # specific failing pair. Must run before warmup, never between warmup
-        # and the timed calls for the same shape (that would force a
-        # mid-measurement recompile).
-        torch._dynamo.reset()
+        # Reusing one torch.compile(...)-wrapped object across a transition
+        # into/out of parallel_suffix_scan's internal padding branch (only
+        # seq_len=80 here, needing pad to 128) silently produces WRONG numeric
+        # output (not NaN) -- confirmed via bisection to be independent of
+        # cache_size_limit/accumulated_cache_size_limit (raising both to 128/
+        # 512 does not fix it) and independent of torch._dynamo.mark_dynamic
+        # (does not fix it either); a genuinely fresh torch.compile(...)
+        # object in the same process is STILL wrong, so it's process-level
+        # Dynamo/Inductor state, not object identity. torch._dynamo.reset()
+        # right at the transition does fix it, and padding depends only on
+        # seq_len (not num_envs), so only the ~2 seq_len-parity transitions
+        # per compiled object need it -- resetting before every shape (the
+        # previous approach) also "fixed" this but accumulates enough resets
+        # across a full sweep to itself corrupt CUDA state (illegal memory
+        # access late in the run); resetting only at these rare transitions
+        # stays far below that threshold.
+        needs_pad = _needs_pad(seq_len)
+        if needs_pad != prev_needs_pad:
+            torch._dynamo.reset()
+        prev_needs_pad = needs_pad
 
+        # Reusing one torch.compile(...)-wrapped object across many distinct
+        # shapes (e.g. seq_len=80 needs parallel_suffix_scan to pad to 128,
+        # seq_len=128 doesn't) used to silently produce WRONG numeric output
+        # (not NaN) at some shapes once >cache_size_limit (default 8) distinct
+        # shapes had compiled against it in this process -- Dynamo evicts/
+        # reuses a stale guard instead of recompiling. torch._dynamo.reset()
+        # per shape "fixed" this but defeats the compile cache and, called
+        # enough times in one process, corrupts CUDA state (illegal memory
+        # access crashes late in the full sweep). Real fix: raise
+        # torch._dynamo.config.cache_size_limit / accumulated_cache_size_limit
+        # at startup (see module top) so every distinct shape in the sweep
+        # gets its own cache entry with no eviction and no reset needed.
         triton_out = triton_fn(*args_gpu, **kwargs)
         ref_out    = ref_fn(*args_gpu, **kwargs)
         assert_correctness(triton_out, ref_out, f"{algo_label}[production,{num_envs}x{seq_len}]")
@@ -684,7 +746,6 @@ def bench_gae():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_gae(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
@@ -788,7 +849,6 @@ def bench_gae_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, values, terminateds = _make_gae(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -868,7 +928,6 @@ def bench_vtrace():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_vtrace(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
@@ -968,7 +1027,6 @@ def bench_vtrace_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         log_pi_t, log_pi_b, values, rewards, terminateds = _make_vtrace(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1058,7 +1116,6 @@ def bench_retrace():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_retrace(num_envs, seq_len)
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
@@ -1113,8 +1170,16 @@ def bench_retrace():
     # (see _retrace_kernel_args), so it can't use the shared
     # _bench_production_regime helper — inline production sweep instead.
     production_rows = []
+    # See _bench_production_regime's matching comment: reset only at a
+    # padding-regime transition (compiled_vec already only saw non-padded
+    # CONFIGS shapes above), not on every shape.
+    prev_needs_pad = False
     for num_envs, seq_len in PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]:
         is_boundary = (num_envs, seq_len) == BOUNDARY_CONFIG
+        needs_pad = _needs_pad(seq_len)
+        if needs_pad != prev_needs_pad:
+            torch._dynamo.reset()
+        prev_needs_pad = needs_pad
         args_gpu = _make_retrace(num_envs, seq_len)
         retrace_kernel_args = _retrace_kernel_args(args_gpu)
         ni = _n_iter_gpu(seq_len, num_envs)
@@ -1203,7 +1268,6 @@ def bench_returns():
 
     rows_lambda, rows_disc, rows_traces = [], [], []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, next_values, dones = _make_returns(num_envs, seq_len)
         ni = _n_iter_gpu(seq_len, num_envs)
@@ -1366,7 +1430,6 @@ def bench_lambda_returns_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, next_values, terminateds = _make_returns(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1444,7 +1507,6 @@ def bench_discounted_returns_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, _, terminateds = _make_returns(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1523,7 +1585,6 @@ def bench_prefix_sum():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
-        torch._dynamo.reset()  # avoid torch.compile cross-shape cache contamination -- see _bench_production_regime's note
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         inputs, dones = _make_prefix_sum(num_envs, seq_len)
         ni = _n_iter_gpu(seq_len, num_envs)
@@ -1531,6 +1592,9 @@ def bench_prefix_sum():
         triton_out = compute_episodic_prefix_sum(inputs, dones)
         ref_out    = reference_episodic_prefix_sum(inputs, dones)
         assert_correctness(triton_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}]")
+
+        vec_out = vectorized_episodic_prefix_sum(inputs, dones)
+        assert_correctness(vec_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}] (vec baseline)")
 
         _warmup_gpu(compute_episodic_prefix_sum, inputs, dones)
         _warmup_gpu(compiled, inputs, dones)
@@ -2003,6 +2067,22 @@ def main():
                         help="Comma-separated subset of ALL_ALGOS to run (default: all). "
                              f"Choices: {','.join(ALL_ALGOS)}. Used for the GAE-only smoke "
                              "test before committing to the full unattended sweep.")
+    parser.add_argument("--output-json", default="", metavar="PATH",
+                        help="Dump this invocation's tables/rows/violations as JSON to PATH "
+                             "instead of writing benchmarks.md/README.md. Used internally by "
+                             "--parent-sweep's per-algorithm-group subprocesses.")
+    parser.add_argument("--parent-sweep", action="store_true",
+                        help="Run each algorithm group (gae / vtrace / retrace / "
+                             "lambda_returns+discounted_returns+eligibility_traces / prefix_sum) "
+                             "in its OWN subprocess and merge their --output-json results here "
+                             "before writing benchmarks.md/README.md. Necessary: a single process "
+                             "running the full multi-algorithm sweep hits a torch.compile/CUDA "
+                             "illegal-memory-access crash from accumulated Dynamo/Inductor state "
+                             "-- confirmed independent of torch._dynamo.reset() usage (reproduces "
+                             "even with resets minimized to only the ~2 needed padding-transition "
+                             "points per algorithm, see _needs_pad()'s comment). Each subprocess's "
+                             "fresh CUDA context avoids it; ~15-20 compiles per process is safely "
+                             "under whatever threshold the crash accumulates around.")
     args = parser.parse_args()
 
     selected_algos = ALL_ALGOS if args.algos == "all" else [a.strip() for a in args.algos.split(",")]
@@ -2012,6 +2092,10 @@ def main():
         sys.exit(1)
 
     print_environment_header("bench_release.py")
+
+    if args.parent_sweep:
+        _run_parent_sweep(selected_algos, args)
+        return
 
     if not torch.cuda.is_available() and not args.no_update:
         print("CUDA not available – aborting.")
@@ -2123,13 +2207,41 @@ def main():
         full_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows))
         headline_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", _headline(prefix_sum_rows)))
 
+    # --parent-sweep's per-group subprocesses stop here: dump raw tables/rows
+    # instead of building the (cross-group) production table or touching
+    # benchmarks.md/README.md -- the parent does that once, after merging
+    # every group's output, so there's exactly one combined production table
+    # rather than one fragment per subprocess.
+    if args.output_json:
+        payload = {
+            "full_tables": full_tables,
+            "headline_tables": headline_tables,
+            "production_rows_all": production_rows_all,
+            "all_violations": all_violations,
+        }
+        Path(args.output_json).write_text(json.dumps(payload))
+        print(f"\nWrote partial results to {args.output_json}", flush=True)
+        if all_violations:
+            sys.exit(1)
+        return
+
+    _finalize(full_tables, headline_tables, production_rows_all, all_violations, args)
+
+
+def _finalize(full_tables, headline_tables, production_rows_all, all_violations, args):
+    """Build the combined production table, print the gate summary, and (unless
+    --no-update) write benchmarks.md and the README draft. Shared by the normal
+    single-process path and --parent-sweep (after merging every subprocess's
+    --output-json output) so there is exactly one code path for this tail,
+    regardless of how full_tables/production_rows_all were assembled.
+    """
     production_table = _table_production(
         "Production regime — seq_len [80,128] × num_envs [4096..38400], all algorithms "
         "(plus one boundary-marker row, num_envs=16384/seq_len=16)",
         production_rows_all,
     )
-    full_tables.append(production_table)
-    headline_tables.append(production_table)
+    full_tables = full_tables + [production_table]
+    headline_tables = headline_tables + [production_table]
 
     section = _section(args.gpu, headline_tables)
 
@@ -2166,6 +2278,57 @@ def main():
 
     if all_violations:
         sys.exit(1)
+
+
+# Algorithm groups for --parent-sweep: each group runs in its own subprocess.
+# lambda_returns/discounted_returns/eligibility_traces stay together because
+# they already share one bench_returns() call (one shared CONFIGS loop over
+# 3 compiled objects) -- splitting them into 3 subprocesses would triple
+# redundant input construction for no isolation benefit, since the crash this
+# is guarding against is about total accumulated process state, not which
+# algorithm is running.
+_PARENT_SWEEP_GROUPS = [
+    ("gae", ["gae"]),
+    ("vtrace", ["vtrace"]),
+    ("retrace", ["retrace"]),
+    ("returns", ["lambda_returns", "discounted_returns", "eligibility_traces"]),
+    ("prefix_sum", ["prefix_sum"]),
+]
+
+
+def _run_parent_sweep(selected_algos, args):
+    full_tables, headline_tables, production_rows_all, all_violations = [], [], [], []
+    script = str(Path(__file__).resolve())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for label, group_algos in _PARENT_SWEEP_GROUPS:
+            wanted = [a for a in group_algos if a in selected_algos]
+            if not wanted:
+                continue
+            out_path = Path(tmpdir) / f"{label}.json"
+            cmd = [
+                sys.executable, script,
+                "--algos", ",".join(wanted),
+                "--gpu", args.gpu,
+                "--no-update",
+                "--output-json", str(out_path),
+            ]
+            print(f"\n{'=' * 88}\nSubprocess for group '{label}' ({','.join(wanted)}) — "
+                  f"fresh CUDA/Dynamo process\n{'=' * 88}", flush=True)
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                print(f"\nSubprocess for group '{label}' FAILED (exit {result.returncode}) — "
+                      f"aborting the parent sweep. Nothing partial gets written to "
+                      f"benchmarks.md; see the subprocess's own output above for the traceback.",
+                      flush=True)
+                sys.exit(result.returncode)
+            payload = json.loads(out_path.read_text())
+            full_tables += payload["full_tables"]
+            headline_tables += payload["headline_tables"]
+            production_rows_all += payload["production_rows_all"]
+            all_violations += payload["all_violations"]
+
+    _finalize(full_tables, headline_tables, production_rows_all, all_violations, args)
 
 
 if __name__ == "__main__":

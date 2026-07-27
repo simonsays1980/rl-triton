@@ -50,22 +50,55 @@ def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def parallel_prefix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """Log-depth parallel PREFIX associative scan — mirrors parallel_suffix_scan
-    for FORWARD recurrences (e.g. eligibility traces): z[t] = a[t] + b[t]*z[t-1],
-    z[-1] implicitly 0 (inject a seed via a[:, 0] += b[:, 0] * seed before calling).
+    """Log-depth parallel PREFIX associative scan for FORWARD recurrences
+    (e.g. eligibility traces): z[t] = a[t] + b[t]*z[t-1], z[-1] implicitly 0
+    (inject a seed via a[:, 0] += b[:, 0] * seed before calling).
 
-    Time-reversal duality: reversing both inputs to parallel_suffix_scan and
-    reversing its output back converts the suffix recurrence G[t]=a[t]+b[t]G[t+1]
-    into exactly this prefix recurrence — see the derivation in this session's
-    fix-plan discussion (docs/benchmark-history/ if archived). Reuses the
-    already-validated parallel_suffix_scan rather than a second hand-rolled
-    doubling-loop implementation.
+    Native forward (left-to-right) Hillis-Steele doubling scan — the direct
+    mirror of parallel_suffix_scan's own doubling loop, written directly
+    against the forward recurrence rather than via flip -> suffix -> flip.
+    The prior flip-based construction was mathematically correct but its
+    torch.flip/roll-heavy fused Inductor kernel triggered an autotuning
+    illegal-memory-access crash; this formulation contains no torch.flip.
+
+    At each doubling step, position t absorbs the aggregated segment ending
+    at t-stride (its LEFT neighbor, vs. suffix scan's right neighbor):
+      a[t] <- a[t] + b[t]*a[t-stride]
+      b[t] <- b[t]*b[t-stride]
+    for t >= stride; positions t < stride have no left neighbor within range
+    (b[t-stride] treated as the identity's absorbing 0, same convention as
+    parallel_suffix_scan's out-of-range zeroing) so they pass through with
+    b[t] zeroed post-update, since nothing further can carry through them.
 
     Shape: a, b are [N, T].  Returns a_out [N, T].
     """
-    return torch.flip(
-        parallel_suffix_scan(torch.flip(a, [1]), torch.flip(b, [1])), [1]
-    )
+    N, T = a.shape
+    # Pad T to next power of 2 for clean doubling. Padding at the tail is
+    # inert for a forward/prefix recurrence: z[t] for t < T depends only on
+    # positions <= t, never on the padded tail, so no special handling is
+    # needed at the shape transition (unlike the suffix scan's tail padding,
+    # which sits ahead of every real position instead of behind it).
+    T_pad = 1
+    while T_pad < T:
+        T_pad *= 2
+    if T_pad > T:
+        pad = T_pad - T
+        a = torch.cat([a, torch.zeros(N, pad, device=a.device, dtype=a.dtype)], dim=1)
+        b = torch.cat([b, torch.zeros(N, pad, device=b.device, dtype=b.dtype)], dim=1)
+
+    stride = 1
+    while stride < T_pad:
+        a_left = torch.roll(a, stride, dims=1)
+        b_left = torch.roll(b, stride, dims=1)
+        # Zero out positions that wrapped around (out of [0, T_pad) on the left).
+        a_left[:, :stride] = 0.0
+        b_left[:, :stride] = 0.0
+        # z[t] = a[t] + b[t]*z[t-stride]
+        a = a + b * a_left
+        b = b * b_left
+        stride *= 2
+
+    return a[:, :T]
 
 
 def _warmup_gpu(fn, *args, n_warmup: int = 20, **kwargs) -> None:

@@ -334,3 +334,72 @@ reused across more than one input shape in the same process, needs both of
 these guards. Neither is specific to the scan algorithms here — worth
 checking for elsewhere if `torch.compile` baselines are added to future
 benchmarks.
+
+### Bug 2 addendum — confirmed independent of `reset()` usage; not confined to padding transitions; mechanism still unproven
+
+A later session re-examined Bug 2 because its original repro (above) still
+used `torch._dynamo.reset()` calls elsewhere in the same process, leaving
+open the possibility that what was observed was an artifact of resetting
+itself (e.g. some reset-accumulation side effect) rather than a bug that
+exists independent of resets. This was checked directly.
+
+**What was actually observed (fact, reproduced this session):**
+- Compiling two different functions (`vectorized_gae_with_truncations`,
+  `vectorized_vtrace_with_truncations`) across the full non-padding `CONFIGS`
+  grid, then reusing one of those compiled objects into `PRODUCTION_CONFIGS`
+  (crossing into the `seq_len=80` padding shape) — **with zero
+  `torch._dynamo.reset()` calls anywhere in the process** — reproduces the
+  same wrong-output failure at the padding transition that Bug 2 originally
+  reported. This rules out "artifact of reset() usage" as the explanation:
+  the bug is present with no resets at all.
+- A **second, distinct** instance was found in the same zero-reset condition:
+  `vectorized_discounted_returns_with_truncations`, compiled by one object
+  first at `(num_envs=64, seq_len=512)` then reused at `(128, 1024)` —
+  **neither shape needs padding** (both already powers of 2) — gives ~22.5%
+  of elements wrong (not NaN/inf) at the second shape. This is NOT the
+  padding-specific mechanism Bug 2 originally described; it is the same
+  general *symptom* (cross-shape reuse of one compiled object → silently
+  wrong output) triggered by a different, non-padding shape pair, specific
+  to this one baseline function. Reproduces even in a subprocess that only
+  ever compiles this single object (no other algorithm's compiled objects
+  involved) — i.e. it is not about *total* accumulated compiles in the
+  process either; two compiles of one object is already enough. A brand-new
+  object's first-ever compile at either shape alone, or the same object used
+  at only one shape, is always correct.
+
+**What is interpretation, not proof:** calling this "process-state
+corruption in Dynamo/Inductor's caching or guard mechanism" is the working
+description, matching the observed shape (reuse-across-shapes triggers it;
+a single fresh compile never does). Neither this nor the original Bug 2 was
+root-caused to a specific Inductor buffer-reuse or guard bug via
+IR/generated-kernel inspection — that would need reading the Inductor-
+generated Triton source per shape and diffing the buffer/guard plan, which
+was not done. Treat "why" as probable, not proven, if this is ever reported
+upstream to PyTorch; only the "reuse of one compiled object across shapes X
+then Y gives wrong output at Y, reproducibly, with zero resets" observation
+above is established fact.
+
+**Practical fix applied (`tests/bench_release.py`):** `bench_returns()`'s
+`CONFIGS` loop now calls `torch._dynamo.reset()` before *every* shape
+(not only at padding transitions, since this instance isn't about padding).
+This is safe here because each subprocess (see the `--parent-sweep`
+per-algorithm isolation below) only ever accumulates on the order of a dozen
+resets, far under the count that separately corrupts CUDA state when resets
+accumulate unbounded in one long-lived process.
+
+**Distinct from the illegal-memory-access crash that motivated subprocess
+isolation:** the CUDA-level crash (`RuntimeError: illegal memory access`,
+raised inside Inductor's autotuning harness) that originally justified
+running each algorithm group in its own subprocess was separately root-
+caused to the old `parallel_prefix_scan`'s `torch.flip`/`torch.roll`-heavy
+fused kernel (see `tests/bench_utils.py`'s `parallel_prefix_scan`
+docstring) — a native forward-scan rewrite with no `torch.flip` compiles
+clean with no crash across the full shape sweep. That crash is a different
+failure mode from this section's bug (a hard CUDA exception vs. a silent
+wrong-but-finite numeric result caught by `assert_correctness`) and is
+believed fully resolved by the rewrite. Subprocess-per-algorithm isolation
+is kept regardless — it remains a correctness-neutral, low-cost hedge, and
+this section's bug demonstrates cross-shape reuse corruption can still
+occur *within* a single algorithm's own subprocess, which is exactly why
+the per-shape `reset()` fix above is still necessary even with isolation in
+place.

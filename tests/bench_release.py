@@ -1223,7 +1223,7 @@ def bench_retrace():
     return rows, production_rows, violations + prod_violations
 
 
-def bench_returns():
+def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "eligibility_traces"})):
     # compile(assoc) columns dropped for lambda-returns/discounted-returns --
     # see bench_gae()'s comment; both vec baselines are now thin wrappers
     # around their _with_truncations siblings, same computation either way.
@@ -1234,16 +1234,35 @@ def bench_returns():
     # never allocates an unconditional all-zero buffer fed into the scan the
     # way the other four did (its decay tensor is always genuinely computed),
     # confirmed bug-free under torch.compile before shipping this.
+    #
+    # `selected` gates which of the three objects actually get built/compiled/
+    # exercised below -- NOT just which tables the caller keeps afterward.
+    # This used to unconditionally compile and interleave all three regardless
+    # of which algorithms were actually requested; that interleaved-multi-
+    # object-per-shape pattern turned out to be exactly what triggers the
+    # cross-compile wrong-output bug (see NOTES.md), and it reproduced even
+    # inside a solo `--algos lambda_returns` subprocess because this function
+    # still built and interleaved all three objects regardless. Skipping the
+    # non-selected objects entirely (not compiling them at all) is the actual
+    # fix -- a solo run now only ever has ONE compiled object in play, same
+    # shape as gae/vtrace/retrace's already-reliable solo subprocesses.
+    want_lambda = "lambda_returns" in selected
+    want_disc   = "discounted_returns" in selected
+    want_traces = "eligibility_traces" in selected
+
     print("  compiling torch.compile baselines …", end="", flush=True)
-    c_lambda_vec  = torch.compile(vectorized_lambda_returns_with_truncations)
-    c_disc_vec    = torch.compile(vectorized_discounted_returns_with_truncations)
-    c_traces_vec  = torch.compile(vectorized_eligibility_traces)
+    c_lambda_vec = torch.compile(vectorized_lambda_returns_with_truncations) if want_lambda else None
+    c_disc_vec   = torch.compile(vectorized_discounted_returns_with_truncations) if want_disc else None
+    c_traces_vec = torch.compile(vectorized_eligibility_traces) if want_traces else None
     r, nv, d = _make_returns(64, 512)
     trunc_w = torch.zeros(64, 512, device="cuda")
     bsv_w   = torch.zeros(64, 512, device="cuda")
-    c_lambda_vec(r, nv, d, trunc_w, bsv_w, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
-    c_disc_vec(r, d, trunc_w, bsv_w, gamma=0.99);                     torch.cuda.synchronize()
-    c_traces_vec(r, d, gamma=0.99, lambda_=0.95);                     torch.cuda.synchronize()
+    if want_lambda:
+        c_lambda_vec(r, nv, d, trunc_w, bsv_w, gamma=0.99, lambda_=0.95); torch.cuda.synchronize()
+    if want_disc:
+        c_disc_vec(r, d, trunc_w, bsv_w, gamma=0.99);                     torch.cuda.synchronize()
+    if want_traces:
+        c_traces_vec(r, d, gamma=0.99, lambda_=0.95);                     torch.cuda.synchronize()
     print(" done.", flush=True)
 
     header = (
@@ -1268,96 +1287,122 @@ def bench_returns():
 
     rows_lambda, rows_disc, rows_traces = [], [], []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape in this loop (not just padding transitions
+        # like _bench_production_regime's _needs_pad guard): direct isolation
+        # testing found vectorized_discounted_returns_with_truncations gives
+        # silently wrong output (~22.5% of elements) the first time its
+        # compiled object recompiles for a NEW shape after already being
+        # compiled+warmed at a different one -- reproduces even for two
+        # power-of-2 shapes (64x512 -> 128x1024, neither needs padding), so
+        # this is a distinct bug from the padding-transition one, and a fresh
+        # object's first-ever compile at either shape alone is always
+        # correct. Total resets here is bounded by len(CONFIGS) (12) per
+        # subprocess -- far under the threshold that was found to corrupt
+        # CUDA state when resets accumulate into the dozens across a whole
+        # unbounded sweep.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, next_values, dones = _make_returns(num_envs, seq_len)
         ni = _n_iter_gpu(seq_len, num_envs)
         trunc0 = torch.zeros(num_envs, seq_len, device="cuda")
         bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
 
-        lam_out  = compute_lambda_returns(rewards, next_values, dones, gamma=0.99, lambda_=0.95)
-        disc_out = compute_discounted_returns(rewards, dones, gamma=0.99)
-        trc_out  = compute_eligibility_traces(rewards, dones, gamma=0.99, lambda_=0.9)
-        lam_ref  = _ref_lambda(rewards, next_values, dones, gamma=0.99, lambda_=0.95)
-        disc_ref = _ref_disc(rewards, dones, gamma=0.99)
-        trc_ref  = _ref_traces(rewards, dones, gamma=0.99, lambda_=0.9)
-        assert_correctness(lam_out,  lam_ref,  f"lambda_returns[{num_envs}x{seq_len}]")
-        assert_correctness(disc_out, disc_ref, f"discounted_returns[{num_envs}x{seq_len}]")
-        assert_correctness(trc_out,  trc_ref,  f"eligibility_traces[{num_envs}x{seq_len}]")
+        if want_lambda:
+            lam_out = compute_lambda_returns(rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+            lam_ref = _ref_lambda(rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+            assert_correctness(lam_out, lam_ref, f"lambda_returns[{num_envs}x{seq_len}]")
+            lam_vec_out = c_lambda_vec(rewards, next_values, dones, trunc0, bsv0, gamma=0.99, lambda_=0.95)
+            assert_correctness(lam_vec_out, lam_ref, f"lambda_returns[{num_envs}x{seq_len}] (vec baseline)")
+        if want_disc:
+            disc_out = compute_discounted_returns(rewards, dones, gamma=0.99)
+            disc_ref = _ref_disc(rewards, dones, gamma=0.99)
+            assert_correctness(disc_out, disc_ref, f"discounted_returns[{num_envs}x{seq_len}]")
+            disc_vec_out = c_disc_vec(rewards, dones, trunc0, bsv0, gamma=0.99)
+            assert_correctness(disc_vec_out, disc_ref, f"discounted_returns[{num_envs}x{seq_len}] (vec baseline)")
+        if want_traces:
+            trc_out = compute_eligibility_traces(rewards, dones, gamma=0.99, lambda_=0.9)
+            trc_ref = _ref_traces(rewards, dones, gamma=0.99, lambda_=0.9)
+            assert_correctness(trc_out, trc_ref, f"eligibility_traces[{num_envs}x{seq_len}]")
+            trc_vec_out = c_traces_vec(rewards, dones, gamma=0.99, lambda_=0.9)
+            assert_correctness(trc_vec_out, trc_ref, f"eligibility_traces[{num_envs}x{seq_len}] (vec baseline)")
 
-        lam_vec_out  = c_lambda_vec(rewards, next_values, dones, trunc0, bsv0, gamma=0.99, lambda_=0.95)
-        disc_vec_out = c_disc_vec(rewards, dones, trunc0, bsv0, gamma=0.99)
-        trc_vec_out  = c_traces_vec(rewards, dones, gamma=0.99, lambda_=0.9)
-        assert_correctness(lam_vec_out,  lam_ref,  f"lambda_returns[{num_envs}x{seq_len}] (vec baseline)")
-        assert_correctness(disc_vec_out, disc_ref, f"discounted_returns[{num_envs}x{seq_len}] (vec baseline)")
-        assert_correctness(trc_vec_out,  trc_ref,  f"eligibility_traces[{num_envs}x{seq_len}] (vec baseline)")
+        if want_lambda:
+            _warmup_gpu(compute_lambda_returns, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+            _warmup_gpu(c_lambda_vec, rewards, next_values, dones, trunc0, bsv0, gamma=0.99, lambda_=0.95)
+        if want_disc:
+            _warmup_gpu(compute_discounted_returns, rewards, dones, gamma=0.99)
+            _warmup_gpu(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99)
+        if want_traces:
+            _warmup_gpu(compute_eligibility_traces, rewards, dones, gamma=0.99, lambda_=0.9)
+            _warmup_gpu(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
 
-        _warmup_gpu(compute_lambda_returns,     rewards, next_values, dones, gamma=0.99, lambda_=0.95)
-        _warmup_gpu(compute_discounted_returns,  rewards, dones, gamma=0.99)
-        _warmup_gpu(compute_eligibility_traces,  rewards, dones, gamma=0.99, lambda_=0.9)
-        _warmup_gpu(c_lambda_vec,  rewards, next_values, dones, trunc0, bsv0, gamma=0.99, lambda_=0.95)
-        _warmup_gpu(c_disc_vec,    rewards, dones, trunc0, bsv0, gamma=0.99)
-        _warmup_gpu(c_traces_vec,  rewards, dones, gamma=0.99, lambda_=0.9)
-
-        lam_ms  = _bench_gpu(compute_lambda_returns,    rewards, next_values, dones,
-                              gamma=0.99, lambda_=0.95, n_iter=ni)
-        disc_ms = _bench_gpu(compute_discounted_returns, rewards, dones, gamma=0.99, n_iter=ni)
-        trc_ms  = _bench_gpu(compute_eligibility_traces, rewards, dones,
-                              gamma=0.99, lambda_=0.9, n_iter=ni)
-        lam_vec_ms    = _bench_gpu(c_lambda_vec,   rewards, next_values, dones, trunc0, bsv0,
-                                   gamma=0.99, lambda_=0.95, n_iter=ni)
-        disc_vec_ms   = _bench_gpu(c_disc_vec,     rewards, dones, trunc0, bsv0, gamma=0.99, n_iter=ni)
-        trc_vec_ms    = _bench_gpu(c_traces_vec,   rewards, dones, gamma=0.99, lambda_=0.9, n_iter=ni)
-        lam_dev_ms, _  = _device_profile(compute_lambda_returns, rewards, next_values, dones,
-                                          gamma=0.99, lambda_=0.95)
-        disc_dev_ms, _ = _device_profile(compute_discounted_returns, rewards, dones, gamma=0.99)
-        trc_dev_ms, _  = _device_profile(compute_eligibility_traces, rewards, dones,
-                                          gamma=0.99, lambda_=0.9)
-        lam_vec_dev_ms, _  = _device_profile(c_lambda_vec, rewards, next_values, dones, trunc0, bsv0,
-                                              gamma=0.99, lambda_=0.95)
-        disc_vec_dev_ms, _ = _device_profile(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99)
-        trc_vec_dev_ms, _  = _device_profile(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
-        lam_loop_ms  = _bench_cpu(_ref_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
-        disc_loop_ms = _bench_cpu(_ref_disc,   rewards, dones, gamma=0.99)
-        trc_loop_ms  = _bench_cpu(_ref_traces, rewards, dones, gamma=0.99, lambda_=0.9)
-        lam_np_ms    = _bench_cpu(numpy_lambda_returns_cpu,     rewards, next_values, dones,
-                                   gamma=0.99, lambda_=0.95)
-        disc_np_ms   = _bench_cpu(numpy_discounted_returns_cpu, rewards, dones, gamma=0.99)
-        trc_np_ms    = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones,
-                                   gamma=0.99, lambda_=0.9)
+        if want_lambda:
+            lam_ms = _bench_gpu(compute_lambda_returns, rewards, next_values, dones,
+                                 gamma=0.99, lambda_=0.95, n_iter=ni)
+            lam_vec_ms = _bench_gpu(c_lambda_vec, rewards, next_values, dones, trunc0, bsv0,
+                                     gamma=0.99, lambda_=0.95, n_iter=ni)
+            lam_dev_ms, _ = _device_profile(compute_lambda_returns, rewards, next_values, dones,
+                                             gamma=0.99, lambda_=0.95)
+            lam_vec_dev_ms, _ = _device_profile(c_lambda_vec, rewards, next_values, dones, trunc0, bsv0,
+                                                 gamma=0.99, lambda_=0.95)
+            lam_loop_ms = _bench_cpu(_ref_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
+            lam_np_ms = _bench_cpu(numpy_lambda_returns_cpu, rewards, next_values, dones,
+                                    gamma=0.99, lambda_=0.95)
+        if want_disc:
+            disc_ms = _bench_gpu(compute_discounted_returns, rewards, dones, gamma=0.99, n_iter=ni)
+            disc_vec_ms = _bench_gpu(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99, n_iter=ni)
+            disc_dev_ms, _ = _device_profile(compute_discounted_returns, rewards, dones, gamma=0.99)
+            disc_vec_dev_ms, _ = _device_profile(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99)
+            disc_loop_ms = _bench_cpu(_ref_disc, rewards, dones, gamma=0.99)
+            disc_np_ms = _bench_cpu(numpy_discounted_returns_cpu, rewards, dones, gamma=0.99)
+        if want_traces:
+            trc_ms = _bench_gpu(compute_eligibility_traces, rewards, dones,
+                                 gamma=0.99, lambda_=0.9, n_iter=ni)
+            trc_vec_ms = _bench_gpu(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9, n_iter=ni)
+            trc_dev_ms, _ = _device_profile(compute_eligibility_traces, rewards, dones,
+                                             gamma=0.99, lambda_=0.9)
+            trc_vec_dev_ms, _ = _device_profile(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
+            trc_loop_ms = _bench_cpu(_ref_traces, rewards, dones, gamma=0.99, lambda_=0.9)
+            trc_np_ms = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones, gamma=0.99, lambda_=0.9)
 
         base = {"num_envs": num_envs, "seq_len": seq_len}
-        rows_lambda.append({
-            **base, "triton_ms": lam_ms, "triton_dev_ms": lam_dev_ms,
-            "vec_ms": lam_vec_ms, "vec_dev_ms": lam_vec_dev_ms,
-            "loop_ms": lam_loop_ms, "numpy_ms": lam_np_ms,
-            "su_vec": lam_vec_ms / lam_ms,
-            "su_vec_dev": lam_vec_dev_ms / lam_dev_ms if lam_dev_ms else float("nan"),
-            "su_loop": lam_loop_ms / lam_ms, "su_numpy": lam_np_ms / lam_ms,
-        })
-        rows_disc.append({
-            **base, "triton_ms": disc_ms, "triton_dev_ms": disc_dev_ms,
-            "vec_ms": disc_vec_ms, "vec_dev_ms": disc_vec_dev_ms,
-            "loop_ms": disc_loop_ms, "numpy_ms": disc_np_ms,
-            "su_vec": disc_vec_ms / disc_ms,
-            "su_vec_dev": disc_vec_dev_ms / disc_dev_ms if disc_dev_ms else float("nan"),
-            "su_loop": disc_loop_ms / disc_ms, "su_numpy": disc_np_ms / disc_ms,
-        })
-        rows_traces.append({
-            **base, "triton_ms": trc_ms, "triton_dev_ms": trc_dev_ms,
-            "vec_ms": trc_vec_ms, "vec_dev_ms": trc_vec_dev_ms,
-            "loop_ms": trc_loop_ms, "numpy_ms": trc_np_ms,
-            "su_vec": trc_vec_ms / trc_ms,
-            "su_vec_dev": trc_vec_dev_ms / trc_dev_ms if trc_dev_ms else float("nan"),
-            "su_loop": trc_loop_ms / trc_ms, "su_numpy": trc_np_ms / trc_ms,
-        })
-        _print_sub_row("lambda-returns",     num_envs, seq_len, lam_ms,  lam_dev_ms,  lam_vec_ms,  lam_vec_dev_ms,  lam_loop_ms,  lam_np_ms)
-        _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_dev_ms, disc_vec_ms, disc_vec_dev_ms, disc_loop_ms, disc_np_ms)
-        _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms,  trc_dev_ms,  trc_vec_ms,  trc_vec_dev_ms,  trc_loop_ms,  trc_np_ms)
+        if want_lambda:
+            rows_lambda.append({
+                **base, "triton_ms": lam_ms, "triton_dev_ms": lam_dev_ms,
+                "vec_ms": lam_vec_ms, "vec_dev_ms": lam_vec_dev_ms,
+                "loop_ms": lam_loop_ms, "numpy_ms": lam_np_ms,
+                "su_vec": lam_vec_ms / lam_ms,
+                "su_vec_dev": lam_vec_dev_ms / lam_dev_ms if lam_dev_ms else float("nan"),
+                "su_loop": lam_loop_ms / lam_ms, "su_numpy": lam_np_ms / lam_ms,
+            })
+            _print_sub_row("lambda-returns", num_envs, seq_len, lam_ms, lam_dev_ms, lam_vec_ms, lam_vec_dev_ms, lam_loop_ms, lam_np_ms)
+        if want_disc:
+            rows_disc.append({
+                **base, "triton_ms": disc_ms, "triton_dev_ms": disc_dev_ms,
+                "vec_ms": disc_vec_ms, "vec_dev_ms": disc_vec_dev_ms,
+                "loop_ms": disc_loop_ms, "numpy_ms": disc_np_ms,
+                "su_vec": disc_vec_ms / disc_ms,
+                "su_vec_dev": disc_vec_dev_ms / disc_dev_ms if disc_dev_ms else float("nan"),
+                "su_loop": disc_loop_ms / disc_ms, "su_numpy": disc_np_ms / disc_ms,
+            })
+            _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_dev_ms, disc_vec_ms, disc_vec_dev_ms, disc_loop_ms, disc_np_ms)
+        if want_traces:
+            rows_traces.append({
+                **base, "triton_ms": trc_ms, "triton_dev_ms": trc_dev_ms,
+                "vec_ms": trc_vec_ms, "vec_dev_ms": trc_vec_dev_ms,
+                "loop_ms": trc_loop_ms, "numpy_ms": trc_np_ms,
+                "su_vec": trc_vec_ms / trc_ms,
+                "su_vec_dev": trc_vec_dev_ms / trc_dev_ms if trc_dev_ms else float("nan"),
+                "su_loop": trc_loop_ms / trc_ms, "su_numpy": trc_np_ms / trc_ms,
+            })
+            _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms, trc_dev_ms, trc_vec_ms, trc_vec_dev_ms, trc_loop_ms, trc_np_ms)
 
     violations = []
-    for label, rows, ms_key in [("lambda_returns", rows_lambda, "triton_ms"),
-                                 ("discounted_returns", rows_disc, "triton_ms"),
-                                 ("eligibility_traces", rows_traces, "triton_ms")]:
+    for label, rows, ms_key, want in [("lambda_returns", rows_lambda, "triton_ms", want_lambda),
+                                       ("discounted_returns", rows_disc, "triton_ms", want_disc),
+                                       ("eligibility_traces", rows_traces, "triton_ms", want_traces)]:
+        if not want:
+            continue
         v = check_monotonic_grid(rows, ms_key=ms_key)
         if v:
             print(f"  MONOTONICITY GATE FAILED ({label}, triton_ms, 2% band):", flush=True)
@@ -1382,19 +1427,27 @@ def bench_returns():
         return c_disc_vec(rewards, terminateds, trunc, bsv, gamma=gamma)
 
     production_rows = []
-    production_rows += _bench_production_regime(
-        "lambda-returns", compute_lambda_returns, _c_lambda_vec_prod, _ref_lambda, _make_returns,
-        kwargs={"gamma": 0.99, "lambda_": 0.95},
-    )
-    production_rows += _bench_production_regime(
-        "discounted-returns", compute_discounted_returns, _c_disc_vec_prod, _ref_disc, _make_returns_2,
-        kwargs={"gamma": 0.99},
-    )
-    production_rows += _bench_production_regime(
-        "eligibility-traces", compute_eligibility_traces, c_traces_vec, _ref_traces, _make_returns_2,
-        kwargs={"gamma": 0.99, "lambda_": 0.9},
-    )
+    if want_lambda:
+        production_rows += _bench_production_regime(
+            "lambda-returns", compute_lambda_returns, _c_lambda_vec_prod, _ref_lambda, _make_returns,
+            kwargs={"gamma": 0.99, "lambda_": 0.95},
+        )
+    if want_disc:
+        production_rows += _bench_production_regime(
+            "discounted-returns", compute_discounted_returns, _c_disc_vec_prod, _ref_disc, _make_returns_2,
+            kwargs={"gamma": 0.99},
+        )
+    if want_traces:
+        production_rows += _bench_production_regime(
+            "eligibility-traces", compute_eligibility_traces, c_traces_vec, _ref_traces, _make_returns_2,
+            kwargs={"gamma": 0.99, "lambda_": 0.9},
+        )
+    _wanted_labels = {
+        "lambda-returns": want_lambda, "discounted-returns": want_disc, "eligibility-traces": want_traces,
+    }
     for label in ("lambda-returns", "discounted-returns", "eligibility-traces"):
+        if not _wanted_labels[label]:
+            continue
         algo_rows = [r for r in production_rows if r["algo"] == label and not r["is_boundary"]]
         v = check_monotonic_grid(algo_rows, ms_key="triton_ms")
         if v:
@@ -2174,9 +2227,12 @@ def main():
         full_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows))
         headline_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", _headline(retrace_rows)))
 
-    if {"lambda_returns", "discounted_returns", "eligibility_traces"} & set(selected_algos):
+    _returns_trio = {"lambda_returns", "discounted_returns", "eligibility_traces"}
+    if _returns_trio & set(selected_algos):
         print("Running returns / eligibility-traces benchmark …", flush=True)
-        lambda_rows, disc_rows, traces_rows, returns_prod, v = bench_returns()
+        lambda_rows, disc_rows, traces_rows, returns_prod, v = bench_returns(
+            _returns_trio & set(selected_algos)
+        )
         all_violations += v
         production_rows_all += returns_prod
         if "lambda_returns" in selected_algos:
@@ -2213,6 +2269,23 @@ def main():
     # every group's output, so there's exactly one combined production table
     # rather than one fragment per subprocess.
     if args.output_json:
+        # bench_returns() unconditionally computes+returns production rows for
+        # ALL THREE of lambda_returns/discounted_returns/eligibility_traces
+        # whenever ANY of them is selected (they share one bench_returns() call
+        # -- see its call site's comment). Now that _PARENT_SWEEP_GROUPS runs
+        # each of those three in its OWN subprocess (see that constant's
+        # comment for why), every such subprocess's production_rows_all still
+        # contains all three algos' rows -- filter down to just the ones this
+        # invocation actually selected, or the parent's merge across 3
+        # subprocesses would triple lambda-returns/discounted-returns/
+        # eligibility-traces production rows in the final combined table.
+        _ALGO_TO_PROD_LABEL = {
+            "gae": "GAE", "vtrace": "V-Trace", "retrace": "Retrace",
+            "lambda_returns": "lambda-returns", "discounted_returns": "discounted-returns",
+            "eligibility_traces": "eligibility-traces", "prefix_sum": "prefix-sum",
+        }
+        selected_prod_labels = {_ALGO_TO_PROD_LABEL[a] for a in selected_algos}
+        production_rows_all = [r for r in production_rows_all if r["algo"] in selected_prod_labels]
         payload = {
             "full_tables": full_tables,
             "headline_tables": headline_tables,
@@ -2221,8 +2294,19 @@ def main():
         }
         Path(args.output_json).write_text(json.dumps(payload))
         print(f"\nWrote partial results to {args.output_json}", flush=True)
-        if all_violations:
-            sys.exit(1)
+        # Do NOT sys.exit(1) here for monotonicity violations alone: the
+        # monotonicity gate is a soft, noise-tolerant check (2% band; ~2-4%
+        # GPU timing jitter is expected and documented, not a correctness
+        # failure -- see check_monotonic_grid's docstring). violations are
+        # already serialized into the payload above and get merged into
+        # all_violations by the parent, which reports them and sets the
+        # FINAL exit code via _finalize -- exactly matching the single-
+        # process (non---parent-sweep) path's behavior, where monotonicity
+        # noise in one algorithm never prevents the rest of the sweep from
+        # running. A real failure (assert_correctness raising) is an
+        # uncaught exception, which already exits non-zero on its own and
+        # is correctly treated as fatal by _run_parent_sweep's returncode
+        # check below -- this change does not weaken that.
         return
 
     _finalize(full_tables, headline_tables, production_rows_all, all_violations, args)
@@ -2281,17 +2365,33 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
 
 
 # Algorithm groups for --parent-sweep: each group runs in its own subprocess.
-# lambda_returns/discounted_returns/eligibility_traces stay together because
-# they already share one bench_returns() call (one shared CONFIGS loop over
-# 3 compiled objects) -- splitting them into 3 subprocesses would triple
-# redundant input construction for no isolation benefit, since the crash this
-# is guarding against is about total accumulated process state, not which
-# algorithm is running.
+#
+# lambda_returns/discounted_returns/eligibility_traces used to be bundled into
+# one "returns" subprocess (they share one bench_returns() call -- one shared
+# CONFIGS loop over 3 compiled objects), on the theory that splitting them
+# into 3 subprocesses would only triple redundant input construction for no
+# isolation benefit, since the wrong-output bug this guards against was
+# believed to be about TOTAL accumulated process state, not which algorithm
+# is running. That theory was tested directly and falsified: a full-sweep run
+# hit the bug INSIDE the bundled "returns" subprocess itself (discounted_returns
+# wrong at [128x1024], ~22.5% mismatched, caught by assert_correctness) even
+# though that subprocess started with a fresh CUDA/Dynamo context -- three
+# compiled objects x 12 CONFIGS shapes x (base + truncation + production
+# variants) in ONE subprocess was already enough accumulated compile state to
+# reproduce it. Splitting to one subprocess per algorithm (each subprocess
+# still internally computes all 3 via bench_returns()'s shared call, so this
+# does cost the redundant compute the old comment wanted to avoid -- but each
+# subprocess only KEEPS its own algorithm's rows, see the output_json
+# filtering in main()) keeps each subprocess's total compile count in the
+# same range as gae/vtrace/retrace's solo subprocesses, which do not
+# reproduce the bug.
 _PARENT_SWEEP_GROUPS = [
     ("gae", ["gae"]),
     ("vtrace", ["vtrace"]),
     ("retrace", ["retrace"]),
-    ("returns", ["lambda_returns", "discounted_returns", "eligibility_traces"]),
+    ("lambda_returns", ["lambda_returns"]),
+    ("discounted_returns", ["discounted_returns"]),
+    ("eligibility_traces", ["eligibility_traces"]),
     ("prefix_sum", ["prefix_sum"]),
 ]
 

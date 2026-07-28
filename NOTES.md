@@ -225,8 +225,9 @@ These are two separate `tl.load` calls at different pointer offsets; they are
 Triton is used for inter-thread communication during the scan, not as a
 random-access scratchpad.
 
-**Measured (H100, `tests/h100_short_horizon_l2_retrace_ppo_report.md`-style
-methodology): adopting the `lambda_returns_fused_kernel` pre-shift strategy
+**Measured (H200; same CUDA-events full-call + device-only methodology used
+throughout this repo's benchmarks — see `benchmarks.md`'s Methodology
+paragraph): adopting the `lambda_returns_fused_kernel` pre-shift strategy
 makes this slower, not faster.** Implemented as an A/B kernel
 (`gae_fused_kernel_preshift`, taking a caller-supplied `next_values` tensor
 instead of the second in-kernel load) and benchmarked against the shipped
@@ -394,7 +395,9 @@ running each algorithm group in its own subprocess was separately root-
 caused to the old `parallel_prefix_scan`'s `torch.flip`/`torch.roll`-heavy
 fused kernel (see `tests/bench_utils.py`'s `parallel_prefix_scan`
 docstring) — a native forward-scan rewrite with no `torch.flip` compiles
-clean with no crash across the full shape sweep. That crash is a different
+clean with no crash across the full shape sweep. `dmesg` and the driver's
+ECC error counters were checked and were clean throughout — this was a
+software (Inductor-generated-kernel) fault, not a hardware fault. That crash is a different
 failure mode from this section's bug (a hard CUDA exception vs. a silent
 wrong-but-finite numeric result caught by `assert_correctness`) and is
 believed fully resolved by the rewrite. Subprocess-per-algorithm isolation
@@ -403,3 +406,231 @@ this section's bug demonstrates cross-shape reuse corruption can still
 occur *within* a single algorithm's own subprocess, which is exactly why
 the per-shape `reset()` fix above is still necessary even with isolation in
 place.
+
+---
+
+## The log-space baseline underflow — why `compile(vec)` is a doubling scan, not a cumsum
+
+Five of the six "vectorized" PyTorch comparison baselines (GAE, V-trace,
+λ-returns, eligibility-traces, Retrace) originally computed their
+decay-weighted scan via `exp(cumsum(log(decay.clamp(min=1e-38))))`. The
+`clamp(min=1e-38)` exists only so `log(0)` at an episode-terminated step
+(`decay=0` there) doesn't produce `-inf` — but it is exactly what breaks the
+formula: each termination contributes `log(1e-38) ≈ -87.5` to the running
+suffix sum, and float32 underflows (flushes to zero, then `exp` propagates
+inf/nan downstream) anything below `≈ -103.3`. At this project's ~5%/step
+termination rate, 2-3 terminations anywhere in a window — expected within
+the first couple dozen steps of *any* row, independent of overall
+`seq_len` — is enough. This is not an extreme-scale-only failure: it hit
+90-99% of output elements at every size this project's release table
+actually uses, from 64×512 up to the production regime at 4096×128, not
+only the long-`seq_len` regime `benchmarks/chunked_scan.md` originally
+probed.
+
+**Fix:** `compile(vec)` no longer uses the log-space formula anywhere.
+GAE/V-trace/λ-returns/discounted-returns became thin wrappers around their
+already-correct `*_with_truncations` siblings (`truncateds=0`,
+`bootstrap=0`), which were already built on `parallel_suffix_scan` — a
+linear-space `log2(T)`-doubling associative scan with no `log`/`exp`
+anywhere. Eligibility-traces and Retrace were rewritten directly on the
+same primitive (`parallel_prefix_scan` / `parallel_suffix_scan`
+respectively). The old `compile(assoc)` column in `benchmarks.md` is gone
+because there is no longer a separate specialized no-truncation baseline to
+compare it against — the with-truncations implementation *is* the baseline
+now, called with zero truncations.
+
+**Caveat: this is the strongest *correct* baseline built, not necessarily
+the strongest possible one.** The doubling-scan baseline pays 6-12 kernel
+launches per call (growing with `seq_len`, one per doubling step), against
+1-2 launches for the Triton kernel it's compared to. Isolated primitive
+timing at a fixed shape found the (underflow-buggy, only safe without
+terminations) log-space cumsum takes ~37µs across 2 launches, versus the
+doubling scan's ~148µs across 6 launches — a 4x gap attributable to launch
+count alone, not to the underlying arithmetic. A numerically-stable
+non-log-space cumsum formulation (e.g. a segmented/blocked scan that
+periodically renormalizes instead of ever taking one running log-sum) could
+plausibly avoid the underflow without paying the doubling scan's launch
+count, and would be faster. This means published ratios like "N× vs.
+torch.compile" describe the doubling-scan baseline specifically, not an
+upper bound on what a correct PyTorch baseline could achieve — a materially
+different claim than the older (numerically wrong) few-launch-cumsum
+numbers this project published before the underflow was found. Add-only, not
+yet built: nobody has implemented the faster correct baseline to check how
+much of the gap it would close.
+
+---
+
+## Per-GPU floor calibration is a correctness requirement, not an optimisation
+
+`tests/bench_safeguard.py`'s CI-facing performance gate times the Triton
+kernel against `torch.compile(vec)` at one small shape (128×1024) and
+asserts a minimum speedup. At that shape, both sides' *device* kernel time
+is only a few microseconds — dwarfed by ~25-30µs of fixed CUDA
+dispatch/sync overhead that both sides pay identically regardless of which
+kernel is actually faster. A slower GPU's kernel work dominates that fixed
+cost, so its measured wall-clock ratio reflects real kernel quality; a
+faster GPU's kernel work shrinks by an order of magnitude while the ~25-30µs
+floor stays fixed, compressing the wall-clock ratio toward 1x independent of
+kernel quality. Concretely: eligibility-traces' kernel is a genuine,
+reproducible 2.7x faster in raw device time on H100/H200-class hardware,
+yet the reported *wall-clock* speedup compresses from ~11x on an older,
+slower card to under 2x on the faster one — launch-overhead amortization,
+not a kernel regression.
+
+**Consequence:** a floor calibrated on one GPU does not transfer to a
+different one, faster or slower. `_FLOOR_TABLE` in `bench_safeguard.py` is
+keyed by device-name substring (see that file's own module comment for the
+mechanism and the currently-calibrated cards); an unrecognized GPU must
+`pytest.skip()` loudly rather than silently reuse another card's floor —
+reusing a floor across GPU families is exactly the mistake that let this
+gate pass vacuously in the past (calibrated on the wrong card entirely, see
+`bench_safeguard.py`'s own history comment for that story).
+
+---
+
+## Retrace's register-spill ceiling and its reroute (see `retrace.py` for the authoritative account)
+
+`compute_retrace` dispatches on `_TRITON_SEQ_LEN_CEILING = 2048`:
+below it, the fused Triton kernel; above it, a reroute through the generic
+`_run_scan` associative-scan path. `src/rl_triton/ops/retrace.py`'s own
+comment block above that constant is the authoritative source for the
+mechanism (register pressure from re-reading the 3D action-probability
+tensor a second time for `c[t+1]`, pinning `ptxas` at 128 regs/thread and
+25% occupancy from `seq_len=4096` onward) and for the reroute's own
+performance (measured 0.38-0.47x vs. `torch.compile` — **a smaller loss,
+not a win**; below `seq_len=8192` the un-rerouted fused kernel is actually
+still faster than the reroute despite already losing to `torch.compile`
+itself). Read the code comment there rather than duplicating the numbers
+here; this note exists only so the ceiling's rationale isn't lost with the
+session reports that originally investigated it.
+
+---
+
+## GAE's share of a real PPO step is small; end-to-end speedup is a wash at realistic network sizes
+
+Two independent end-to-end PPO measurements (different `(num_envs, seq_len,
+hidden_size)` configurations, one interleaving eager/compiled A/B runs, one
+a single realistic Isaac-Gym-Ant-sized config with a full forward/GAE/
+loss/backward/Adam step) converge on the same conclusion: GAE is a small
+enough fraction of total step time that its kernel-level speedup does not
+show up end-to-end once a real policy network shares the step.
+
+| hidden size | GAE share of step (approx.) | end-to-end speedup |
+|---|---:|---:|
+| small (256,256) | 0.3% – 3.6% | up to ~1.18x |
+| realistic (1024,1024) | 0.07% – 0.6% | **~1.00x — no measurable difference** |
+
+Full per-stage breakdown (4 configs, all four pipeline stages) is in
+`docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md`; this section is
+the condensed takeaway, not a replacement for it. The larger hidden size is
+the realistic case in both measurements — backward
+pass dominates the step (60-66% of total time) at that size, and GAE's
+isolated ~1.9x device-level kernel speedup becomes invisible in full
+training throughput. **This is a bound the paper's evaluation section must
+respect: the isolated-microbenchmark speedup claim holds, an end-to-end
+training-speed claim from this kernel alone does not**, at realistic network
+sizes. No win/lose framing beyond that is warranted — GAE was never the
+bottleneck this optimization needed to target end-to-end; it targets the
+per-call kernel cost directly, which is a legitimate but narrower claim.
+
+---
+
+## Two more baseline bugs found while auditing benchmark correctness (algorithm bugs, not `torch.compile` artifacts)
+
+Distinct from the `torch.compile`-specific bugs above and from the
+log-space underflow: two of the vectorized PyTorch baselines had their own
+independent formula bugs, both caught only because baseline output started
+being correctness-checked against the sequential reference for the first
+time (previously only the Triton side was checked).
+
+**`vectorized_discounted_returns`:** used `log(gamma) * done` inside its
+(pre-underflow-fix) log-space formula instead of an actual reset — a
+`done=1` step contributed `0` to the log-sum rather than terminating the
+discount chain, so the accumulator never reset. Result: finite but wrong
+output (max abs error ~43 vs. the sequential reference on a 64-step test) —
+a different failure mode from the inf/nan underflow affecting the other
+five baselines, since this one never produced a value extreme enough to
+underflow.
+
+**`vectorized_episodic_prefix_sum`:** the old formula
+(`running = cumsum(inputs); boundary = running*dones; offset =
+cumsum(boundary)-boundary; result = running-offset`) resets one step later
+than this codebase's convention (`done[t]=1` means the reset applies *at*
+`t` itself, not at `t+1`). Wrong at every shape ever benchmarked with it —
+44-95.8% of elements, including the smallest configs — because the
+baseline's own correctness had never been checked, only timed. **Fix:**
+replaced with `parallel_prefix_scan(inputs, 1.0 - dones)`, which encodes the
+reset convention directly rather than reconstructing it after the fact.
+Any previously-published prefix-sum speedup number predates this fix and
+should not be trusted; the current `benchmarks.md` table reflects the
+corrected baseline.
+
+---
+
+## rl-triton vs. PufferLib: a real design tradeoff at short-horizon, high-env-count workloads — not a bug, not fixed by the warps-table fix
+
+At very short horizons and very high environment counts (`num_envs >= 4096`,
+`seq_len <= 16`; the crossover point shifts to `seq_len ~= 128` by
+`num_envs = 32768`), PufferLib's hand-written sequential-per-row CUDA kernel
+measures faster than rl-triton's one-program-per-environment Triton kernel,
+on both device time and wall-clock. Mechanism: PufferLib's per-row O(T) cost
+is nearly `num_envs`-insensitive (thread count scales directly with
+`num_envs`, packing the GPU efficiently even at tiny per-row problem sizes),
+while rl-triton's one-program-per-env grid design pays more grid waves per
+SM as `num_envs` grows (up to ~62 waves at `num_envs=32768` vs. ~8 at 4096)
+— narrowed by the small-`BLOCK_SIZE` warps-table fix (see each op's `_WARPS`
+comment) but not eliminated by it, since that fix addresses per-program warp
+over-provisioning, not grid-wave count.
+
+**Consequence for anyone choosing between these kernels:** rl-triton's
+design is right for the long-horizon, moderate-env-count on-policy rollout
+regime this project targets (see the production-regime table in
+`benchmarks.md`), and measurably wrong for the shortest-horizon,
+highest-env-count corner of massively-parallel simulation (Isaac Gym/Isaac
+Lab style, tens of thousands of envs at single-digit-to-low-double-digit
+horizons). This is a genuine per-workload tradeoff, not a defect to fix —
+but it means "rl-triton is faster than PufferLib" is not a universal claim;
+see `benchmarks/pufferlib.md` for where each kernel wins.
+
+---
+
+## Eligibility-traces' apparent device-time ceiling is a small-grid occupancy ramp, not an architectural limit
+
+An earlier hypothesis attributed eligibility-traces' device-time speedup
+plateauing around ~2.4-2.5x to L2-cache residency (the working set falling
+out of L2 above some size). That hypothesis was tested directly and
+refuted: no configuration ever exceeds HBM peak bandwidth, and there is no
+discontinuity at the size where the working set crosses the L2 capacity
+boundary. The actual mechanism is a small-grid occupancy ramp — one program
+per environment means small `num_envs` doesn't generate enough concurrent
+thread blocks to saturate all SMs and hide memory latency. Extending the
+swept `num_envs` range well past where earlier measurements stopped showed
+achieved bandwidth still climbing (roughly 67% -> 78% -> 84% of peak) with
+no plateau in sight — the "ceiling" earlier measurements read as
+architectural was an artifact of not having swept `num_envs` far enough.
+Addressable in principle (persistent-kernel or multi-env-per-program
+launch), not attempted — out of scope until a real workload needs
+eligibility-traces at very small `num_envs`.
+
+---
+
+## Truncation-path speedup grows with scale — durable, unlike the plain path's high-end compression
+
+For the four algorithms with a truncation-aware path (GAE, V-trace,
+λ-returns, discounted-returns), the Triton-vs-baseline speedup on that path
+*grows* with `num_envs`/`seq_len` once the baseline is the corrected
+doubling-scan implementation (e.g. GAE: 2.76x -> 9.88x from 512 to 8192
+envs at `seq_len=2048`) — the opposite of the plain path's behavior on
+fast GPUs (see the per-GPU floor calibration note above, where the ratio
+*compresses* toward 1x as hardware gets faster). Reason: the baseline's
+multi-launch (6-12 launches) doubling-scan construct moves far more total
+HBM traffic than the Triton kernel's single fused launch (an analytical
+estimate puts it at roughly 45x more bytes moved, treated as a lower
+bound), so the gap widens rather than narrows as problem size grows and
+launch-count overhead stops being the dominant cost on either side. Unlike
+the plain path, wall-clock and device time track within 1-2% of each other
+throughout this path, because the baseline's own multi-launch overhead is
+large enough that the fixed ~26µs dispatch cost is a small fraction of
+total time on both sides — the truncation path's numbers are less sensitive
+to the same GPU-speed effect that makes the plain-path floor
+hardware-specific.

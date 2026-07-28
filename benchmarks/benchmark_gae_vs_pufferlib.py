@@ -104,8 +104,8 @@ TWO REGIMES
   2. "Massively-parallel-sim" regime: seq_len in [8..128], num_envs in
      [4096..32768] — the opposite aspect ratio, matching Isaac Gym/Isaac
      Lab-style GPU simulation (thousands of envs, horizon in the tens of
-     steps). Prior work in this repo (tests/h100_short_horizon_l2_retrace_ppo_report.md,
-     Experiment 1) found rl-triton's device-only time INVERTS below 1x
+     steps). Prior work in this repo (see BOUNDARY_CONFIG in tests/bench_release.py)
+     found rl-triton's device-only time INVERTS below 1x
      against torch.compile's vectorized baseline at num_envs=16384,
      seq_len>=64 — one program per env means more grid waves per SM as
      num_envs grows, while a competing kernel with a flatter per-launch
@@ -641,10 +641,9 @@ def report_monotonicity(results, num_envs_list, seq_lens, label):
     if num_envs_violation_count:
         diagnosis += (
             f"{num_envs_violation_count} violation(s) are on the num_envs axis — "
-            "consistent with tests/h100_num_envs_sweep_report.md's finding that "
-            "small grids don't yet saturate the H100's 132 SMs, so growing "
-            "num_envs in that regime can be absorbed by idle SMs at near-zero "
-            "extra wall-clock cost. "
+            "consistent with NOTES.md's small-grid-occupancy-ramp finding: small "
+            "grids don't yet saturate the GPU's SMs, so growing num_envs in that "
+            "regime can be absorbed by idle SMs at near-zero extra wall-clock cost. "
         )
     diagnosis += (
         "Per-cell speedups below are reported as measured; treat the flagged "

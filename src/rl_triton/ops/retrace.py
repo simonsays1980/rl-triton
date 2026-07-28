@@ -12,8 +12,13 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 # num_warps=16 (128*512=65536=full register file), so occupancy stays pinned
 # at 25% and the kernel remains SLOWER than torch.compile from seq_len=4096
 # onward (measured 0.63-0.73x at 4096, 0.16-0.24x at 8192 — worse, not
-# better, as seq_len grows further). Below this ceiling the fused kernel is a
-# confirmed, measured win (>=1.08x at seq_len=2048 across tested env counts).
+# better, as seq_len grows further). num_warps of 4/8/16/32 were all swept
+# empirically before settling on 16 — 32 warps cuts spills further (to 90/
+# thread) but is slower anyway, from added cross-warp communication cost in
+# the reduction tree; there is no untried num_warps value that fixes this.
+# Below this ceiling the fused kernel is a confirmed, measured win
+# (>=1.08x at seq_len=2048 across tested env counts).
+#
 # Route long sequences through the same materialize-u/v + _run_scan path
 # already used (and already correct/tested) for seq_len > _FLAT_MAX_SEQ_LEN:
 # _run_scan dispatches internally to the generic flat associative-scan kernel
@@ -25,6 +30,16 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 # horizons from float32 underflow in the suffix log-sum and was discarded —
 # reusing already-proven scan infrastructure avoids inventing new failure
 # modes.)
+#
+# This reroute is damage control, not a fix: it is also measured slower than
+# torch.compile's vectorized baseline (0.38-0.47x), just a smaller and more
+# predictable loss than the fused kernel's worst case above the ceiling
+# (0.16x at seq_len=8192) rather than a win. It is not even uniformly better
+# than staying on the fused kernel — at seq_len=4096 the (already-losing)
+# fused kernel measures faster than this reroute (0.73x vs 0.47x); the
+# reroute only pulls ahead once seq_len reaches 8192. Both sides of
+# _TRITON_SEQ_LEN_CEILING are a loss above seq_len=4096; nothing here should
+# be read as "routing past the ceiling recovers performance."
 _TRITON_SEQ_LEN_CEILING = 2048
 
 
@@ -136,8 +151,9 @@ def compute_retrace(
     num_envs, seq_len = rewards.shape
 
     # Fused Triton kernel for seq_len <= _TRITON_SEQ_LEN_CEILING (confirmed win);
-    # vectorized torch.compile path for _TRITON_SEQ_LEN_CEILING < seq_len <= 131072
-    # (fused kernel is a confirmed loss there — see _TRITON_SEQ_LEN_CEILING comment).
+    # generic materialize-u/v + _run_scan path above that (fused kernel is a
+    # confirmed loss there — see _TRITON_SEQ_LEN_CEILING comment; this reroute
+    # is a smaller loss too, not a win — see the same comment).
     # done[t] = terminated[t] | truncated[t] is computed in-kernel from the two
     # raw flags for the fused path — no separate PyTorch combine here.
     if seq_len <= _TRITON_SEQ_LEN_CEILING:

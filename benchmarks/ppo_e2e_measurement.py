@@ -7,10 +7,10 @@ evaluation section. Do NOT wire this into bench_release.py, benchmarks.md, or
 README.md, and do not draw a "we win/lose" conclusion here — that is a
 STOP-and-report item for a human to sign off on.
 
-Fixes a methodology bug in the prior measurement (tests/h100_short_horizon_l2_
-retrace_ppo_report.md, Experiment 4): that report ran the Triton-GAE arm and
-the torch.compile-GAE arm as separate timed blocks, and its own "optimizer"
-stage came out 43% different between arms (0.294ms vs 0.518ms) — impossible
+Fixes a methodology bug in an earlier version of this measurement: running
+the Triton-GAE arm and the torch.compile-GAE arm as separate timed blocks
+made the "optimizer" stage come out 43% different between arms (0.294ms vs
+0.518ms) — impossible
 from a GAE-only change, since GAE finishes well before the optimizer step and
 has no way to affect Adam's cost. That is the signature of the two arms not
 being measured identically (GPU clock state / allocator warmth drifting

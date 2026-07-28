@@ -1,7 +1,7 @@
 # PPO end-to-end measurement — 2026-07-25
 
 ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.
-GPU: NVIDIA H100 80GB HBM3 · torch 2.4.1+cu124
+GPU: NVIDIA H200 · torch 2.4.1+cu124
 num_envs=4096, seq_len=128, 4 epochs x 4 minibatches, 30 interleaved-A/B iterations (10 warmup).
 
 ### hidden=(256, 256), net mode=eager

@@ -532,8 +532,9 @@ PRODUCTION_CONFIGS   = [
 
 # Boundary marker (limitations): one-program-per-env kernels pay more grid
 # waves per SM as num_envs grows while per-program work shrinks with seq_len;
-# prior work (tests/h100_short_horizon_l2_retrace_ppo_report.md) found
-# device-only time can invert below 1x at very short T / very high num_envs.
+# prior work found device-only time can invert below 1x at very short T /
+# very high num_envs (see NOTES.md's PufferLib design-tradeoff note for the
+# grid-wave mechanism).
 BOUNDARY_CONFIG = (16384, 16)
 
 ALL_ALGOS = [
@@ -1881,15 +1882,18 @@ def _methodology_text(gpu_label: str) -> str:
         f"**Columns.**  "
         f"**triton**: full-call wall time, headline (CUDA events).  "
         f"**dev**: device-only kernel time, diagnostic (see above).  "
-        f"**compile(vec)**: `torch.compile` applied to the fastest correct vectorized PyTorch "
-        f"equivalent – a log2(T)-doubling associative scan (`parallel_suffix_scan`/"
-        f"`parallel_prefix_scan`, no Python loop, no log-space); this is the strongest GPU "
-        f"baseline a competent engineer would write, and the same implementation used for the "
-        f"with-truncations tables (called here with truncateds=0) – an earlier log-space cumsum "
-        f"version of this baseline silently underflowed to inf/nan at every size in this table "
-        f"and was replaced (see docs/benchmark-history/ for the investigation); there is no "
-        f"longer a separate specialized no-truncation baseline to compare against, so the "
-        f"prior compile(assoc) column has been dropped as redundant.  "
+        f"**compile(vec)**: `torch.compile` applied to the strongest *correct* vectorized "
+        f"PyTorch equivalent found so far – a log2(T)-doubling associative scan "
+        f"(`parallel_suffix_scan`/`parallel_prefix_scan`, no Python loop, no log-space); the "
+        f"same implementation used for the with-truncations tables (called here with "
+        f"truncateds=0) – an earlier log-space cumsum version of this baseline silently "
+        f"underflowed to inf/nan at every size in this table and was replaced (see NOTES.md's "
+        f"log-space-underflow note for the investigation); there is no longer a separate "
+        f"specialized no-truncation baseline to compare against, so the prior compile(assoc) "
+        f"column has been dropped as redundant. This is not necessarily the fastest possible "
+        f"correct baseline – it pays 6-12 kernel launches per call (one per doubling step) "
+        f"where the Triton kernel pays 1-2, and a numerically-stable non-log-space cumsum "
+        f"formulation may exist and would be faster; see NOTES.md for that caveat in full.  "
         f"**compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, "
         f"used in the with-truncations tables (itself asserted correct against the sequential "
         f"truncation reference before being trusted as a baseline).  "

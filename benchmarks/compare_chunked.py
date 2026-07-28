@@ -24,8 +24,8 @@ empirically, not the "minutes" a repeatedly-timed Python loop would cost). An ea
 of this script used the uncompiled "vec" baseline (log-space cumsum / suffix-product) as the
 correctness ground truth instead, assuming it would scale safely since it has no Python loop —
 that assumption was wrong: it produces inf/nan from float32 underflow at seq_len=65536, the
-same failure mode already documented for a different log-space reformulation in
-tests/h100_short_horizon_l2_retrace_ppo_report.md. Because of this, the "vec" baseline's own
+same failure mode documented in NOTES.md's log-space-underflow note (there it hits every size
+this project benchmarks, not only the extreme lengths this script probes). Because of this, the "vec" baseline's own
 validity at each length is checked (not assumed) before it is trusted as a timed comparison —
 see `_check_vec_validity` below. Where it diverges, that is reported plainly as a baseline
 limitation, not silently worked around, and no speedup ratio is computed against a

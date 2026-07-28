@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from bench_utils import _bench_gpu, _device_profile, _n_iter_gpu, _warmup_gpu, assert_correctness
 from bench_release import (
     _make_retrace, _ref_disc, _ref_gae, _ref_lambda, _ref_retrace, _ref_vtrace,
-    _retrace_kernel_args, _vec_retrace,
+    _retrace_kernel_args,
 )
 from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN
 from rl_triton.ops.gae import compute_gae
@@ -63,6 +63,7 @@ from rl_triton.ops.retrace import compute_retrace
 from rl_triton.ops.returns import compute_discounted_returns, compute_lambda_returns
 from rl_triton.ops.vtrace import compute_vtrace
 from test_gae import vectorized_gae
+from test_retrace import vectorized_retrace
 from test_returns import vectorized_discounted_returns, vectorized_lambda_returns
 from test_vtrace import vectorized_vtrace
 
@@ -201,8 +202,11 @@ def _run_retrace_sweep():
         triton_out, _ = compute_retrace(*retrace_args, gamma=GAMMA)
         assert_correctness(triton_out, ref_out, f"Retrace[{NUM_ENVS}x{seq_len}] (triton vs exact reference)")
 
+        # vectorized_retrace returns (targets, advantages); _ref_retrace only
+        # computes targets, so validity is checked against element [0] only --
+        # same convention bench_release.py's own assert_correctness call uses.
         vec_valid, _ = _check_vec_validity(
-            lambda *a, **kw: _vec_retrace(*a, **kw), args, {"gamma": GAMMA}, ref_out,
+            lambda *a, **kw: vectorized_retrace(*a, **kw)[0], retrace_args, {"gamma": GAMMA}, ref_out,
             f"Retrace[{NUM_ENVS}x{seq_len}]",
         )
 
@@ -213,10 +217,10 @@ def _run_retrace_sweep():
         row = dict(seq_len=seq_len, dispatch=dispatch, triton_ms=triton_ms, triton_dev_ms=triton_dev_ms,
                    vec_valid=vec_valid)
         if vec_valid:
-            compiled_vec = torch.compile(_vec_retrace)
-            _warmup_gpu(compiled_vec, *args, gamma=GAMMA)
-            vec_ms = _bench_gpu(compiled_vec, *args, n_iter=ni, gamma=GAMMA)
-            vec_dev_ms, _ = _device_profile(compiled_vec, *args, n_iter=min(ni, 10), gamma=GAMMA)
+            compiled_vec = torch.compile(vectorized_retrace)
+            _warmup_gpu(compiled_vec, *retrace_args, gamma=GAMMA)
+            vec_ms = _bench_gpu(compiled_vec, *retrace_args, n_iter=ni, gamma=GAMMA)
+            vec_dev_ms, _ = _device_profile(compiled_vec, *retrace_args, n_iter=min(ni, 10), gamma=GAMMA)
             row.update(vec_ms=vec_ms, vec_dev_ms=vec_dev_ms, su_vec=vec_ms / triton_ms,
                        su_vec_dev=vec_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"))
             print(f"  seq_len={seq_len:>7,} [{dispatch:>7}]  triton={triton_ms:>9.4f}ms (dev {triton_dev_ms:.4f}ms)  "

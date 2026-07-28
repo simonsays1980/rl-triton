@@ -84,6 +84,7 @@ from rl_triton.ops.vtrace import compute_vtrace
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 from test_gae import vectorized_gae, vectorized_gae_with_truncations
+from test_retrace import vectorized_retrace
 from test_returns import (
     _ref_discounted_sequential,
     _ref_lambda_sequential,
@@ -186,35 +187,14 @@ def _ref_retrace(rewards, dones, values, next_q_all, q_values, actions,
     return out + q_values
 
 
-def _vec_retrace(rewards, dones, values, next_q_all, q_values, actions,
-                 action_probs_target, action_probs_behavior, gamma,
-                 lambda_=1.0, c_bar=1.0):
-    """
-    Fully vectorized Retrace(λ) via log-space suffix cumsum – strong compiled baseline.
-
-    Replaces the Python backward loop in _ref_retrace with a vectorized equivalent.
-    The backward scan Δ[t] = u[t] + v[t]*Δ[t+1] is a weighted sum where each
-    weight is the suffix product of decays v from t to T-1, computed in log-space
-    to avoid underflow.  Timed with CUDA events (no Python loop).
-    """
-    pi_a   = action_probs_target.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
-    c      = lambda_ * torch.clamp(pi_a / action_probs_behavior, max=c_bar)
-    exp_nq = (action_probs_target * next_q_all).sum(dim=-1)
-    u      = rewards + gamma * exp_nq * (1.0 - dones) - q_values
-    c_next          = torch.empty_like(c)
-    c_next[:, :-1]  = c[:, 1:]
-    c_next[:, -1]   = 0.0
-    v = gamma * c_next * (1.0 - dones)
-
-    log_suffix = torch.flip(
-        torch.cumsum(torch.flip(torch.log(v.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights  = torch.exp(log_suffix)
-    q_deltas = torch.flip(
-        torch.cumsum(torch.flip(u * weights, [1]), dim=1), [1]
-    ) / weights
-
-    return q_deltas + q_values
+# _vec_retrace (a local log-space-suffix-cumsum duplicate of test_retrace.py's
+# vectorized_retrace) used to live here. It was never migrated to the
+# parallel_suffix_scan fix applied to every other algorithm's baseline --
+# 97-99% non-finite output at every CONFIGS/production shape, silently timed
+# because bench_retrace() was the only bench_* function with no
+# assert_correctness check on its vec baseline. Removed; bench_retrace() now
+# imports vectorized_retrace directly, the same already-fixed implementation
+# tests/bench_safeguard.py uses.
 
 
 def _ref_lambda(rewards, next_values, dones, gamma, lambda_, bootstrap=None):
@@ -1100,10 +1080,10 @@ def _retrace_kernel_args(args_gpu):
 
 def bench_retrace():
     print("  compiling torch.compile baselines …", end="", flush=True)
-    compiled_vec = torch.compile(_vec_retrace)
-    args = _make_retrace(64, 512)
-    compiled_vec(*args, gamma=0.99); torch.cuda.synchronize()
-    compute_retrace(*_retrace_kernel_args(args), gamma=0.99); torch.cuda.synchronize()
+    compiled_vec = torch.compile(vectorized_retrace)
+    warmup_args = _retrace_kernel_args(_make_retrace(64, 512))
+    compiled_vec(*warmup_args, gamma=0.99); torch.cuda.synchronize()
+    compute_retrace(*warmup_args, gamma=0.99); torch.cuda.synchronize()
     print(" done.", flush=True)
 
     header = (
@@ -1127,12 +1107,15 @@ def bench_retrace():
         ref_out       = _ref_retrace(*args_gpu, gamma=0.99)
         assert_correctness(triton_out, ref_out, f"retrace[{num_envs}x{seq_len}]")
 
+        vec_out, _ = vectorized_retrace(*retrace_kernel_args, gamma=0.99)
+        assert_correctness(vec_out, ref_out, f"retrace[{num_envs}x{seq_len}] (vec baseline)")
+
         _warmup_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99)
-        _warmup_gpu(compiled_vec,    *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,    *retrace_kernel_args, gamma=0.99)
         triton_ms = _bench_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99, n_iter=ni)
-        vec_ms    = _bench_gpu(compiled_vec,    *args_gpu,            gamma=0.99, n_iter=ni)
+        vec_ms    = _bench_gpu(compiled_vec,    *retrace_kernel_args, gamma=0.99, n_iter=ni)
         triton_dev_ms, _ = _device_profile(compute_retrace, *retrace_kernel_args, gamma=0.99)
-        vec_dev_ms, _    = _device_profile(compiled_vec,    *args_gpu,            gamma=0.99)
+        vec_dev_ms, _    = _device_profile(compiled_vec,    *retrace_kernel_args, gamma=0.99)
         loop_ms   = _bench_cpu(_ref_retrace,               *args_gpu, gamma=0.99)
         numpy_ms  = _bench_cpu(numpy_retrace_cpu,          rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
         e2e_ms    = _bench_cpu(numpy_retrace_np_to_triton, rn, dn, qn, nqn, an, aptn, apbn, gamma=0.99)
@@ -1189,14 +1172,17 @@ def bench_retrace():
         ref_out       = _ref_retrace(*args_gpu, gamma=0.99)
         assert_correctness(triton_out, ref_out, f"retrace[production,{num_envs}x{seq_len}]")
 
+        vec_out, _ = vectorized_retrace(*retrace_kernel_args, gamma=0.99)
+        assert_correctness(vec_out, ref_out, f"retrace[production,{num_envs}x{seq_len}] (vec baseline)")
+
         _warmup_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99)
-        _warmup_gpu(compiled_vec,    *args_gpu, gamma=0.99)
+        _warmup_gpu(compiled_vec,    *retrace_kernel_args, gamma=0.99)
         triton_ms = _bench_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99, n_iter=ni)
-        vec_ms    = _bench_gpu(compiled_vec,    *args_gpu,            gamma=0.99, n_iter=ni)
+        vec_ms    = _bench_gpu(compiled_vec,    *retrace_kernel_args, gamma=0.99, n_iter=ni)
         triton_dev_ms, _ = _device_profile(compute_retrace, *retrace_kernel_args, gamma=0.99)
-        vec_dev_ms, _    = _device_profile(compiled_vec,    *args_gpu,            gamma=0.99)
+        vec_dev_ms, _    = _device_profile(compiled_vec,    *retrace_kernel_args, gamma=0.99)
         triton_amort_ms  = _bench_gpu_amortized(compute_retrace, *retrace_kernel_args, gamma=0.99)
-        vec_amort_ms     = _bench_gpu_amortized(compiled_vec,    *args_gpu,            gamma=0.99)
+        vec_amort_ms     = _bench_gpu_amortized(compiled_vec,    *retrace_kernel_args, gamma=0.99)
 
         row = {
             "algo": "Retrace", "num_envs": num_envs, "seq_len": seq_len, "is_boundary": is_boundary,
@@ -1997,15 +1983,19 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
     README draft's main table, for the 3 algorithms that have a vectorized
     with-truncations baseline to compare against (GAE, V-Trace, lambda-returns).
     Retrace's kernel supports truncations too (terminated/truncated are both
-    mandatory, distinct arguments — see compute_retrace's docstring), but no
-    vectorized_retrace_with_truncations baseline exists yet to benchmark it
-    against, so it's omitted here rather than compared against an invalid one
-    (_vec_retrace only takes a single 'dones' flag, no truncated-but-bootstrap-
-    kept semantics). Existing truncation-path tables in benchmarks.md only run
-    at the headline CONFIGS (64x512 .. 16384x512), never at the production
-    (4096,128) config the README table uses, so the truncation-path number was
-    previously missing from the README draft entirely; this fills that gap
-    without touching the full sweep.
+    mandatory, distinct arguments — see compute_retrace's docstring) and its
+    baseline (vectorized_retrace, test_retrace.py) already takes both flags
+    with the correct distinct semantics -- there is no separate
+    "_with_truncations" variant to point at because Retrace's kernel has no
+    no-truncation specialization to begin with (unlike GAE/V-Trace). Retrace
+    is still omitted from this headline, not because no valid baseline
+    exists, but because nobody has wired it in here yet -- a real gap to
+    close, not a validity problem like the one bench_retrace() had. Existing
+    truncation-path tables in benchmarks.md only run at the headline CONFIGS
+    (64x512 .. 16384x512), never at the production (4096,128) config the
+    README table uses, so the truncation-path number was previously missing
+    from the README draft entirely; this fills that gap without touching the
+    full sweep.
     """
     results = {}
 

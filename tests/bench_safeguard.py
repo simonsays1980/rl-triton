@@ -91,38 +91,61 @@ _SPEEDUP_FLOOR = 1.8
 #
 # "rtx_2000_ada" entries are the pre-existing floor values, UNCHANGED.
 # Investigated 2026-07-26 (three test_perf_gae/lambda_returns/
-# eligibility_traces failures on an H100 CI run): commits 72b7299/b236ce9
+# eligibility_traces failures on a CI run believed at the time to be H100,
+# later found to actually be H200 -- see below): commits 72b7299/b236ce9
 # that set these floors are both dated 2026-06-23, a full month before this
-# repo's first H100 commit (dc246a4, 2026-07-22), and b236ce9's own
+# repo's first H100-branded commit (dc246a4, 2026-07-22), and b236ce9's own
 # prefix_sum comment from that same day describes "this card idles at
 # 210MHz and boosts to 3105MHz, 70W TDP" -- an RTX-2000-Ada-class
-# clock/power profile (H100 SXM measured this session: ~345MHz idle /
-# 1980MHz boost / 700W TDP via nvidia-smi). No commit message from that date
+# clock/power profile (the H200 card measured then, mislabelled H100 at the
+# time: ~345MHz idle / 1980MHz boost / 700W TDP via nvidia-smi). No commit
+# message from that date
 # names the GPU explicitly, so "RTX 2000 Ada" is inference from converging
 # evidence (matches docs/benchmark-history/v0.1.0.md's "NVIDIA RTX 2000 Ada
 # Generation" release, dated in between), not a confirmed first-hand record
 # -- labelled "existing/legacy" rather than asserted.
 #
-# "h100_sxm" entries were measured 2026-07-26 on NVIDIA H100 80GB HBM3 SXM:
-# 3 independent full pytest-process runs (5 trials each), GPU confirmed at
-# full P0 boost clock (1980MHz, its max) throughout with zero
-# clocks_event_reasons bits set and power draw ~115-127W of a 700W limit --
-# ruling out clock/power throttling. BLOCK_SIZE at this suite's one config
-# (seq_len=1024) resolves to num_warps=8 in every kernel's _WARPS table both
-# before and after the small-BLOCK_SIZE warp fix (commit 7b49b23, which only
-# added entries for BLOCK_SIZE<512) -- ruling out that change as a cause.
-# Floor = lowest of the 3 runs' min-of-5-trials, x0.9 (~10% margin), matching
-# this file's existing floor-setting convention. PROPOSED, pending human
-# approval -- not yet treated as final calibration.
-_H100_MEASURED_2026_07_26 = {
-    # algo: (run1_min, run2_min, run3_min) wall-clock speedup, 128x1024
-    "gae":                 (1.51, 1.53, 1.51),
-    "vtrace":              (1.99, 2.06, 2.01),
-    "retrace":             (1.51, 1.56, 1.53),
-    "lambda_returns":      (1.44, 1.52, 1.48),
-    "discounted_returns":  (1.49, 1.55, 1.53),
-    "eligibility_traces":  (1.19, 1.19, 1.20),
-    "prefix_sum":          (1.21, 1.21, 1.25),  # median-gated, see test_perf_prefix_sum
+# "h100_sxm" entries measured 2026-07-26 were RETIRED and are gone from this
+# table, on two independent grounds, either alone sufficient:
+#   (1) wrong GPU. torch.cuda.get_device_name(0) on the card those numbers
+#       came from reads "NVIDIA H200", not H100 -- despite this repo's
+#       branch/commit naming assuming H100, nobody had checked the device
+#       name string against the actual hardware until it was needed for this
+#       table.
+#   (2) wrong baseline. That measurement was taken against
+#       torch.compile(vectorized_gae) / torch.compile(vectorized_discounted_returns)
+#       baselines later found to silently produce wrong numeric output (an
+#       Inductor buffer-reuse bug triggered by allocating torch.zeros_like(...)
+#       inside the compiled region -- see the import comment above), plus a
+#       separate Dynamo cross-shape-compilation state bug. Both were fixed
+#       afterwards; any floor derived from the broken versions does not carry
+#       over to the fixed ones.
+#
+# "h200_sxm" entries below are the replacement: remeasured against the fixed
+# baselines, on the same physical H200 card, 3 independent full
+# pytest-process runs (5 trials each) via a standalone script mirroring this
+# file's exact methodology (single 128x1024 shape, torch.compile'd vec
+# baseline, _bench_gpu_spread 5-trial spread). Floor = lowest of the 3 runs'
+# min-of-5-trials, x0.9 (~10% margin), matching this file's existing
+# floor-setting convention -- except prefix_sum, whose test gates on the
+# *median* of 5 trials (see test_perf_prefix_sum): each of its 3 stored run
+# values below is itself a median-of-5-trials, not a min, so taking
+# min-of-those-three-medians x0.9 applies the same "lowest of 3 runs"
+# convention at the granularity the test actually gates on, rather than
+# silently reusing the min-of-5-trials formula the other six algorithms use.
+# No real H100 hardware has been calibrated yet; there is no "h100_sxm" entry
+# below, and none should be invented -- a substring match against an actual
+# H100 will fall through to the None/skip path below until one is added.
+_H200_MEASURED_2026_07_27 = {
+    # algo: (run1, run2, run3) wall-clock speedup, 128x1024 -- min-of-5-trials
+    # per run, except prefix_sum which is median-of-5-trials per run (see above)
+    "gae":                 (3.474, 3.396, 3.389),
+    "vtrace":              (3.237, 3.159, 3.165),
+    "retrace":             (2.127, 2.145, 2.129),
+    "lambda_returns":      (2.960, 3.021, 2.892),
+    "discounted_returns":  (3.131, 3.146, 3.071),
+    "eligibility_traces":  (2.877, 2.936, 2.836),
+    "prefix_sum":          (3.061, 3.126, 2.924),  # median-gated, see test_perf_prefix_sum
 }
 
 _FLOOR_TABLE = {
@@ -130,15 +153,20 @@ _FLOOR_TABLE = {
         "gae": 1.9, "vtrace": 1.8, "retrace": 1.35, "lambda_returns": 1.6,
         "discounted_returns": 1.25, "eligibility_traces": 1.85, "prefix_sum": 1.1,
     },
-    "h100_sxm": {
+    "h200_sxm": {
         algo: round(min(runs) * 0.9, 2)
-        for algo, runs in _H100_MEASURED_2026_07_26.items()
+        for algo, runs in _H200_MEASURED_2026_07_27.items()
     },
 }
 
 _DEVICE_SUBSTRING_MAP = [
     ("RTX 2000 Ada", "rtx_2000_ada"),
-    ("H100", "h100_sxm"),
+    ("H200", "h200_sxm"),
+    # No "H100" entry: no real H100 hardware has been calibrated yet (see
+    # comment above), so an actual H100 correctly falls through to None below
+    # and _skip_if_uncalibrated() skips loudly rather than reusing another
+    # card's floor. Add ("H100", "h100_sxm") here, alongside a matching
+    # _FLOOR_TABLE["h100_sxm"] entry, once real H100 numbers exist.
 ]
 
 
@@ -227,8 +255,8 @@ def test_perf_gae():
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.9
-    # (3-run min 2.10x, ~10% margin, pre-existing). H100 SXM: proposed
-    # ~1.36 (3-run min 1.51x, ~10% margin, pending approval).
+    # (3-run min 2.10x, ~10% margin, pre-existing). H200 SXM: 3.05
+    # (3-run min 3.389x, ~10% margin).
     _GAE_FLOOR = _floor_for("gae")
     _skip_if_uncalibrated(_GAE_FLOOR)
     args = _gae_inputs()
@@ -267,9 +295,8 @@ def test_perf_vtrace():
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.8
-    # (3-run min 2.05x, ~10% margin, pre-existing). H100 SXM: proposed
-    # ~1.79 (3-run min 1.99x, ~10% margin, pending approval; already
-    # passes on H100 today, this just makes the gate GPU-honest).
+    # (3-run min 2.05x, ~10% margin, pre-existing). H200 SXM: 2.84
+    # (3-run min 3.159x, ~10% margin).
     _VTRACE_FLOOR = _floor_for("vtrace")
     _skip_if_uncalibrated(_VTRACE_FLOOR)
     args = _vtrace_inputs()
@@ -305,9 +332,8 @@ def test_perf_retrace():
     # fused single-kernel path (compute_retrace_fused), which has no bootstrap-
     # default allocation to remove; the floor below is a fresh re-calibration.
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.35
-    # (3-run min 1.53x, ~10% margin, pre-existing). H100 SXM: proposed
-    # ~1.36 (3-run min 1.51x, ~10% margin, pending approval; near-identical
-    # to the RTX value by coincidence, not because it's GPU-independent).
+    # (3-run min 1.53x, ~10% margin, pre-existing). H200 SXM: 1.91
+    # (3-run min 2.127x, ~10% margin).
     _RETRACE_FLOOR = _floor_for("retrace")
     _skip_if_uncalibrated(_RETRACE_FLOOR)
     args = _retrace_inputs()
@@ -344,8 +370,8 @@ def test_perf_lambda_returns():
     # torch.zeros(num_envs) bootstrap-default allocation from the no-bootstrap
     # kernel path (HAS_BOOTSTRAP constexpr).
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.6
-    # (3-run min 1.82x, ~10% margin, pre-existing). H100 SXM: proposed
-    # ~1.3 (3-run min 1.44x, ~10% margin, pending approval).
+    # (3-run min 1.82x, ~10% margin, pre-existing). H200 SXM: 2.60
+    # (3-run min 2.892x, ~10% margin).
     _LAMBDA_FLOOR = _floor_for("lambda_returns")
     _skip_if_uncalibrated(_LAMBDA_FLOOR)
     rewards, next_values, dones = _returns_inputs()
@@ -388,9 +414,7 @@ def test_perf_discounted_returns():
     # 1.046x), so its margin below the observed min is wider than the others.
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.25
     # (3-run min 1.45x, wider-than-10% margin for tail-risk, pre-existing).
-    # H100 SXM: proposed ~1.34 (3-run min 1.49x, ~10% margin, pending
-    # approval; already passes on H100 today at the old 1.25 floor, this
-    # just tightens the gate to match this hardware's real ceiling).
+    # H200 SXM: 2.76 (3-run min 3.071x, ~10% margin).
     _DISC_FLOOR = _floor_for("discounted_returns")
     _skip_if_uncalibrated(_DISC_FLOOR)
     rewards, _, dones = _returns_inputs()
@@ -431,12 +455,8 @@ def test_perf_eligibility_traces():
     # Re-calibrated after removing the torch.zeros(num_envs) seed-default
     # allocation from the no-seed kernel path (HAS_SEED constexpr).
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.85
-    # (3-run min 2.08x, ~10% margin, pre-existing). H100 SXM: proposed
-    # ~1.07 (3-run min 1.19x, ~10% margin, pending approval). This is the
-    # tightest H100 margin in the table -- eligibility_traces has the
-    # smallest device-only win of the three affected kernels (1.50x, see
-    # diagnosis comment above), so it also has the least wall-clock
-    # headroom above the fixed dispatch-overhead floor at this config.
+    # (3-run min 2.08x, ~10% margin, pre-existing). H200 SXM: 2.55
+    # (3-run min 2.836x, ~10% margin).
     _ELIG_FLOOR = _floor_for("eligibility_traces")
     _skip_if_uncalibrated(_ELIG_FLOOR)
     rewards, _, dones = _returns_inputs()
@@ -491,9 +511,8 @@ def test_perf_prefix_sum():
     # robust to that single bad trial. min/median/max are still printed below
     # so the spread stays visible.
     # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.1,
-    # below the ~1.24x median with margin, pre-existing. H100 SXM: proposed
-    # ~1.09 (3-run min-of-medians 1.21x, ~10% margin, pending approval;
-    # near-identical to the RTX value by coincidence).
+    # below the ~1.24x median with margin, pre-existing. H200 SXM: 2.63
+    # (3-run min-of-medians 2.924x, ~10% margin).
     _PREFIX_FLOOR = _floor_for("prefix_sum")
     _skip_if_uncalibrated(_PREFIX_FLOOR)
     args = _prefix_sum_inputs()

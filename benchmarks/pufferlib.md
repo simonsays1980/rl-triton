@@ -2,6 +2,14 @@
 
 *Measured on NVIDIA H200 · 2026-07-25 · pufferlib vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled.*
 
+**Reproducibility note: the numbers below are not reproducible from the committed script
+as-is.** `benchmarks/compare_pufferlib.py` only imports the real pip `pufferlib` package
+(no vendored fallback), which was not installed in the environment these numbers came from;
+they were instead produced by a separate, uncommitted scratch runner against a vendored,
+sha256-pinned JIT build. Re-running `compare_pufferlib.py` as committed will not reproduce
+this file unless pip `pufferlib` is installed with a working prebuilt extension. See the
+method note at the bottom of this file for the full detail.
+
 Capability + design comparison, not a scoreboard. PufferLib's kernels are real, hand-written CUDA: one thread per environment row, sequential O(T) scan within the thread. rl-triton's kernels are Triton: one program per environment row, O(log T) in-SRAM tree reduction via `tl.associative_scan`. Different mechanisms, different tradeoffs — PufferLib's flat per-thread cost tends to win at very short horizons; rl-triton's parallel scan tends to win as horizon grows.
 
 Both full-call wall time (headline — includes launch/wrapper overhead, what a caller pays every invocation) and device-only kernel time (diagnostic) are reported throughout, since per-call overhead is central to the short-horizon comparison.

@@ -13,6 +13,10 @@ on:
         description: "Release tag to record in benchmarks.md (e.g. v0.1.0)"
         required: false
         default: "unreleased"
+      allowed_gpus:
+        description: "Comma-separated substrings of acceptable GPU names for release-bench (safety check against another provenance mislabel)"
+        required: false
+        default: "H100,H200"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -79,7 +83,8 @@ jobs:
             --body "$BODY"
 
   # ---------------------------------------------------------------------------
-  # Release benchmarks — full sweep, updates README.md and benchmarks.md
+  # Release benchmarks — full sweep, updates benchmarks.md + history archive;
+  # README.md is intentionally left to a human (see --skip-readme below)
   # ---------------------------------------------------------------------------
   release-bench:
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
@@ -91,21 +96,51 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
       - run: pip install --quiet --no-deps -e .
+      - name: Assert GPU identity
+        run: |
+          GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
+          echo "GPU_NAME=$GPU_NAME" >> "$GITHUB_ENV"
+          echo "Detected GPU: $GPU_NAME" >> "$GITHUB_STEP_SUMMARY"
+          ALLOWED="${{ github.event.inputs.allowed_gpus }}"
+          ALLOWED="${ALLOWED:-H100,H200}"
+          echo "Allowed substrings: $ALLOWED" >> "$GITHUB_STEP_SUMMARY"
+          MATCHED=0
+          IFS=',' read -ra SUBSTRINGS <<< "$ALLOWED"
+          for s in "${SUBSTRINGS[@]}"; do
+            if [[ "$GPU_NAME" == *"$s"* ]]; then
+              MATCHED=1
+              break
+            fi
+          done
+          if [[ "$MATCHED" -eq 0 ]]; then
+            echo "**FAILED: '$GPU_NAME' does not match any allowed substring ($ALLOWED).**" >> "$GITHUB_STEP_SUMMARY"
+            echo "GPU identity check failed: '$GPU_NAME' not in allowlist ($ALLOWED)." \
+                 "This check exists because this repo's benchmark work has previously" \
+                 "been published under the wrong GPU name -- see NOTES.md/bench_safeguard.py." \
+                 "If this card is legitimately new, pass allowed_gpus explicitly on dispatch." >&2
+            exit 1
+          fi
       - name: Run full benchmark sweep
         env:
           PYTHONUNBUFFERED: "1"
           TRITON_CACHE_DIR: /root/.triton/cache
         run: |
-          GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
           VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
           python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
-            --version "$VERSION"
-      - name: Commit updated README.md and benchmarks.md
+            --version "$VERSION" \
+            --parent-sweep \
+            --skip-readme
+      - name: Commit updated benchmark data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md benchmarks.md
+          # NOT README.md: --skip-readme leaves it untouched deliberately (README
+          # prose is a STOP-and-report item -- a human applies benchmarks/readme_table_draft.md
+          # by hand). update_benchmarks_md() writes benchmarks.md and archives the outgoing
+          # release section under docs/benchmark-history/; render_readme_table_draft() writes
+          # benchmarks/readme_table_draft.md. Stage exactly that set.
+          git add benchmarks.md docs/benchmark-history/ benchmarks/readme_table_draft.md
           git diff --cached --quiet || \
-            git commit -m "bench: update results for ${{ github.event.release.tag_name }}"
+            git commit -m "bench: update results for ${{ github.event.release.tag_name || github.event.inputs.version }}"
           git push origin HEAD:main

@@ -1978,6 +1978,35 @@ def update_benchmarks_md(version: str, gpu_label: str, tables: list[str]) -> Non
     print(f"\nbenchmarks.md updated ({BENCHMARKS_MD}) — replaced current-release section only")
 
 
+UNRELEASED_MD = BENCHMARK_HISTORY_DIR / "unreleased.md"
+
+
+def stage_unreleased_md(gpu_label: str, tables: list[str]) -> None:
+    """Write this run's results as the staged release candidate --
+    docs/benchmark-history/unreleased.md -- the DEFAULT output target.
+
+    Per this repo's benchmark-placement policy (see benchmarks/README.md):
+    a manual sweep run is a CANDIDATE, not a release. This file holds at
+    most one not-yet-promoted candidate at a time and is OVERWRITTEN
+    WHOLESALE by each new run -- never appended to, never archived (there
+    is nothing to archive; a discarded candidate just disappears). This
+    function never reads or writes benchmarks.md or README.md. Promotion
+    to an actual release (writing benchmarks.md + a version-tagged archive
+    file) is update_benchmarks_md()'s job, reached only via --release.
+    """
+    date = datetime.date.today().isoformat()
+    gpu  = gpu_label or _detect_gpu()
+    heading = f"## unreleased – {date} – {gpu}\n\n" + _methodology_text(gpu_label)
+    body    = "\n\n".join(tables) + "\n"
+    section = heading + body
+
+    BENCHMARK_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    UNRELEASED_MD.write_text("# Benchmarks archive: unreleased\n\n" + section)
+    print(f"\nStaged candidate written to {UNRELEASED_MD} -- NOT a release; "
+          f"benchmarks.md is untouched. Promote by hand, or rerun with "
+          f"--release --version <tag> to cut an actual release.")
+
+
 def _bench_truncation_headline(num_envs=4096, seq_len=128):
     """Truncation-path full-call speedup at the SAME (num_envs, seq_len) as the
     README draft's main table, for the 3 algorithms that have a vectorized
@@ -2103,13 +2132,24 @@ def main():
     parser.add_argument("--no-update", action="store_true",
                         help="Print results but do not modify README.md or benchmarks.md")
     parser.add_argument("--skip-readme", action="store_true",
-                        help="Update benchmarks.md but do not touch README.md "
-                             "(README prose is a STOP-and-report item; use this for "
-                             "unattended runs that should still archive data/tables).")
+                        help="Do not touch README.md even in --release mode (README prose is "
+                             "a STOP-and-report item; use this for unattended --release runs "
+                             "that should still archive data/tables). Has no effect without "
+                             "--release: staging runs never touch README.md regardless.")
+    parser.add_argument("--release", action="store_true",
+                        help="Write directly to benchmarks.md as the new latest release, "
+                             "auto-archiving the outgoing section to "
+                             "docs/benchmark-history/<prior-version>.md. Requires --version. "
+                             "DEFAULT (this flag omitted) is to stage the result in "
+                             "docs/benchmark-history/unreleased.md instead, leaving "
+                             "benchmarks.md untouched -- see benchmarks/README.md's placement "
+                             "policy. Use --release only when actually cutting a release.")
     parser.add_argument("--gpu", default="", metavar="LABEL",
                         help="GPU label to embed in the table header (default: auto-detect)")
     parser.add_argument("--version", default="", metavar="TAG",
-                        help="Release version tag (e.g. v0.1.0) written into benchmarks.md")
+                        help="Release version tag (e.g. v0.1.0), required with --release. "
+                             "Ignored when staging (the default) -- staged candidates are "
+                             "always headed 'unreleased'.")
     parser.add_argument("--algos", default="all", metavar="LIST",
                         help="Comma-separated subset of ALL_ALGOS to run (default: all). "
                              f"Choices: {','.join(ALL_ALGOS)}. Used for the GAE-only smoke "
@@ -2131,6 +2171,11 @@ def main():
                              "fresh CUDA context avoids it; ~15-20 compiles per process is safely "
                              "under whatever threshold the crash accumulates around.")
     args = parser.parse_args()
+
+    if args.release and not args.version:
+        print("--release requires --version (e.g. --version v0.1.1) -- refusing to write a "
+              "release headed 'unreleased' into benchmarks.md.")
+        sys.exit(1)
 
     selected_algos = ALL_ALGOS if args.algos == "all" else [a.strip() for a in args.algos.split(",")]
     unknown = set(selected_algos) - set(ALL_ALGOS)
@@ -2337,8 +2382,10 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
           "means every gate up to here held).")
 
     if not args.no_update:
-        version = args.version or "unreleased"
-        update_benchmarks_md(version, args.gpu, full_tables)
+        if args.release:
+            update_benchmarks_md(args.version, args.gpu, full_tables)
+        else:
+            stage_unreleased_md(args.gpu, full_tables)
 
         print("Running truncation-path headline (same config as README draft) …", flush=True)
         truncation_headline = _bench_truncation_headline()
@@ -2348,11 +2395,18 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
         draft_path.write_text(readme_draft)
         print(f"\nREADME summary table drafted to {draft_path}.")
 
-        if args.skip_readme:
+        # README.md is a STOP-and-report item regardless of path: only ever
+        # touched in --release mode, and even then only without --skip-readme.
+        # Staging a candidate must never modify README.md -- there is nothing
+        # released yet for its summary table to describe.
+        if args.release and not args.skip_readme:
+            update_readme(section)
+        elif args.release:
             print("--skip-readme passed: README.md left untouched — review the draft above "
                   "and paste manually (README prose edits are a STOP-and-report item).")
         else:
-            update_readme(section)
+            print("Staging (not --release): README.md left untouched — it only ever "
+                  "reflects an actual release.")
 
     if all_violations:
         sys.exit(1)

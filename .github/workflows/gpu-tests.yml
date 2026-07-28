@@ -119,40 +119,29 @@ jobs:
                  "If this card is legitimately new, pass allowed_gpus explicitly on dispatch." >&2
             exit 1
           fi
-      - name: Run full benchmark sweep
+      - name: Run full benchmark sweep (stages a candidate; never touches benchmarks.md)
         env:
           PYTHONUNBUFFERED: "1"
           TRITON_CACHE_DIR: /root/.triton/cache
         run: |
+          # No --release: the default (staging) writes ONLY to
+          # docs/benchmark-history/unreleased.md via bench_release.py's own
+          # stage_unreleased_md(), and benchmarks/readme_table_draft.md.
+          # benchmarks.md is never read or written by this invocation --
+          # nothing to restore or discard if the sweep fails partway, and no
+          # auto-archive side effect to race against, because staging mode
+          # has neither.
           python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
-            --version unreleased \
-            --parent-sweep \
-            --skip-readme
-      - name: Stage the candidate in docs/benchmark-history/unreleased.md
-        run: |
-          # bench_release.py only knows how to write "the latest release"
-          # (benchmarks.md) and auto-archive whatever it replaces -- it has no
-          # stage-only mode (adding one is a Python behavior change that would
-          # need its own GPU-verified pass, out of scope for this policy
-          # change). So: let it run normally, relocate its output by hand,
-          # then restore benchmarks.md and discard any auto-archive side
-          # effect, so this job never commits a change to the released
-          # benchmarks -- only to the staged candidate.
-          cp benchmarks.md /tmp/candidate.md
-          git checkout -- benchmarks.md
-          git checkout -- docs/benchmark-history/ 2>/dev/null || true
-          cp /tmp/candidate.md docs/benchmark-history/unreleased.md
+            --parent-sweep
       - name: Open a PR with the staged candidate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # NOT README.md: --skip-readme leaves it untouched deliberately (README
-          # prose is a STOP-and-report item -- a human applies
-          # benchmarks/readme_table_draft.md by hand). NOT benchmarks.md: this job
-          # never writes a release, only a staged candidate.
+          # NOT README.md: staging mode never touches it (see bench_release.py).
+          # NOT benchmarks.md: this job stages a candidate, never a release.
           git add docs/benchmark-history/unreleased.md benchmarks/readme_table_draft.md
           git diff --cached --quiet && { echo "No changes to stage -- nothing to PR."; exit 0; }
           BRANCH="bench/unreleased-candidate-${{ github.run_id }}"

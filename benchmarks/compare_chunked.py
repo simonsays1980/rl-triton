@@ -233,14 +233,14 @@ def _run_retrace_sweep():
 def render_markdown(gpu_label, all_results):
     date = datetime.date.today().isoformat()
     lines = [
-        "# Chunked-kernel dispatch vs. torch.compile at long seq_len — a robustness finding",
+        "# Chunked-kernel dispatch vs. torch.compile at long seq_len",
         "",
         "**Scope note: this study is OUTSIDE the project's target regime.** rl-triton's target "
         "regime is production RL rollouts, seq_len ~80-128 (see the production-regime table in "
         "`benchmarks.md`). Everything below runs at seq_len 65,536-524,288 — 500-4000x longer "
         "than that target — specifically to probe the flat/chunked dispatch boundary. Treat this "
         "as a robustness/correctness demonstration at an extreme scale, not a headline "
-        "performance result.",
+        "performance result for the project's actual target regime.",
         "",
         f"*Measured on {gpu_label} · {date} · num_envs={NUM_ENVS} fixed (matches "
         "tests/test_scan_chunked.py's own long-sequence configs).*",
@@ -257,32 +257,37 @@ def render_markdown(gpu_label, all_results):
         "Eligibility-traces and episodic-prefix-sum are excluded: their forward-scan variant has "
         "no chunked kernel and simply rejects seq_len > 131072.",
         "",
-        "**Finding: no valid vectorized PyTorch baseline exists at this scale.** At seq_len>=65536 "
-        "the standard vectorized log-space formulation (`exp(cumsum(log(decay)))`, the same "
-        "\"vec\" baseline used everywhere else in this project) underflows to NaN in float32; "
-        "rl-triton's chunked dispatch remains numerically correct throughout (verified against "
-        "the exact sequential reference at every row). This is reported as `N/A (baseline "
-        "invalid)` below, not papered over with a misleading speedup ratio against broken output.",
+        "**Finding: the vectorized PyTorch baseline is valid -- and gives a real comparison -- "
+        "for the algorithms below whose row don't say N/A.** They use the same log2(T)-doubling "
+        "associative-scan baseline (`parallel_suffix_scan`, no log-space) that fixed the "
+        "log-space underflow bug documented in NOTES.md's log-space-underflow note; it stays "
+        "numerically finite and correct at every seq_len swept here (verified against the exact "
+        "sequential reference at every row).",
         "",
-        "Root cause, confirmed directly (not assumed): the log-space formulation already clamps "
-        "`decay` to a minimum of 1e-38 before taking `log()`, specifically to keep `log(0)` "
-        "finite at episode-terminated steps (decay=0 there). But in log-space, each termination "
-        "inside a row's suffix therefore contributes `log(1e-38) ~= -87.5` to the running suffix "
-        "sum. At this study's ~5% per-step termination rate, only 2-3 terminations — expected "
-        "within the first couple dozen steps of *any* window, independent of overall seq_len — "
-        "already push the log-suffix below float32's underflow floor (`log(min float32 subnormal) "
-        "~= -103.3`); `exp()` of that then rounds to exact `0.0`, and dividing by it downstream "
-        "produces inf/nan. Measured directly on a 65536-length row: the suffix weight underflows "
-        "to exact `0.0` starting ~17 steps before the end of the sequence. No epsilon/clamp "
-        "adjustment fixes this without abandoning the whole-sequence log-space approach: raising "
-        "the clamp floor would corrupt the correctness of the termination boundary itself (the "
-        "point of decay=0 there), and lowering it only delays, rather than removes, the same "
-        "compounding-underflow failure. A structurally different formulation — chunked/blocked, "
-        "periodically renormalized, never accumulating one suffix product across an unbounded run "
-        "of resets — would avoid this; that is exactly rl-triton's own kernel strategy at this "
-        "scale. Building a chunked log-space *PyTorch* baseline to match is a real implementation "
-        "option, not attempted here because seq_len>=65536 is outside this project's target "
-        "regime (see scope note above).",
+        "**A valid comparison is not necessarily a flattering one -- read the actual ratios in "
+        "the table, don't assume a win.** The flat kernel in particular was never tuned for this "
+        "500-4000x-longer-than-target regime, so a `vs vec` ratio below 1x at the flat-dispatch "
+        "rows is an expected, not alarming, outcome; whether chunking recovers a win varies by "
+        "algorithm and is visible directly in the table below, not asserted here.",
+        "",
+        "**Any algorithm still showing N/A has a baseline that underflows to inf/nan at this "
+        "scale.** Root cause, confirmed directly (not assumed): the log-space formulation that "
+        "baseline still uses clamps `decay` to a minimum of 1e-38 before taking `log()`, "
+        "specifically to keep `log(0)` finite at episode-terminated steps (decay=0 there). In "
+        "log-space, each termination inside a row's suffix therefore contributes "
+        "`log(1e-38) ~= -87.5` to the running suffix sum. At this study's ~5% per-step "
+        "termination rate, only 2-3 terminations -- expected within the first couple dozen steps "
+        "of *any* window, independent of overall seq_len -- already push the log-suffix below "
+        "float32's underflow floor (`log(min float32 subnormal) ~= -103.3`); `exp()` of that "
+        "then rounds to exact `0.0`, and dividing by it downstream produces inf/nan. This is the "
+        "exact mechanism that once broke every other algorithm's baseline here too; those were "
+        "fixed by switching to the doubling-scan formulation above. Any algorithm still N/A below "
+        "has not had the same fix applied to *its* baseline in this script specifically -- check "
+        "whether a fixed baseline already exists elsewhere in the codebase (e.g. in the relevant "
+        "`tests/test_*.py`) before assuming one needs to be built from scratch. A structurally "
+        "different formulation -- chunked/blocked, periodically renormalized, never accumulating "
+        "one suffix product across an unbounded run of resets -- avoids this underflow entirely; "
+        "that is exactly rl-triton's own kernel strategy at this scale.",
         "",
         "| algorithm | seq_len | dispatch | triton full-call (ms) | triton device (ms) | "
         "compile(vec) full-call (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |",

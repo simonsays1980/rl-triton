@@ -6,7 +6,7 @@ from rl_triton.kernels.retrace_fused import retrace_fused_kernel
 _FLAT_MAX_SEQ_LEN = 131072
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps),
 # grossly over-provisioned for small single-block reductions — see
-# src/rl_triton/ops/gae.py's _WARPS for the H100 measurement (device time
+# src/rl_triton/ops/gae.py's _WARPS for the H200 measurement (device time
 # flat for num_warps in {1,2,4} at BLOCK_SIZE 8-128, 2-3x worse at the old
 # default) and tests/benchmark_gae_vs_pufferlib.py's warps-floor investigation.
 # Spot-checked on this kernel directly (vtrace_fused, structurally similar,

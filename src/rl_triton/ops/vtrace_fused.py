@@ -6,7 +6,7 @@ from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps),
 # grossly over-provisioned for small single-block reductions — see
-# src/rl_triton/ops/gae.py's _WARPS for the H100 measurement basis (device
+# src/rl_triton/ops/gae.py's _WARPS for the H200 measurement basis (device
 # time flat for num_warps in {1,2,4} at BLOCK_SIZE 8-128, 2-3x worse at the
 # old default). Spot-checked directly on this kernel (more registers than
 # GAE's) before applying: same flat-then-degrade shape, bit-identical output

@@ -49,7 +49,7 @@ _FLAT_MAX_SEQ_LEN = 131072
 _CHUNK_SIZE = triton.next_power_of_2(1024)
 
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) —
-# see src/rl_triton/ops/gae.py's _WARPS for the H100 measurement basis. In
+# see src/rl_triton/ops/gae.py's _WARPS for the H200 measurement basis. In
 # current callers _run_scan/_run_scan_forward are only reached above
 # _FLAT_MAX_SEQ_LEN (or similarly large chunked-path thresholds), so
 # BLOCK_SIZE < 512 is unreachable dead code today via any public op — fixed

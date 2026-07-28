@@ -6,7 +6,7 @@ from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNI
 
 # Below 512, next_power_of_2(seq_len) used to fall through .get()'s default
 # (16 warps = 512 threads) regardless of BLOCK_SIZE, e.g. scanning 8 elements
-# with 512 threads resident (~98% masked-off lanes). Measured on H100 SXM5
+# with 512 threads resident (~98% masked-off lanes). Measured on H200 SXM
 # (tests/benchmark_gae_vs_pufferlib.py massively-parallel-sim regime, Step 1
 # of the warps-floor investigation): device time is FLAT for num_warps in
 # {1, 2, 4} at BLOCK_SIZE 8-128 (they all hit the same 32-blocks/SM hard cap

@@ -7,7 +7,7 @@ from rl_triton.kernels.lambda_returns_fused import lambda_returns_fused_kernel
 from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) on
-# both tables below — see src/rl_triton/ops/gae.py's _WARPS for the H100
+# both tables below — see src/rl_triton/ops/gae.py's _WARPS for the H200
 # measurement basis (flat device time for num_warps in {1,2,4} at BLOCK_SIZE
 # 8-128, driven by the 32-blocks/SM hard cap on Hopper, register-count-
 # independent at this scale since none of these kernels spill at low warps).

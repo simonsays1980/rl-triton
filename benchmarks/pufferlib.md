@@ -1,6 +1,6 @@
 # rl-triton vs. PufferLib
 
-*Measured on NVIDIA H100 80GB HBM3 · 2026-07-25 · pufferlib vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled.*
+*Measured on NVIDIA H200 · 2026-07-25 · pufferlib vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled.*
 
 Capability + design comparison, not a scoreboard. PufferLib's kernels are real, hand-written CUDA: one thread per environment row, sequential O(T) scan within the thread. rl-triton's kernels are Triton: one program per environment row, O(log T) in-SRAM tree reduction via `tl.associative_scan`. Different mechanisms, different tradeoffs — PufferLib's flat per-thread cost tends to win at very short horizons; rl-triton's parallel scan tends to win as horizon grows.
 

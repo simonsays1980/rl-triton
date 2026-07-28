@@ -14,3 +14,32 @@ files it points to.
 | PPO end-to-end measurement (GAE's share of a real training step) | [`../docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md`](../docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md) | `ppo_e2e_measurement.py` |
 | Prior release history (archived on each new release) | [`../docs/benchmark-history/`](../docs/benchmark-history/) | `tests/bench_release.py` (archives the outgoing section automatically) |
 | Why the code is the way it is (root causes, correctness bugs, design tradeoffs found while benchmarking) | [`../NOTES.md`](../NOTES.md) | hand-maintained |
+
+## Benchmark placement policy
+
+Four rules govern where a benchmark result is allowed to land, and when:
+
+1. **Per-PR: `tests/bench_safeguard.py` only, publishes nothing to tracked files.** The
+   safeguard suite runs on every PR (see `.github/workflows/gpu-tests.yml`'s `safeguard` job)
+   and posts its result as a PR comment. It never writes `benchmarks.md` or anything else in
+   this repo.
+2. **Release candidates are staged, never pushed directly.** A full sweep is run manually via
+   the `release-bench` workflow (`workflow_dispatch` only — there is no automatic trigger, and
+   it never pushes to `main`). Its result lands in
+   [`../docs/benchmark-history/unreleased.md`](../docs/benchmark-history/unreleased.md) via an
+   opened PR for human review, plus a regenerated `readme_table_draft.md`. `benchmarks.md`
+   itself is untouched by this step.
+3. **Promotion to a real release is a separate, manual step.** When an actual version is cut,
+   a human promotes the current contents of `unreleased.md` into `benchmarks.md` (as the new
+   "latest release") and into a version-tagged archive file,
+   `docs/benchmark-history/<version>.md`. After promotion, `unreleased.md` resets to empty —
+   it holds at most one not-yet-promoted candidate at a time, overwritten wholesale by each new
+   dispatch run, never appended to as a running log.
+4. **`main` is never written to between releases.** Nothing in this policy pushes directly to
+   `main` outside of a human merging a PR (the safeguard job comments only; the release-bench
+   job opens a PR; promotion is a manual commit a human makes deliberately).
+
+One-off studies in this directory (`pufferlib.md`, `chunked_scan.md`,
+`ppo-e2e-measurement-*.md`) are outside this cycle entirely: they stay dated to when they were
+run and are **not** regenerated as part of a release — rerun the relevant script by hand if you
+need fresh numbers for one of them.

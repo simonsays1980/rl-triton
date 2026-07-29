@@ -2007,6 +2007,126 @@ def stage_unreleased_md(gpu_label: str, tables: list[str]) -> None:
           f"--release --version <tag> to cut an actual release.")
 
 
+_UNRELEASED_STUB = (
+    "# Benchmarks archive: unreleased\n\n"
+    "No candidate currently staged. Under this repo's benchmark-placement policy (see\n"
+    "`benchmarks/README.md`), this file holds only the most recent not-yet-promoted release\n"
+    "candidate; it resets to this empty state immediately after that candidate is promoted to\n"
+    "`benchmarks.md` + a version-tagged archive file on release. It is overwritten wholesale by\n"
+    "each new candidate, not appended to — do not treat it as a running log.\n"
+)
+
+# A real release tag, e.g. v0.1.1 -- deliberately stricter than "any non-whitespace
+# token" so a heading that merely *looks* like it has a version (typos, "latest",
+# "unreleased" itself) is refused rather than silently treated as one.
+_VERSION_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
+_STAGED_HEADING_RE = re.compile(r"^## unreleased – .+$", re.MULTILINE)
+
+
+def promote(version: str) -> None:
+    """Promote the currently staged candidate (docs/benchmark-history/unreleased.md)
+    to benchmarks.md as an actual release, tagged --version.
+
+    Purely mechanical relocation of already-rendered markdown -- runs no benchmarks,
+    computes no numbers, needs no GPU. Three steps, each gated so a failure never
+    leaves files partially mutated:
+
+      1. Find benchmarks.md's OWN current release section and parse ITS OWN version
+         from its heading (never from --version, never guessed) -- archive that
+         section to docs/benchmark-history/<that-version>.md. If benchmarks.md has
+         no release section at all (nothing has ever been legitimately promoted),
+         there is nothing to archive and this step is skipped, not refused -- that
+         is the expected shape of the very first promotion.
+      2. Rewrite the staged section's heading from "## unreleased -- ..." to
+         "## <version> -- ..." (date and GPU label are left exactly as the sweep
+         recorded them -- they describe when/on what hardware the numbers were
+         actually measured, not when promotion happened) and write it as the new
+         benchmarks.md.
+      3. Reset unreleased.md to its stub -- the candidate has been consumed.
+
+    Refuses outright, before touching any file, if:
+      - unreleased.md doesn't exist or has no staged candidate (still its stub) --
+        nothing to promote.
+      - benchmarks.md DOES have a "## " release section but its heading token
+        doesn't parse as a real version tag (e.g. it literally reads "unreleased" --
+        meaning some prior run bypassed --release/--promote and wrote a
+        staged-shaped section directly into benchmarks.md). Archiving that under a
+        guessed name, or under the literal string "unreleased", would collide with
+        the real staging file and corrupt history -- refuse and let a human sort out
+        how benchmarks.md got into that state instead.
+      - the archive destination for benchmarks.md's outgoing section already exists
+        (release history is immutable -- never silently overwrite a prior archive).
+
+    Running this twice in a row is safe: the second run finds unreleased.md already
+    reset to its stub (from step 3 of the first run) and refuses at the first check,
+    rather than re-promoting stale content or double-archiving.
+    """
+    if not _VERSION_TAG_RE.match(version):
+        print(f"--promote --version {version!r} doesn't look like a release tag "
+              f"(expected e.g. v0.1.1) -- refusing.")
+        sys.exit(1)
+
+    if not UNRELEASED_MD.exists():
+        print(f"{UNRELEASED_MD} does not exist -- nothing staged to promote.")
+        sys.exit(1)
+    unreleased_text = UNRELEASED_MD.read_text()
+    if _STAGED_HEADING_RE.search(unreleased_text) is None:
+        print(f"{UNRELEASED_MD} has no staged candidate (still its reset stub) -- "
+              f"nothing to promote. Run a sweep first (plain `python tests/bench_release.py`, "
+              f"the staging default) to produce one.")
+        sys.exit(1)
+    staged_match = _RELEASE_SECTION_RE.search(unreleased_text)
+    if staged_match is None:
+        # Unreachable if the heading check above passed (the heading regex is a
+        # subset of what _RELEASE_SECTION_RE matches) -- guard anyway rather than
+        # ever promoting something half-parsed.
+        print(f"{UNRELEASED_MD} has an 'unreleased' heading but its section body "
+              f"didn't parse -- refusing rather than guessing.")
+        sys.exit(1)
+    staged_section = staged_match.group(0)
+
+    # Step 1: archive benchmarks.md's own current release, named from its own
+    # header.
+    existing = BENCHMARKS_MD.read_text() if BENCHMARKS_MD.exists() else ""
+    prior_match = _RELEASE_SECTION_RE.search(existing)
+    if prior_match is not None:
+        prior_text = prior_match.group(0)
+        prior_version_match = re.match(r"## (\S+)", prior_text)
+        prior_version = prior_version_match.group(1) if prior_version_match else None
+        if prior_version is None or not _VERSION_TAG_RE.match(prior_version):
+            print(f"benchmarks.md's current release header ({prior_version!r}) doesn't "
+                  f"parse as a release tag -- refusing to archive it under a guessed or "
+                  f"colliding name. (If this reads 'unreleased', benchmarks.md was written "
+                  f"directly by some path that bypassed --release/--promote; fix that by "
+                  f"hand -- e.g. relocate it to docs/benchmark-history/unreleased.md -- "
+                  f"before promoting.)")
+            sys.exit(1)
+        archive_path = BENCHMARK_HISTORY_DIR / f"{prior_version}.md"
+        if archive_path.exists():
+            print(f"{archive_path} already exists -- refusing to overwrite release "
+                  f"history. (Has {prior_version} already been archived? Check whether "
+                  f"promotion already happened before re-running.)")
+            sys.exit(1)
+        BENCHMARK_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        archive_path.write_text(f"# Benchmarks archive: {prior_version}\n\n" + prior_text)
+        print(f"  (archived outgoing release '{prior_version}' -> {archive_path})")
+    else:
+        print("  (benchmarks.md has no current release section -- nothing to archive; "
+              "this is the first promotion.)")
+
+    # Step 2: move the staged section into benchmarks.md, rewriting its heading
+    # from "unreleased" to the promoted tag.
+    promoted_section = staged_section.replace("## unreleased –", f"## {version} –", 1)
+    preamble = "# Benchmarks\n\nLatest release only — see docs/benchmark-history/ for prior releases.\n\n"
+    BENCHMARKS_MD.write_text(preamble + promoted_section)
+    print(f"benchmarks.md promoted to {version} ({BENCHMARKS_MD})")
+
+    # Step 3: reset unreleased.md to its stub -- the candidate has been consumed.
+    UNRELEASED_MD.write_text(_UNRELEASED_STUB)
+    print(f"{UNRELEASED_MD} reset to its stub -- staged candidate consumed by promotion.")
+
+
 def _bench_truncation_headline(num_envs=4096, seq_len=128):
     """Truncation-path full-call speedup at the SAME (num_envs, seq_len) as the
     README draft's main table, for the 3 algorithms that have a vectorized
@@ -2144,6 +2264,18 @@ def main():
                              "docs/benchmark-history/unreleased.md instead, leaving "
                              "benchmarks.md untouched -- see benchmarks/README.md's placement "
                              "policy. Use --release only when actually cutting a release.")
+    parser.add_argument("--promote", action="store_true",
+                        help="Promote the currently staged candidate "
+                             "(docs/benchmark-history/unreleased.md) to benchmarks.md as an "
+                             "actual release, archiving benchmarks.md's own outgoing release "
+                             "first (named from ITS OWN header, not --version). Requires "
+                             "--version -- the tag to promote the staged candidate AS; "
+                             "unreleased.md itself never carries a version, it is always "
+                             "headed 'unreleased' until promoted. Purely mechanical: runs no "
+                             "sweep, needs no GPU/CUDA. Mutually exclusive with --release -- "
+                             "that flag writes benchmarks.md directly from a fresh sweep, "
+                             "which is a second, review-bypassing path to the same file; see "
+                             "benchmarks/README.md's placement policy for which one to use.")
     parser.add_argument("--gpu", default="", metavar="LABEL",
                         help="GPU label to embed in the table header (default: auto-detect)")
     parser.add_argument("--version", default="", metavar="TAG",
@@ -2171,6 +2303,20 @@ def main():
                              "fresh CUDA context avoids it; ~15-20 compiles per process is safely "
                              "under whatever threshold the crash accumulates around.")
     args = parser.parse_args()
+
+    if args.promote and args.release:
+        print("--promote and --release are mutually exclusive -- --release writes "
+              "benchmarks.md directly from a fresh sweep, --promote relocates an "
+              "already-staged candidate produced by a previous (staging) run. Pick one.")
+        sys.exit(1)
+
+    if args.promote:
+        if not args.version:
+            print("--promote requires --version (e.g. --version v0.1.1) -- refusing to "
+                  "promote the staged candidate to an unnamed release.")
+            sys.exit(1)
+        promote(args.version)
+        return
 
     if args.release and not args.version:
         print("--release requires --version (e.g. --version v0.1.1) -- refusing to write a "

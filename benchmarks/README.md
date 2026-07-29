@@ -31,15 +31,30 @@ Four rules govern where a benchmark result is allowed to land, and when:
    writes `benchmarks.md` or `README.md`. This holds whether you run it by hand or via the
    `release-bench` workflow (`workflow_dispatch` only — no automatic trigger, never pushes to
    `main`; it opens a PR with the staged candidate for human review instead).
-3. **Promotion to a real release is a separate, explicit opt-in — `--release --version <tag>`.**
-   Only this flag combination writes `benchmarks.md` (as the new "latest release") and archives
-   the outgoing section to a version-tagged file, `docs/benchmark-history/<prior-version>.md`.
-   `--release` without `--version` is refused outright (nothing should ever land in
-   `benchmarks.md` still headed "unreleased"). After promotion, re-running the default (staging)
-   command resets `unreleased.md` to the next candidate — it holds at most one not-yet-promoted
-   candidate at a time, overwritten wholesale by each new run, never appended to as a running
-   log. `README.md` is untouched even by `--release` unless you also omit `--skip-readme`
-   (README prose is always a STOP-and-report item for a human, never auto-applied).
+3. **Promotion to a real release is a separate, explicit, mechanical step — `--promote --version
+   <tag>`.** This relocates the currently staged candidate
+   ([`unreleased.md`](../docs/benchmark-history/unreleased.md)) into `benchmarks.md` as the new
+   latest release: it archives the outgoing release to a version-tagged file,
+   `docs/benchmark-history/<its-own-version>.md` (version parsed from that outgoing section's
+   own heading, never from `--version`, never guessed), rewrites the staged section's heading
+   from "unreleased" to `<tag>`, and resets `unreleased.md` to its stub. It runs no benchmarks
+   and needs no GPU — it only relocates already-measured, already-reviewed numbers. `--promote`
+   without `--version` is refused outright, as is promoting when there is no staged candidate,
+   when the outgoing release's own header doesn't parse as a real version tag, or when the
+   archive destination already exists (release history is immutable — never silently
+   overwritten). Running it twice in a row is safe: the second run finds `unreleased.md` already
+   back at its stub and refuses with nothing left to promote. `unreleased.md` holds at most one
+   not-yet-promoted candidate at a time, overwritten wholesale by each new staging run, never
+   appended to as a running log. `README.md` is untouched by `--promote` — pasting from
+   `readme_table_draft.md` is always a manual, human step (see rule 2's link to that file).
+
+   A separate flag, `--release --version <tag>`, also writes `benchmarks.md` — but directly from
+   a fresh sweep run in the same invocation, rather than from a previously-staged and reviewed
+   candidate. `--release` without `--version` is refused for the same reason. `README.md` is
+   untouched even by `--release` unless you also omit `--skip-readme` (README prose is always a
+   STOP-and-report item for a human, never auto-applied). Prefer `--promote` when cutting an
+   actual release from an already-staged, already-reviewed candidate — that is the normal case
+   this policy is written around.
 4. **`main` is never written to between releases.** Nothing in this policy pushes directly to
    `main` outside of a human merging a PR (the safeguard job comments only; the release-bench
    job opens a PR; promotion is a manual commit a human makes deliberately).

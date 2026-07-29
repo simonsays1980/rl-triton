@@ -732,6 +732,16 @@ def bench_gae():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_gae(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
@@ -835,6 +845,16 @@ def bench_gae_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, values, terminateds = _make_gae(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -920,6 +940,16 @@ def bench_vtrace():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_vtrace(num_envs, seq_len)
         args_np  = tuple(t.cpu().numpy() for t in args_gpu)
@@ -1019,6 +1049,16 @@ def bench_vtrace_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         log_pi_t, log_pi_b, values, rewards, terminateds = _make_vtrace(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1110,6 +1150,16 @@ def bench_retrace():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         args_gpu = _make_retrace(num_envs, seq_len)
         rn, dn, qn, nqn, _qn2, an, aptn, apbn = tuple(t.cpu().numpy() for t in args_gpu)
@@ -1487,6 +1537,16 @@ def bench_lambda_returns_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, next_values, terminateds = _make_returns(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1566,6 +1626,16 @@ def bench_discounted_returns_truncation():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, _, terminateds = _make_returns(num_envs, seq_len)
         truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
@@ -1646,6 +1716,16 @@ def bench_prefix_sum():
 
     rows = []
     for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
+        # torch.compile(...) object across distinct shapes without this can
+        # silently give wrong output at some transition. bench_returns()
+        # already carried this reset (see its matching comment, where the
+        # bug was originally found); this loop shared the identical
+        # structure -- one compiled object across the same CONFIGS grid --
+        # but had never been given the same protection until directly
+        # exercising it on its own (subprocess-isolated from every other
+        # algorithm) surfaced a failure here too.
+        torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         inputs, dones = _make_prefix_sum(num_envs, seq_len)
         ni = _n_iter_gpu(seq_len, num_envs)

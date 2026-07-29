@@ -407,6 +407,118 @@ occur *within* a single algorithm's own subprocess, which is exactly why
 the per-shape `reset()` fix above is still necessary even with isolation in
 place.
 
+### Two distinct `torch.compile` bugs live in this codebase — do not conflate them
+
+The two sections below describe **separate mechanisms** with **separate fixes**.
+Getting them confused is the single most likely way a future change reintroduces one
+while "fixing" the other:
+
+| | Bug 2 (above and below) | Cross-object (below) |
+|---|---|---|
+| Trigger | **One** compiled object reused across **many shapes** | **Two separate** compiled wrappers of the **same function**, after either has compiled **2+ distinct shapes** |
+| `torch._dynamo.reset()` between shapes | **Fixes it** | **No effect whatsoever** (bit-identical failure with or without) |
+| Fix actually applied | Per-shape `reset()` | Subprocess isolation (separate processes, not separate resets) |
+| Confirmed present in | All eight per-algorithm CONFIGS loops that reuse one object | Discounted-returns specifically, among the four algorithms with the two-wrapper structure |
+
+### Bug 2 was incompletely fixed — seven more CONFIGS loops had the identical exposure, unverified until they were actually isolated
+
+The `reset()` fix above was applied only to `bench_returns()`'s CONFIGS loop, where
+Bug 2 was originally found. Every other per-algorithm CONFIGS loop in
+`tests/bench_release.py` — `bench_gae`, `bench_vtrace`, `bench_retrace`'s main loop,
+`bench_prefix_sum`, and all four `bench_*_truncation` functions — has the identical
+structure (one `torch.compile(...)` object reused across the same 12-shape grid) and
+was equally exposed, but had never received the same reset.
+
+This went unnoticed for a specific reason, not by luck: the cross-object bug
+(below) was crashing `bench_discounted_returns_truncation()`'s process before its
+loop ever ran deep enough to reach a shape pair that actually triggers Bug 2 there.
+Once the cross-object bug was fixed (subprocess isolation), that loop's own Bug 2
+instance surfaced directly: wrong output at `(num_envs=512, seq_len=512)` — the
+seventh shape in the grid — 41.0% of elements mismatched, max absolute difference
+~20.4, with zero `reset()` calls anywhere in that loop. Reproduced deterministically
+(identical numbers across repeated runs); adding the same per-shape `reset()` used in
+`bench_returns()` eliminates it; removing the reset again, in an isolated scratch
+reproduction that does not touch the shipped fix, reproduces the identical failure
+again, bit-for-bit.
+
+**Fix:** the same per-shape `torch._dynamo.reset()` is now applied to all eight
+CONFIGS loops that reuse one compiled object across the grid (the one in
+`bench_returns()` already had it). None of the other seven has been shown to actually
+misfire on its own the way `bench_discounted_returns_truncation()` did — but per the
+masking story above, "hasn't misfired yet" was already true of that one function
+before it was ever run in genuine isolation, so the fix is applied uniformly rather
+than only where a failure has actually been observed. Treat any *future* CONFIGS loop
+added to this file the same way: reusing one compiled object across shapes needs this
+reset unless proven otherwise, not the other way around.
+
+### A third, distinct `torch.compile` bug: cross-object miscompilation — not Bug 2, and `reset()` does not help
+
+A **second, separate** `torch.compile(...)` wrapper of the *same* underlying function
+gives wrong output the first time it is invoked, if *any earlier* wrapper of that
+identical function has already been compiled at two or more distinct shapes anywhere
+earlier in the same process — regardless of which object did the compiling,
+regardless of `torch._dynamo.reset()` usage between those shapes, and regardless of
+whether the second wrapper's own shape is one it has seen before. This is a different
+mechanism from Bug 2 (one object, many shapes) — see the contrast table above.
+
+**What was observed (fact, reproduced deterministically, 3/3 identical):**
+- Object A: a `torch.compile(...)` wrapper of `vectorized_discounted_returns_with_
+  truncations`, compiled and invoked at two or more distinct `(num_envs, seq_len)`
+  shapes. Object B: a **separate**, freshly-created `torch.compile(...)` wrapper of
+  the **identical** function, compiled and invoked at `(64, 512)` — the first shape it
+  has ever seen. Object B's output is wrong: 40.7% of elements mismatched, max
+  absolute difference ~15.6, identical across every repeated trial.
+- **Threshold is exactly two distinct shapes.** Object A compiled at only one
+  distinct shape (even recompiled at that same shape via an intervening `reset()`)
+  never corrupts object B. Two or more distinct shapes always does — tested at 2, 3,
+  6, 12, and via the unrelated production-regime grid alone (11 shapes, no overlap
+  with the CONFIGS grid), all with identical results.
+- **`torch._dynamo.reset()` has no effect.** Removing every `reset()` call from
+  object A's shape loop entirely produces a **bit-identical** failure — same element
+  count, same max absolute difference — as keeping them. The mitigation that fixes
+  Bug 2 does nothing for this bug.
+- **Requires the same underlying function.** Object A wrapping a *different*
+  function (`vectorized_gae_with_truncations` or
+  `vectorized_lambda_returns_with_truncations`) never corrupts a discounted-returns
+  object B. Cross-function compile history is harmless.
+- **Observed only for discounted-returns among the four algorithms with this
+  structure.** GAE, V-Trace, and λ-returns each have the identical two-wrapper
+  structure (a `bench_X()` and a `bench_X_truncation()`, both `torch.compile`-ing the
+  same `vectorized_X_with_truncations` function independently) and were tested under
+  the identical A-then-B pattern. None reproduced the corruption.
+
+**What is interpretation, not proof:** why discounted-returns specifically, and not
+the other three sharing the same structure, is **not understood** — not root-caused
+via Inductor-generated-code inspection, no guard-cache or codegen-cache comparison
+done. Do not read "GAE/V-Trace/λ-returns didn't reproduce it" as "they are safe by
+design" — only as "not observed to fail under the conditions tested."
+
+**Fix:** subprocess isolation, not `reset()` and not sharing the compiled object
+between the two call sites. A process boundary protects all four algorithms with
+this structure regardless of *why* three of them don't currently misfire under it —
+relying on an unexplained safety property is not acceptable for numbers a release
+publishes. `tests/bench_release.py`'s `--variant {plain,truncation}` flag and
+`_PARENT_SWEEP_GROUPS` now run each algorithm's plain and truncation-path tables in
+separate subprocesses for exactly these four algorithms; retrace,
+eligibility_traces, and prefix_sum have only one `torch.compile(...)` wrapper of
+their function each and need no such split. This does **not** protect against the
+same mechanism arising between any two wrappers of a function this repo hasn't
+tested this way, and does **not** explain or fix whatever Inductor/Dynamo behavior
+actually causes it.
+
+**This bug masked Bug 2's presence in `bench_discounted_returns_truncation()`.** The
+first full-sweep run to reach this function crashed on this bug (object A =
+`bench_returns()`'s compiled object, object B =
+`bench_discounted_returns_truncation()`'s own, corrupted at the very first CONFIGS
+shape). That crash meant the loop never ran far enough to reach the seventh shape
+where Bug 2 independently lives in that same function — so Bug 2's instance there
+was invisible until this bug was fixed first. The other seven CONFIGS loops that
+also lacked Bug 2's `reset()` protection had never been exercised in genuine
+isolation before either, for the same class of reason (each either doesn't share a
+process with a same-function second wrapper, or hadn't been split into its own
+subprocess yet) — "no failure observed" in any of them prior to this investigation
+is not evidence they were safe, only that they hadn't really been tested.
+
 ---
 
 ## The log-space baseline underflow — why `compile(vec)` is a doubling scan, not a cumsum

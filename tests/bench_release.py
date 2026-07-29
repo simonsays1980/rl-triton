@@ -2313,22 +2313,37 @@ def main():
                         help="Comma-separated subset of ALL_ALGOS to run (default: all). "
                              f"Choices: {','.join(ALL_ALGOS)}. Used for the GAE-only smoke "
                              "test before committing to the full unattended sweep.")
+    parser.add_argument("--variant", default="all", choices=["all", "plain", "truncation"],
+                        help="For the four algorithms with both a plain and a truncation-path "
+                             "table (gae, vtrace, lambda_returns, discounted_returns): which to "
+                             "run. 'all' (default) runs both -- the normal manual-run and "
+                             "--algos-smoke-test behavior. 'plain'/'truncation' run only that "
+                             "table; used internally by --parent-sweep to put the two tables in "
+                             "separate subprocesses, since each builds its own "
+                             "torch.compile(...) wrapper of the IDENTICAL vectorized_*_with_"
+                             "truncations function -- two such wrappers in one process can "
+                             "silently miscompile one of them once either has compiled at 2+ "
+                             "distinct shapes (see NOTES.md). Has no effect on retrace, "
+                             "eligibility_traces, or prefix_sum -- each has only one table.")
     parser.add_argument("--output-json", default="", metavar="PATH",
                         help="Dump this invocation's tables/rows/violations as JSON to PATH "
                              "instead of staging a candidate. Used internally by "
-                             "--parent-sweep's per-algorithm-group subprocesses.")
+                             "--parent-sweep's per-algorithm/variant subprocesses.")
     parser.add_argument("--parent-sweep", action="store_true",
-                        help="Run each algorithm group (gae / vtrace / retrace / "
-                             "lambda_returns+discounted_returns+eligibility_traces / prefix_sum) "
-                             "in its OWN subprocess and merge their --output-json results here "
-                             "before staging the combined candidate. Necessary: a single process "
-                             "running the full multi-algorithm sweep hits a torch.compile/CUDA "
-                             "illegal-memory-access crash from accumulated Dynamo/Inductor state "
-                             "-- confirmed independent of torch._dynamo.reset() usage (reproduces "
-                             "even with resets minimized to only the ~2 needed padding-transition "
-                             "points per algorithm, see _needs_pad()'s comment). Each subprocess's "
-                             "fresh CUDA context avoids it; ~15-20 compiles per process is safely "
-                             "under whatever threshold the crash accumulates around.")
+                        help="Run each (algorithm, variant) group in its OWN subprocess and "
+                             "merge their --output-json results here before staging the "
+                             "combined candidate -- see _PARENT_SWEEP_GROUPS for the exact list. "
+                             "Two isolation concerns are handled this way, both via the same "
+                             "fresh-CUDA-context mechanism: (1) a single process running the "
+                             "full multi-algorithm sweep hits a torch.compile/CUDA illegal-"
+                             "memory-access crash from accumulated Dynamo/Inductor state -- "
+                             "confirmed independent of torch._dynamo.reset() usage; (2) two "
+                             "separate torch.compile(...) wrappers of the SAME underlying "
+                             "vectorized_*_with_truncations function in one process can silently "
+                             "miscompile one of them (see NOTES.md) -- confirmed ALSO independent "
+                             "of reset() usage, which is why the plain and truncation tables for "
+                             "gae/vtrace/lambda_returns/discounted_returns are split into "
+                             "separate subprocesses via --variant, not just separate algorithms.")
     args = parser.parse_args()
 
     if args.promote:
@@ -2394,31 +2409,44 @@ def main():
     production_rows_all = []
     full_tables, headline_tables = [], []
 
+    # For gae/vtrace/lambda_returns/discounted_returns, --variant selects which of
+    # the two tables (each backed by its OWN torch.compile(...) wrapper of the same
+    # underlying vectorized_*_with_truncations function) this invocation computes --
+    # see --variant's own help and NOTES.md for why the two must never share a
+    # process. retrace/eligibility_traces/prefix_sum have only one table each and
+    # are unaffected by either flag.
+    run_plain = args.variant in ("all", "plain")
+    run_trunc = args.variant in ("all", "truncation")
+
     if "gae" in selected_algos:
-        print("Running GAE benchmark …", flush=True)
-        gae_rows, gae_prod, v = bench_gae()
-        all_violations += v
-        production_rows_all += gae_prod
-        print("Running GAE truncation-path benchmark …", flush=True)
-        gae_trunc_rows, v = bench_gae_truncation()
-        all_violations += v
-        full_tables.append(_table_numpy("GAE (`compute_gae`)", gae_rows))
-        headline_tables.append(_table_numpy("GAE (`compute_gae`)", _headline(gae_rows)))
-        full_tables.append(_table_truncation("GAE – with truncations (`compute_gae`)", gae_trunc_rows))
-        headline_tables.append(_table_truncation("GAE – with truncations (`compute_gae`)", _headline(gae_trunc_rows)))
+        if run_plain:
+            print("Running GAE benchmark …", flush=True)
+            gae_rows, gae_prod, v = bench_gae()
+            all_violations += v
+            production_rows_all += gae_prod
+            full_tables.append(_table_numpy("GAE (`compute_gae`)", gae_rows))
+            headline_tables.append(_table_numpy("GAE (`compute_gae`)", _headline(gae_rows)))
+        if run_trunc:
+            print("Running GAE truncation-path benchmark …", flush=True)
+            gae_trunc_rows, v = bench_gae_truncation()
+            all_violations += v
+            full_tables.append(_table_truncation("GAE – with truncations (`compute_gae`)", gae_trunc_rows))
+            headline_tables.append(_table_truncation("GAE – with truncations (`compute_gae`)", _headline(gae_trunc_rows)))
 
     if "vtrace" in selected_algos:
-        print("Running V-Trace benchmark …", flush=True)
-        vtrace_rows, vtrace_prod, v = bench_vtrace()
-        all_violations += v
-        production_rows_all += vtrace_prod
-        print("Running V-Trace truncation-path benchmark …", flush=True)
-        vtrace_trunc_rows, v = bench_vtrace_truncation()
-        all_violations += v
-        full_tables.append(_table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows))
-        headline_tables.append(_table_numpy("V-Trace (`compute_vtrace`)", _headline(vtrace_rows)))
-        full_tables.append(_table_truncation("V-Trace – with truncations (`compute_vtrace`)", vtrace_trunc_rows))
-        headline_tables.append(_table_truncation("V-Trace – with truncations (`compute_vtrace`)", _headline(vtrace_trunc_rows)))
+        if run_plain:
+            print("Running V-Trace benchmark …", flush=True)
+            vtrace_rows, vtrace_prod, v = bench_vtrace()
+            all_violations += v
+            production_rows_all += vtrace_prod
+            full_tables.append(_table_numpy("V-Trace (`compute_vtrace`)", vtrace_rows))
+            headline_tables.append(_table_numpy("V-Trace (`compute_vtrace`)", _headline(vtrace_rows)))
+        if run_trunc:
+            print("Running V-Trace truncation-path benchmark …", flush=True)
+            vtrace_trunc_rows, v = bench_vtrace_truncation()
+            all_violations += v
+            full_tables.append(_table_truncation("V-Trace – with truncations (`compute_vtrace`)", vtrace_trunc_rows))
+            headline_tables.append(_table_truncation("V-Trace – with truncations (`compute_vtrace`)", _headline(vtrace_trunc_rows)))
 
     if "retrace" in selected_algos:
         print("Running Retrace(λ) benchmark …", flush=True)
@@ -2428,33 +2456,42 @@ def main():
         full_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows))
         headline_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", _headline(retrace_rows)))
 
+    # bench_returns() alone produces: the "plain" table for lambda_returns/
+    # discounted_returns (only when run_plain), and eligibility_traces' ONLY table
+    # (it has no separate truncation path, so it's always wanted whenever selected,
+    # regardless of --variant -- a truncation-only subprocess that happens to also
+    # select eligibility_traces would otherwise silently drop it).
     _returns_trio = {"lambda_returns", "discounted_returns", "eligibility_traces"}
-    if _returns_trio & set(selected_algos):
+    _trio_selected = _returns_trio & set(selected_algos)
+    _want_plain_in_trio = {a for a in _trio_selected if a == "eligibility_traces" or run_plain}
+    if _want_plain_in_trio:
         print("Running returns / eligibility-traces benchmark …", flush=True)
-        lambda_rows, disc_rows, traces_rows, returns_prod, v = bench_returns(
-            _returns_trio & set(selected_algos)
-        )
+        lambda_rows, disc_rows, traces_rows, returns_prod, v = bench_returns(_want_plain_in_trio)
         all_violations += v
         production_rows_all += returns_prod
-        if "lambda_returns" in selected_algos:
-            print("Running λ-returns truncation-path benchmark …", flush=True)
-            lambda_trunc_rows, v = bench_lambda_returns_truncation()
-            all_violations += v
+        if "lambda_returns" in _want_plain_in_trio:
             full_tables.append(_table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows))
             headline_tables.append(_table_simple("λ-returns (`compute_lambda_returns`)", _headline(lambda_rows)))
-            full_tables.append(_table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", lambda_trunc_rows))
-            headline_tables.append(_table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", _headline(lambda_trunc_rows)))
-        if "discounted_returns" in selected_algos:
-            print("Running discounted-returns truncation-path benchmark …", flush=True)
-            disc_trunc_rows, v = bench_discounted_returns_truncation()
-            all_violations += v
+        if "discounted_returns" in _want_plain_in_trio:
             full_tables.append(_table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows))
             headline_tables.append(_table_simple("Discounted returns (`compute_discounted_returns`)", _headline(disc_rows)))
-            full_tables.append(_table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", disc_trunc_rows))
-            headline_tables.append(_table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", _headline(disc_trunc_rows)))
-        if "eligibility_traces" in selected_algos:
+        if "eligibility_traces" in _want_plain_in_trio:
             full_tables.append(_table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows))
             headline_tables.append(_table_simple("Eligibility traces (`compute_eligibility_traces`)", _headline(traces_rows)))
+
+    if "lambda_returns" in selected_algos and run_trunc:
+        print("Running λ-returns truncation-path benchmark …", flush=True)
+        lambda_trunc_rows, v = bench_lambda_returns_truncation()
+        all_violations += v
+        full_tables.append(_table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", lambda_trunc_rows))
+        headline_tables.append(_table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", _headline(lambda_trunc_rows)))
+
+    if "discounted_returns" in selected_algos and run_trunc:
+        print("Running discounted-returns truncation-path benchmark …", flush=True)
+        disc_trunc_rows, v = bench_discounted_returns_truncation()
+        all_violations += v
+        full_tables.append(_table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", disc_trunc_rows))
+        headline_tables.append(_table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", _headline(disc_trunc_rows)))
 
     if "prefix_sum" in selected_algos:
         print("Running episodic prefix sum benchmark …", flush=True)
@@ -2565,35 +2602,54 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
         sys.exit(1)
 
 
-# Algorithm groups for --parent-sweep: each group runs in its own subprocess.
+# Algorithm/variant groups for --parent-sweep: each group runs in its own
+# subprocess. Two DISTINCT isolation concerns are both handled by this same
+# fresh-subprocess-per-group mechanism, and it is worth keeping them
+# conceptually separate:
 #
-# lambda_returns/discounted_returns/eligibility_traces used to be bundled into
-# one "returns" subprocess (they share one bench_returns() call -- one shared
-# CONFIGS loop over 3 compiled objects), on the theory that splitting them
-# into 3 subprocesses would only triple redundant input construction for no
-# isolation benefit, since the wrong-output bug this guards against was
-# believed to be about TOTAL accumulated process state, not which algorithm
-# is running. That theory was tested directly and falsified: a full-sweep run
-# hit the bug INSIDE the bundled "returns" subprocess itself (discounted_returns
-# wrong at [128x1024], ~22.5% mismatched, caught by assert_correctness) even
-# though that subprocess started with a fresh CUDA/Dynamo context -- three
-# compiled objects x 12 CONFIGS shapes x (base + truncation + production
-# variants) in ONE subprocess was already enough accumulated compile state to
-# reproduce it. Splitting to one subprocess per algorithm (each subprocess
-# still internally computes all 3 via bench_returns()'s shared call, so this
-# does cost the redundant compute the old comment wanted to avoid -- but each
-# subprocess only KEEPS its own algorithm's rows, see the output_json
-# filtering in main()) keeps each subprocess's total compile count in the
-# same range as gae/vtrace/retrace's solo subprocesses, which do not
-# reproduce the bug.
+# (1) Algorithm-level isolation (why lambda_returns/discounted_returns/
+# eligibility_traces are three separate groups rather than one "returns"
+# group, even though they share one bench_returns() call). These used to be
+# bundled into one subprocess on the theory that splitting them would only
+# triple redundant input construction for no isolation benefit, since the
+# crash this guards against was believed to be about TOTAL accumulated
+# process state, not which algorithm is running. That theory was tested
+# directly and falsified: a full-sweep run hit a wrong-output bug INSIDE the
+# bundled "returns" subprocess itself even though that subprocess started
+# with a fresh CUDA/Dynamo context -- three compiled objects x 12 CONFIGS
+# shapes x (base + truncation + production variants) in ONE subprocess was
+# already enough accumulated compile state to reproduce it. One subprocess
+# per algorithm (each still internally computes only its own objects via
+# bench_returns()'s `selected` argument -- see that function's own comment)
+# keeps each subprocess's total compile count in the same range as gae/
+# vtrace/retrace's solo subprocesses, which do not reproduce that crash.
+#
+# (2) Variant-level isolation (why gae/vtrace/lambda_returns/discounted_returns
+# are further split into "_plain" and "_truncation" groups). Distinct from
+# (1): a LATER bisection found that TWO SEPARATE torch.compile(...) wrappers
+# of the IDENTICAL vectorized_*_with_truncations function, in one process,
+# can silently give wrong (finite, plausible-looking) output from one of
+# them once either wrapper has compiled at 2+ distinct shapes -- confirmed
+# independent of torch._dynamo.reset() usage, confirmed specific to
+# discounted-returns among the four algorithms with this two-wrapper
+# structure (see NOTES.md for the full characterization; GAE/V-Trace/
+# lambda-returns were tested under the identical pattern and did not
+# reproduce it, but WHY they don't is not understood, so isolation is applied
+# to all four rather than relying on that gap). retrace, eligibility_traces,
+# and prefix_sum have only one torch.compile(...) wrapper of their function
+# each and need no variant split.
 _PARENT_SWEEP_GROUPS = [
-    ("gae", ["gae"]),
-    ("vtrace", ["vtrace"]),
-    ("retrace", ["retrace"]),
-    ("lambda_returns", ["lambda_returns"]),
-    ("discounted_returns", ["discounted_returns"]),
-    ("eligibility_traces", ["eligibility_traces"]),
-    ("prefix_sum", ["prefix_sum"]),
+    ("gae_plain",                   ["gae"],                "plain"),
+    ("gae_truncation",              ["gae"],                "truncation"),
+    ("vtrace_plain",                ["vtrace"],              "plain"),
+    ("vtrace_truncation",           ["vtrace"],              "truncation"),
+    ("retrace",                     ["retrace"],             "all"),
+    ("lambda_returns_plain",        ["lambda_returns"],      "plain"),
+    ("lambda_returns_truncation",   ["lambda_returns"],      "truncation"),
+    ("discounted_returns_plain",    ["discounted_returns"],  "plain"),
+    ("discounted_returns_truncation", ["discounted_returns"], "truncation"),
+    ("eligibility_traces",          ["eligibility_traces"],  "all"),
+    ("prefix_sum",                  ["prefix_sum"],          "all"),
 ]
 
 
@@ -2602,7 +2658,7 @@ def _run_parent_sweep(selected_algos, args):
     script = str(Path(__file__).resolve())
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        for label, group_algos in _PARENT_SWEEP_GROUPS:
+        for label, group_algos, variant in _PARENT_SWEEP_GROUPS:
             wanted = [a for a in group_algos if a in selected_algos]
             if not wanted:
                 continue
@@ -2610,12 +2666,13 @@ def _run_parent_sweep(selected_algos, args):
             cmd = [
                 sys.executable, script,
                 "--algos", ",".join(wanted),
+                "--variant", variant,
                 "--gpu", args.gpu,
                 "--no-update",
                 "--output-json", str(out_path),
             ]
-            print(f"\n{'=' * 88}\nSubprocess for group '{label}' ({','.join(wanted)}) — "
-                  f"fresh CUDA/Dynamo process\n{'=' * 88}", flush=True)
+            print(f"\n{'=' * 88}\nSubprocess for group '{label}' ({','.join(wanted)}, "
+                  f"variant={variant}) — fresh CUDA/Dynamo process\n{'=' * 88}", flush=True)
             result = subprocess.run(cmd)
             if result.returncode != 0:
                 print(f"\nSubprocess for group '{label}' FAILED (exit {result.returncode}) — "

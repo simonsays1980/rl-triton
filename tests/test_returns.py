@@ -693,6 +693,65 @@ def test_vectorized_discounted_returns_with_truncations_correctness():
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
+@cuda_only
+@pytest.mark.xfail(strict=True, reason=(
+    "Known, reproducible (not intermittent) torch.compile/Inductor miscompilation "
+    "of vectorized_discounted_returns_with_truncations -- see NOTES.md. Remove this "
+    "xfail once a fix lands; if this test starts passing without one, that is worth "
+    "investigating on its own rather than silently accepting."
+))
+def test_discounted_returns_cross_object_torch_compile_miscompile():
+    """KNOWN ISSUE, not yet root-caused: a torch.compile(...) wrapper of THIS
+    function gives wrong output when a SEPARATE, earlier torch.compile(...)
+    wrapper of the SAME function was already compiled at >=2 distinct
+    (num_envs, seq_len) shapes earlier in the same process -- confirmed
+    independent of torch._dynamo.reset() usage between those shapes (removing
+    the resets entirely does not change the outcome at all: bit-identical
+    mismatch count and magnitude either way). Isolated during the H100
+    release-sweep bisection; see NOTES.md for the full characterization
+    (threshold, cross-function/cross-algorithm scope, reset() irrelevance).
+
+    Minimal reliable repro: object A compiles+calls at 2 distinct shapes
+    (1 shape does NOT trigger it, even recompiled via an intervening reset;
+    2 shapes always does, deterministically). Object B is then a fresh
+    wrapper of the identical function, compiled and invoked at (64, 512) --
+    the exact shape at which the real sweep's bench_discounted_returns_truncation()
+    was corrupted.
+    """
+    import torch._dynamo
+
+    def _make_inputs(num_envs, seq_len, seed):
+        torch.manual_seed(seed)
+        rewards = torch.randn(num_envs, seq_len, device="cuda")
+        terminateds = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
+        truncateds = torch.zeros(num_envs, seq_len, device="cuda")
+        bootstrap_values = torch.zeros(num_envs, seq_len, device="cuda")
+        return rewards, terminateds, truncateds, bootstrap_values
+
+    # Object A: a torch.compile(...) wrapper exercised at 2 distinct shapes,
+    # with a reset() before each (the existing, shipped Bug-2-addendum
+    # mitigation) -- confirmed in the bisection to make no difference, but
+    # kept here to faithfully match what the real sweep actually does.
+    object_a = torch.compile(vectorized_discounted_returns_with_truncations)
+    for num_envs, seq_len in [(64, 512), (128, 1024)]:
+        torch._dynamo.reset()
+        args = _make_inputs(num_envs, seq_len, seed=0)
+        object_a(*args, gamma=0.99)
+        torch.cuda.synchronize()
+
+    # Object B: a FRESH, separate wrapper of the identical function, compiled
+    # and invoked at the shape the real sweep failed at.
+    object_b = torch.compile(vectorized_discounted_returns_with_truncations)
+    args = _make_inputs(64, 512, seed=0)
+    object_b(*args, gamma=0.99)  # warmup / first compile
+    torch.cuda.synchronize()
+    actual = object_b(*args, gamma=0.99)  # second call, same shape
+    torch.cuda.synchronize()
+
+    expected = _ref_discounted_sequential(*args, gamma=0.99)
+    torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+
+
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Compiled vectorized baselines (benchmark only)

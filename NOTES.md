@@ -441,6 +441,34 @@ seventh shape in the grid — 41.0% of elements mismatched, max absolute differe
 reproduction that does not touch the shipped fix, reproduces the identical failure
 again, bit-for-bit.
 
+**Shape ordering matters, shape size does not.** The immediately preceding shape,
+`(512, 4096)` — larger on both axes than the failing `(512, 512)` — compiles and runs
+correctly; `(512, 512)` only fails as the *next* shape compiled by the same object
+afterward. This rules out "some shapes are just bad" as an explanation: the trigger is
+accumulated state from the sequence of prior recompiles on that one object, not any
+property of the failing shape itself. Recognize this bug by that signature if it
+resurfaces in a different loop — a shape that fails only when reached via one
+particular preceding sequence, and passes fine on its own or via a different route in.
+
+**The eager (uncompiled) implementation is correct at every shape tested, including
+the failing one** — confirmed directly (0 mismatched elements at `(64,512)` and
+`(512,512)`, vs. the sequential reference). This is `torch.compile`/Inductor
+miscompiling correct code, not a wrong baseline formula.
+
+**Version-specific, not a permanent property: confirmed absent on torch 2.7.1.** All
+of the above was measured on this project's pinned `torch==2.4.1+cu124`. A
+project-independent standalone script (no imports from this repo — the scan algorithm
+and the wrapper function inlined directly, inputs built from scratch) reproduces the
+identical failure at `(512,512)` under 2.4.1, and was also run, unmodified, against
+`torch==2.7.1+cu126` in an isolated environment (same H100, same driver) — **the
+failure does not reproduce on 2.7.1** (0 mismatched elements at every shape in the
+sequence, 3/3 repeated trials). Treat the per-shape `reset()` fix above as a
+workaround for a defect specific to (at least) torch 2.4.1's Inductor, not a
+permanent property of this code pattern — re-check against whatever torch version
+this project is actually pinned to before assuming the workaround is still needed
+after any future version bump. (The cross-object bug below was not independently
+re-tested on 2.7.1 — this version check covers only the Bug 2 instance above.)
+
 **Fix:** the same per-shape `torch._dynamo.reset()` is now applied to all eight
 CONFIGS loops that reuse one compiled object across the grid (the one in
 `bench_returns()` already had it). None of the other seven has been shown to actually

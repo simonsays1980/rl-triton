@@ -124,13 +124,12 @@ jobs:
           PYTHONUNBUFFERED: "1"
           TRITON_CACHE_DIR: /root/.triton/cache
         run: |
-          # No --release: the default (staging) writes ONLY to
-          # docs/benchmark-history/unreleased.md via bench_release.py's own
-          # stage_unreleased_md(), and benchmarks/readme_table_draft.md.
-          # benchmarks.md is never read or written by this invocation --
-          # nothing to restore or discard if the sweep fails partway, and no
-          # auto-archive side effect to race against, because staging mode
-          # has neither.
+          # bench_release.py has no direct-to-benchmarks.md path at all (see
+          # its own module docstring) -- a plain run always stages to
+          # docs/benchmark-history/unreleased.md via stage_unreleased_md(),
+          # plus benchmarks/readme_table_draft.md. benchmarks.md is never
+          # read or written by this invocation -- nothing to restore or
+          # discard if the sweep fails partway.
           python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
             --parent-sweep

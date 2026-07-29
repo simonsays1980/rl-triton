@@ -455,19 +455,24 @@ the failing one** — confirmed directly (0 mismatched elements at `(64,512)` an
 `(512,512)`, vs. the sequential reference). This is `torch.compile`/Inductor
 miscompiling correct code, not a wrong baseline formula.
 
-**Version-specific, not a permanent property: confirmed absent on torch 2.7.1.** All
-of the above was measured on this project's pinned `torch==2.4.1+cu124`. A
+**Torch-version dependent, but do not read this as "fixed in 2.7.1."** All of the
+above was measured on this project's pinned `torch==2.4.1+cu124`. A
 project-independent standalone script (no imports from this repo — the scan algorithm
 and the wrapper function inlined directly, inputs built from scratch) reproduces the
 identical failure at `(512,512)` under 2.4.1, and was also run, unmodified, against
-`torch==2.7.1+cu126` in an isolated environment (same H100, same driver) — **the
-failure does not reproduce on 2.7.1** (0 mismatched elements at every shape in the
-sequence, 3/3 repeated trials). Treat the per-shape `reset()` fix above as a
-workaround for a defect specific to (at least) torch 2.4.1's Inductor, not a
-permanent property of this code pattern — re-check against whatever torch version
-this project is actually pinned to before assuming the workaround is still needed
-after any future version bump. (The cross-object bug below was not independently
-re-tested on 2.7.1 — this version check covers only the Bug 2 instance above.)
+`torch==2.7.1+cu126` in an isolated environment (same H100, same driver): **it did not
+reproduce on 2.7.1 with this exact shape sequence (3/3 repeated trials, 0 mismatched
+elements at every shape).** That is a narrower claim than "fixed" — this bug depends
+on accumulated Dynamo/Inductor state built up across a *specific sequence* of prior
+shapes (see the shape-ordering note above: `(512,512)` fails only as the seventh shape
+in this particular sequence, after these particular six predecessors). A newer torch
+version could plausibly shift *which* sequence triggers the corruption rather than
+eliminate the underlying defect — three clean runs of one fixed sequence cannot
+distinguish "fixed" from "this specific trigger no longer applies." Do not remove the
+per-shape `reset()` fix on the strength of this result alone; see the version-state
+summary below for what would actually be needed before doing that. (The cross-object
+bug below was not independently re-tested on 2.7.1 at all — this check covers only
+the Bug 2 instance above.)
 
 **Fix:** the same per-shape `torch._dynamo.reset()` is now applied to all eight
 CONFIGS loops that reuse one compiled object across the grid (the one in
@@ -546,6 +551,32 @@ isolation before either, for the same class of reason (each either doesn't share
 process with a same-function second wrapper, or hadn't been split into its own
 subprocess yet) — "no failure observed" in any of them prior to this investigation
 is not evidence they were safe, only that they hadn't really been tested.
+
+### Current version-verification state — read this before upgrading torch or removing either mitigation
+
+Recorded explicitly so this doesn't have to be re-derived later:
+
+- **Bug 2** (per-shape `reset()`, all eight CONFIGS loops): did **not** reproduce on
+  torch 2.7.1 with the one shape sequence tested (3/3 clean). Not tested against any
+  other sequence, any other function, or any other torch version. This is not
+  evidence the underlying Inductor defect is fixed — only that this one sequence no
+  longer triggers it on this one version.
+- **Cross-object bug** (subprocess isolation): unverified on anything past torch
+  2.4.1. No re-test attempted.
+- **Subprocess isolation is retained for a second, independent reason** beyond the
+  cross-object bug: it also hedges the unrelated historical illegal-memory-access
+  crash described earlier in this section (root-caused separately, to the old
+  `parallel_prefix_scan`'s `torch.flip`/`torch.roll` kernel, believed fixed by that
+  kernel's rewrite — see that discussion above). Removing subprocess isolation would
+  reopen exposure to that crash regardless of the cross-object bug's status.
+- **Both mitigations are retained deliberately, not out of caution-by-default.** If
+  this project ever upgrades its pinned torch version, re-run the *direct*
+  verification for both bugs (the standalone script for Bug 2; the object-A-then-
+  object-B isolation script for the cross-object bug) before removing either one. A
+  green full sweep is not sufficient evidence to remove a mitigation — that is
+  exactly the failure mode this whole investigation started from: both bugs produce
+  finite, plausible-looking output, and both were previously masked by something
+  else (a crash, then a different bug) rather than by actually being absent.
 
 ---
 

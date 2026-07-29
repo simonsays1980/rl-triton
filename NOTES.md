@@ -578,6 +578,56 @@ Recorded explicitly so this doesn't have to be re-derived later:
   finite, plausible-looking output, and both were previously masked by something
   else (a crash, then a different bug) rather than by actually being absent.
 
+### Known gap: the monotonicity gate cannot catch a baseline that becomes silently faster-but-wrong
+
+`check_monotonic_grid` (used by every `bench_*` function's monotonicity check) only
+ever watches `triton_ms` — the Triton kernel's own timing, checked for monotonic
+scaling within a single run. Nothing in this codebase compares a `torch.compile(...)`
+baseline's measured timing *across separate sweep runs*, and nothing checks whether
+a baseline's timing shift between two runs correlates with anything suspicious. A
+baseline that silently starts computing something wrong — while happening to also
+run faster or slower — produces no signal any automated gate here would flag; it
+would only surface (if at all) via a human manually diffing two candidates' rendered
+tables side by side after the fact, exactly as happened for the observation below.
+This is a known gap in the gating as it exists today, not something being fixed as
+part of this work — recorded so it isn't rediscovered as a surprise later.
+
+### Unresolved historical observation: V-Trace-with-truncations' `(512,512)` timing shift across the pre/post-mitigation sweeps
+
+**This concerns a superseded candidate, not shipped numbers — read the framing
+before the data.** Comparing the pre-mitigation (2026-07-28) and post-mitigation
+(2026-07-29) H100 sweep candidates, the largest single-cell change anywhere in
+either sweep was V-Trace-with-truncations at `(num_envs=512, seq_len=512)`: the
+full-call ratio moved from 4.9x to 2.9x, entirely via the *baseline's* measured time
+(`compile(vec-trunc)`: 0.257ms → 0.158ms; the Triton kernel's own time was unchanged
+within noise). The correctness gate passed for this exact config in the
+post-mitigation run, with both mitigations (per-shape `reset()` in
+`bench_vtrace_truncation()`'s loop, subprocess isolation separating it from
+`bench_vtrace()`) confirmed structurally active for that run.
+
+What makes this worth recording rather than dismissing as ordinary jitter: the
+*pre-mitigation* run had **both** risk structures for the two bugs above present in
+one process simultaneously (`bench_vtrace()` and `bench_vtrace_truncation()` shared
+a single subprocess before the variant split, and that loop had no `reset()`) — the
+same shape, `(512,512)`, that is Bug 2's confirmed trigger for discounted-returns.
+
+**This was never reconstructed or resolved.** The exact combined scenario that would
+settle it — object A = `bench_vtrace()`'s real compile history, object B =
+`bench_vtrace_truncation()`'s full 12-shape loop with no `reset()`, checked against
+the reference at `(512,512)` — was never run for V-Trace; only a single-shape
+cross-object check and a same-object-across-shapes check were run for it separately,
+neither reproducing anything, and neither matching this exact combined condition.
+The two candidate explanations — the pre-mitigation baseline was actually
+miscompiled at this shape (same class of bug as discounted-returns, unconfirmed
+instance), versus ordinary `torch.compile` autotuning variance picking a different
+kernel configuration between two separate process runs (V-Trace's baseline is a more
+complex computation than discounted-returns', plausibly more autotuning-sensitive on
+its own) — remain unseparated. Do not read this as an open defect in any currently
+staged or published number: the current (post-mitigation) candidate's value at this
+cell is correctness-gate-verified. It is an unresolved question about a candidate
+that no longer exists as the current one, kept here only so the observation isn't
+lost or re-litigated from scratch later.
+
 ---
 
 ## The log-space baseline underflow — why `compile(vec)` is a doubling scan, not a cumsum

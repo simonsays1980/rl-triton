@@ -839,8 +839,14 @@ def bench_gae_truncation():
                                   gamma=0.99, lambda_=0.95)
         triton_out = compute_gae(rewards, values, terminateds, truncateds,
                                   gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values)
-        vec_out = vectorized_gae_with_truncations(rewards, values, terminateds, truncateds,
-                                                    bootstrap_values, 0.99, 0.95)
+        # Check compiled_vec_trunc itself here, not the eager
+        # vectorized_gae_with_truncations it wraps: compiled_vec_trunc is the
+        # object actually timed below, and it's the one exposed to the
+        # cross-shape torch.compile corruption documented in NOTES.md -- the
+        # eager function is never at risk of that bug, so checking it alone
+        # would silently pass even if this shape's compile came back wrong.
+        vec_out = compiled_vec_trunc(rewards, values, terminateds, truncateds,
+                                      bootstrap_values, 0.99, 0.95)
         assert_correctness(triton_out, ref_out, f"gae_trunc[{num_envs}x{seq_len}] (triton vs ref)")
         assert_correctness(vec_out, ref_out, f"gae_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
 
@@ -1018,9 +1024,11 @@ def bench_vtrace_truncation():
         triton_out = compute_vtrace_fused(log_pi_t, log_pi_b, values, rewards, terminateds,
                                            truncateds=truncateds, gamma=0.99,
                                            bootstrap_values=bootstrap_values)
-        vec_out = vectorized_vtrace_with_truncations(log_pi_t, log_pi_b, values, rewards,
-                                                      terminateds, truncateds, bootstrap_values,
-                                                      gamma=0.99)
+        # Check compiled_vec_trunc itself, not the eager function it wraps --
+        # see bench_gae_truncation's matching comment.
+        vec_out = compiled_vec_trunc(log_pi_t, log_pi_b, values, rewards,
+                                      terminateds, truncateds, bootstrap_values,
+                                      gamma=0.99)
         assert_correctness(triton_out, ref_out, f"vtrace_trunc[{num_envs}x{seq_len}] (triton vs ref)")
         assert_correctness(vec_out, ref_out, f"vtrace_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
 
@@ -1107,7 +1115,9 @@ def bench_retrace():
         ref_out       = _ref_retrace(*args_gpu, gamma=0.99)
         assert_correctness(triton_out, ref_out, f"retrace[{num_envs}x{seq_len}]")
 
-        vec_out, _ = vectorized_retrace(*retrace_kernel_args, gamma=0.99)
+        # Check compiled_vec itself, not the eager vectorized_retrace it wraps
+        # -- see bench_gae_truncation's matching comment.
+        vec_out, _ = compiled_vec(*retrace_kernel_args, gamma=0.99)
         assert_correctness(vec_out, ref_out, f"retrace[{num_envs}x{seq_len}] (vec baseline)")
 
         _warmup_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99)
@@ -1172,7 +1182,9 @@ def bench_retrace():
         ref_out       = _ref_retrace(*args_gpu, gamma=0.99)
         assert_correctness(triton_out, ref_out, f"retrace[production,{num_envs}x{seq_len}]")
 
-        vec_out, _ = vectorized_retrace(*retrace_kernel_args, gamma=0.99)
+        # Check compiled_vec itself, not the eager vectorized_retrace it wraps
+        # -- see bench_gae_truncation's matching comment.
+        vec_out, _ = compiled_vec(*retrace_kernel_args, gamma=0.99)
         assert_correctness(vec_out, ref_out, f"retrace[production,{num_envs}x{seq_len}] (vec baseline)")
 
         _warmup_gpu(compute_retrace, *retrace_kernel_args, gamma=0.99)
@@ -1479,9 +1491,11 @@ def bench_lambda_returns_truncation():
                                           bootstrap_values, gamma=0.99, lambda_=0.95)
         triton_out = compute_lambda_returns(rewards, next_values, terminateds, truncateds=truncateds,
                                              gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values)
-        vec_out = vectorized_lambda_returns_with_truncations(rewards, next_values, terminateds,
-                                                              truncateds, bootstrap_values,
-                                                              gamma=0.99, lambda_=0.95)
+        # Check compiled_vec_trunc itself, not the eager function it wraps --
+        # see bench_gae_truncation's matching comment.
+        vec_out = compiled_vec_trunc(rewards, next_values, terminateds,
+                                      truncateds, bootstrap_values,
+                                      gamma=0.99, lambda_=0.95)
         assert_correctness(triton_out, ref_out, f"lambda_trunc[{num_envs}x{seq_len}] (triton vs ref)")
         assert_correctness(vec_out, ref_out, f"lambda_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
 
@@ -1556,8 +1570,10 @@ def bench_discounted_returns_truncation():
                                               gamma=0.99)
         triton_out = compute_discounted_returns(rewards, terminateds, truncateds=truncateds,
                                                   gamma=0.99, bootstrap_values=bootstrap_values)
-        vec_out = vectorized_discounted_returns_with_truncations(rewards, terminateds, truncateds,
-                                                                   bootstrap_values, gamma=0.99)
+        # Check compiled_vec_trunc itself, not the eager function it wraps --
+        # see bench_gae_truncation's matching comment.
+        vec_out = compiled_vec_trunc(rewards, terminateds, truncateds,
+                                      bootstrap_values, gamma=0.99)
         assert_correctness(triton_out, ref_out, f"disc_trunc[{num_envs}x{seq_len}] (triton vs ref)")
         assert_correctness(vec_out, ref_out, f"disc_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
 
@@ -1633,7 +1649,10 @@ def bench_prefix_sum():
         ref_out    = reference_episodic_prefix_sum(inputs, dones)
         assert_correctness(triton_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}]")
 
-        vec_out = vectorized_episodic_prefix_sum(inputs, dones)
+        # Check the compiled object itself, not the eager
+        # vectorized_episodic_prefix_sum it wraps -- see
+        # bench_gae_truncation's matching comment.
+        vec_out = compiled(inputs, dones)
         assert_correctness(vec_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}] (vec baseline)")
 
         _warmup_gpu(compute_episodic_prefix_sum, inputs, dones)
@@ -2145,17 +2164,33 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
     README table uses, so the truncation-path number was previously missing
     from the README draft entirely; this fills that gap without touching the
     full sweep.
+
+    Unlike every bench_*() function above, this one used to compute all three
+    ratios with NO correctness check anywhere -- neither the Triton output nor
+    either compiled baseline was ever verified against a reference before its
+    timing was trusted here, the widest instance of the gap described in
+    NOTES.md/the Retrace-baseline fix. Fixed: each block now asserts both
+    sides against the same sequential reference the corresponding full-sweep
+    bench_*_truncation() function uses, before any _bench_gpu call.
     """
     results = {}
+    ni = _n_iter_gpu(seq_len, num_envs)
 
     terminateds = _make_gae(num_envs, seq_len)[2]
     truncateds, bootstrap_values = _make_trunc_extras(num_envs, seq_len, terminateds)
     rewards, values, _ = _make_gae(num_envs, seq_len)
     compiled = torch.compile(vectorized_gae_with_truncations)
     kwargs_triton = dict(gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_values)
+
+    ref_out = _ref_gae_trunc(rewards, values, terminateds, truncateds, bootstrap_values,
+                              gamma=0.99, lambda_=0.95)
+    triton_out = compute_gae(rewards, values, terminateds, truncateds, **kwargs_triton)
+    assert_correctness(triton_out, ref_out, f"headline_gae_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+    vec_out = compiled(rewards, values, terminateds, truncateds, bootstrap_values, 0.99, 0.95)
+    assert_correctness(vec_out, ref_out, f"headline_gae_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
     _warmup_gpu(compute_gae, rewards, values, terminateds, truncateds, **kwargs_triton)
     _warmup_gpu(compiled, rewards, values, terminateds, truncateds, bootstrap_values, 0.99, 0.95)
-    ni = _n_iter_gpu(seq_len, num_envs)
     triton_ms = _bench_gpu(compute_gae, rewards, values, terminateds, truncateds, n_iter=ni, **kwargs_triton)
     vec_ms = _bench_gpu(compiled, rewards, values, terminateds, truncateds, bootstrap_values, 0.99, 0.95, n_iter=ni)
     results["GAE"] = vec_ms / triton_ms
@@ -2164,6 +2199,15 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
     truncateds_vt, bootstrap_vt = _make_trunc_extras(num_envs, seq_len, terminateds_vt)
     compiled_vt = torch.compile(vectorized_vtrace_with_truncations)
     kwargs_vt = dict(truncateds=truncateds_vt, gamma=0.99, bootstrap_values=bootstrap_vt)
+
+    ref_out_vt = _ref_vtrace_sequential(log_pi_t, log_pi_b, values_vt, rewards_vt, terminateds_vt,
+                                         truncateds_vt, bootstrap_vt, gamma=0.99)
+    triton_out_vt = compute_vtrace_fused(log_pi_t, log_pi_b, values_vt, rewards_vt, terminateds_vt, **kwargs_vt)
+    assert_correctness(triton_out_vt, ref_out_vt, f"headline_vtrace_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+    vec_out_vt = compiled_vt(log_pi_t, log_pi_b, values_vt, rewards_vt, terminateds_vt,
+                              truncateds_vt, bootstrap_vt, gamma=0.99)
+    assert_correctness(vec_out_vt, ref_out_vt, f"headline_vtrace_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
     _warmup_gpu(compute_vtrace_fused, log_pi_t, log_pi_b, values_vt, rewards_vt, terminateds_vt, **kwargs_vt)
     _warmup_gpu(compiled_vt, log_pi_t, log_pi_b, values_vt, rewards_vt, terminateds_vt,
                 truncateds_vt, bootstrap_vt, gamma=0.99)
@@ -2177,6 +2221,15 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
     truncateds_lr, bootstrap_lr = _make_trunc_extras(num_envs, seq_len, terminateds_lr)
     compiled_lr = torch.compile(vectorized_lambda_returns_with_truncations)
     kwargs_lr = dict(truncateds=truncateds_lr, gamma=0.99, lambda_=0.95, bootstrap_values=bootstrap_lr)
+
+    ref_out_lr = _ref_lambda_sequential(rewards_lr, next_values_lr, terminateds_lr, truncateds_lr,
+                                         bootstrap_lr, gamma=0.99, lambda_=0.95)
+    triton_out_lr = compute_lambda_returns(rewards_lr, next_values_lr, terminateds_lr, **kwargs_lr)
+    assert_correctness(triton_out_lr, ref_out_lr, f"headline_lambda_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+    vec_out_lr = compiled_lr(rewards_lr, next_values_lr, terminateds_lr, truncateds_lr, bootstrap_lr,
+                              gamma=0.99, lambda_=0.95)
+    assert_correctness(vec_out_lr, ref_out_lr, f"headline_lambda_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
     _warmup_gpu(compute_lambda_returns, rewards_lr, next_values_lr, terminateds_lr, **kwargs_lr)
     _warmup_gpu(compiled_lr, rewards_lr, next_values_lr, terminateds_lr, truncateds_lr, bootstrap_lr,
                 gamma=0.99, lambda_=0.95)

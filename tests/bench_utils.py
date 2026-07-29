@@ -271,19 +271,38 @@ def assert_correctness(triton_out, ref_out, label: str, atol: float = 1e-4, rtol
     NOT bit-identical: the associative-scan kernels reorder float ops
     depending on num_warps/block layout, so cross-config last-bit
     differences are legitimate and expected. This is the gate that must
-    hold at every swept config, before any timing is trusted.
+    hold -- for the Triton kernel AND for every baseline compared against it
+    -- before any timing is trusted.
+
+    Checks finiteness explicitly, with its own error naming the fraction of
+    bad elements, before falling through to assert_close: a baseline that has
+    gone to inf/nan (e.g. a log-space formula underflowing on a termination
+    step) will also fail assert_close's tolerance check, but as a generic
+    "mismatch" -- this gives a much sharper signal for that specific,
+    previously-seen failure mode (see NOTES.md's log-space-underflow and
+    Retrace-baseline notes) instead of making every reader re-derive "oh, this
+    one's actually non-finite" from a wall of numbers.
     """
+    def _check_one(t, r, sublabel):
+        finite = torch.isfinite(t)
+        if not finite.all():
+            n_bad = int((~finite).sum())
+            pct = 100.0 * n_bad / finite.numel()
+            raise AssertionError(
+                f"[{sublabel}] {n_bad}/{finite.numel()} ({pct:.1f}%) non-finite "
+                f"(inf/nan) elements -- this output is broken, not just imprecise; "
+                f"refusing to trust any timing measured against it."
+            )
+        torch.testing.assert_close(
+            t, r, atol=atol, rtol=rtol,
+            msg=lambda m, sublabel=sublabel: f"[{sublabel}] mismatch vs reference: {m}",
+        )
+
     if isinstance(triton_out, tuple):
         for i, (t, r) in enumerate(zip(triton_out, ref_out)):
-            torch.testing.assert_close(
-                t, r, atol=atol, rtol=rtol,
-                msg=lambda m, i=i: f"[{label}] output[{i}] mismatch vs reference: {m}",
-            )
+            _check_one(t, r, f"{label}[{i}]")
     else:
-        torch.testing.assert_close(
-            triton_out, ref_out, atol=atol, rtol=rtol,
-            msg=lambda m: f"[{label}] mismatch vs reference: {m}",
-        )
+        _check_one(triton_out, ref_out, label)
 
 
 def assert_deterministic(fn, *args, label: str, n_repeats: int = 3, **kwargs) -> None:

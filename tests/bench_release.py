@@ -4,7 +4,7 @@ Release benchmark – full sweep across all algorithms and configurations.
 Compares rl-triton Triton kernels against torch.compile on both a naive
 per-timestep Python loop and the fastest hand-vectorized PyTorch equivalent,
 against pure NumPy CPU loops, and against a NumPy→GPU→NumPy adoption path.
-Algorithms that support truncated episodes (GAE, V-Trace, λ-returns,
+Algorithms that support truncated episodes (GAE, V-Trace, Retrace, λ-returns,
 discounted returns) also report a third baseline – the same associative-scan
 implementation used for the truncation path, called with zero truncations –
 plus an additional table benchmarking the truncation path itself against
@@ -1277,6 +1277,110 @@ def bench_retrace():
     return rows, production_rows, violations + prod_violations
 
 
+def bench_retrace_truncation():
+    """Retrace's truncation path, benchmarked against its own with-truncations
+    vectorized baseline -- the counterpart to bench_gae_truncation() /
+    bench_vtrace_truncation() / bench_lambda_returns_truncation() /
+    bench_discounted_returns_truncation() for Retrace.
+
+    Unlike those four, Retrace has no bootstrap_values concept -- the
+    continuation value is already folded into next_q_values_all every step
+    (docs/kernels/retrace.md §4), so only a non-zero truncateds is generated
+    here (mutually exclusive with terminateds, same ~5% rate _make_trunc_
+    extras uses for the other four), and reference_retrace (test_retrace.py)
+    is used as ground truth rather than bench_release.py's own _ref_retrace --
+    that one takes a single combined `dones` flag and cannot distinguish
+    terminated (zero the Q-bootstrap) from truncated (keep the bootstrap,
+    sever the trace); it predates the truncation feature and is only valid
+    for bench_retrace()'s existing always-zero-truncateds usage.
+
+    bench_retrace() elsewhere in this file always passes truncateds=torch.
+    zeros_like(dones) via _retrace_kernel_args, so this is the first place
+    Retrace's truncation path is exercised across the full CONFIGS grid.
+    """
+    print("  compiling torch.compile baselines …", end="", flush=True)
+    compiled_vec_trunc = torch.compile(vectorized_retrace)
+    (rewards_w, terminateds_w, _values_w, next_q_all_w,
+     q_values_w, actions_w, apt_w, apb_w) = _make_retrace(64, 512)
+    truncateds_w = (torch.rand(64, 512, device=rewards_w.device) < 0.05).float() * (1.0 - terminateds_w)
+    compiled_vec_trunc(apt_w, apb_w, q_values_w, next_q_all_w, actions_w, rewards_w,
+                        terminateds_w, truncateds_w, gamma=0.99)
+    compute_retrace(apt_w, apb_w, q_values_w, next_q_all_w, actions_w, rewards_w,
+                     terminateds_w, truncateds_w, gamma=0.99)
+    torch.cuda.synchronize()
+    print(" done.", flush=True)
+
+    header = (
+        f"\n{'num_envs':>10} {'seq_len':>8} "
+        f"{'triton':>8} {'dev':>8} {'compile(vec_trunc)':>20} {'speedup':>9} {'speedup(dev)':>13}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    rows = []
+    for num_envs, seq_len in CONFIGS:
+        # Reset before every shape -- see bench_gae_truncation's matching
+        # comment: reusing one torch.compile(...) object across distinct
+        # shapes without this can silently give wrong output at some
+        # transition.
+        torch._dynamo.reset()
+        print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
+        (rewards, terminateds, _values, next_q_all,
+         q_values, actions, apt, apb) = _make_retrace(num_envs, seq_len)
+        truncateds = (torch.rand(num_envs, seq_len, device=rewards.device) < 0.05).float() * (1.0 - terminateds)
+        ni = _n_iter_gpu(seq_len, num_envs)
+
+        ref_out, _ = reference_retrace(apt, apb, q_values, next_q_all, actions, rewards,
+                                        terminateds, truncateds, gamma=0.99)
+        triton_out, _ = compute_retrace(apt, apb, q_values, next_q_all, actions, rewards,
+                                         terminateds, truncateds, gamma=0.99)
+        assert_correctness(triton_out, ref_out, f"retrace_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+
+        # Check compiled_vec_trunc itself here, not the eager vectorized_retrace
+        # it wraps -- see bench_gae_truncation's matching comment.
+        vec_out, _ = compiled_vec_trunc(apt, apb, q_values, next_q_all, actions, rewards,
+                                         terminateds, truncateds, gamma=0.99)
+        assert_correctness(vec_out, ref_out, f"retrace_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
+        _warmup_gpu(compute_retrace, apt, apb, q_values, next_q_all, actions, rewards,
+                    terminateds, truncateds, gamma=0.99)
+        _warmup_gpu(compiled_vec_trunc, apt, apb, q_values, next_q_all, actions, rewards,
+                    terminateds, truncateds, gamma=0.99)
+
+        triton_ms = _bench_gpu(compute_retrace, apt, apb, q_values, next_q_all, actions, rewards,
+                                terminateds, truncateds, gamma=0.99, n_iter=ni)
+        vec_ms = _bench_gpu(compiled_vec_trunc, apt, apb, q_values, next_q_all, actions, rewards,
+                             terminateds, truncateds, gamma=0.99, n_iter=ni)
+        triton_dev_ms, _ = _device_profile(compute_retrace, apt, apb, q_values, next_q_all, actions,
+                                            rewards, terminateds, truncateds, gamma=0.99)
+        vec_dev_ms, _ = _device_profile(compiled_vec_trunc, apt, apb, q_values, next_q_all, actions,
+                                         rewards, terminateds, truncateds, gamma=0.99)
+
+        rows.append({
+            "num_envs": num_envs, "seq_len": seq_len,
+            "triton_ms": triton_ms, "triton_dev_ms": triton_dev_ms,
+            "vec_ms": vec_ms, "vec_dev_ms": vec_dev_ms,
+            "su_vec": vec_ms / triton_ms,
+            "su_vec_dev": vec_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"),
+        })
+        print(
+            f"{num_envs:>10} {seq_len:>8} "
+            f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
+            f"{f'{vec_ms:.3f}ms':>19} {f'{vec_ms/triton_ms:.2f}x':>9} "
+            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>13}",
+            flush=True,
+        )
+
+    violations = check_monotonic_grid(rows, ms_key="triton_ms")
+    if violations:
+        print("  MONOTONICITY GATE FAILED (retrace_trunc, triton_ms, 2% band):", flush=True)
+        for v in violations:
+            print(f"    - {v}", flush=True)
+    else:
+        print("  monotonicity gate: PASSED (retrace_trunc, triton_ms, 2% band)", flush=True)
+    return rows, violations
+
+
 def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "eligibility_traces"})):
     # compile(assoc) columns dropped for lambda-returns/discounted-returns --
     # see bench_gae()'s comment; both vec baselines are now thin wrappers
@@ -2502,17 +2606,20 @@ def main():
                              f"Choices: {','.join(ALL_ALGOS)}. Used for the GAE-only smoke "
                              "test before committing to the full unattended sweep.")
     parser.add_argument("--variant", default="all", choices=["all", "plain", "truncation"],
-                        help="For the four algorithms with both a plain and a truncation-path "
-                             "table (gae, vtrace, lambda_returns, discounted_returns): which to "
-                             "run. 'all' (default) runs both -- the normal manual-run and "
-                             "--algos-smoke-test behavior. 'plain'/'truncation' run only that "
+                        help="For the five algorithms with both a plain and a truncation-path "
+                             "table (gae, vtrace, retrace, lambda_returns, discounted_returns): "
+                             "which to run. 'all' (default) runs both -- the normal manual-run "
+                             "and --algos-smoke-test behavior. 'plain'/'truncation' run only that "
                              "table; used internally by --parent-sweep to put the two tables in "
                              "separate subprocesses, since each builds its own "
-                             "torch.compile(...) wrapper of the IDENTICAL vectorized_*_with_"
-                             "truncations function -- two such wrappers in one process can "
+                             "torch.compile(...) wrapper of the same underlying vectorized "
+                             "function (IDENTICAL for gae/vtrace/lambda_returns/discounted_"
+                             "returns' with_truncations variant; retrace reuses vectorized_"
+                             "retrace itself for both tables, since it has no separate "
+                             "with-truncations variant) -- two such wrappers in one process can "
                              "silently miscompile one of them once either has compiled at 2+ "
-                             "distinct shapes (see NOTES.md). Has no effect on retrace, "
-                             "eligibility_traces, or prefix_sum -- each has only one table.")
+                             "distinct shapes (see NOTES.md). Has no effect on eligibility_traces "
+                             "or prefix_sum -- each has only one table.")
     parser.add_argument("--output-json", default="", metavar="PATH",
                         help="Dump this invocation's tables/rows/violations as JSON to PATH "
                              "instead of staging a candidate. Used internally by "
@@ -2527,11 +2634,11 @@ def main():
                              "memory-access crash from accumulated Dynamo/Inductor state -- "
                              "confirmed independent of torch._dynamo.reset() usage; (2) two "
                              "separate torch.compile(...) wrappers of the SAME underlying "
-                             "vectorized_*_with_truncations function in one process can silently "
-                             "miscompile one of them (see NOTES.md) -- confirmed ALSO independent "
-                             "of reset() usage, which is why the plain and truncation tables for "
-                             "gae/vtrace/lambda_returns/discounted_returns are split into "
-                             "separate subprocesses via --variant, not just separate algorithms.")
+                             "vectorized function in one process can silently miscompile one of "
+                             "them (see NOTES.md) -- confirmed ALSO independent of reset() usage, "
+                             "which is why the plain and truncation tables for gae/vtrace/retrace/"
+                             "lambda_returns/discounted_returns are split into separate "
+                             "subprocesses via --variant, not just separate algorithms.")
     args = parser.parse_args()
 
     if args.promote:
@@ -2577,6 +2684,7 @@ def main():
             _table_numpy("V-Trace (`compute_vtrace`)", [dummy]),
             _table_truncation("V-Trace – with truncations (`compute_vtrace`)", [dummy_trunc]),
             _table_retrace("Retrace(λ) (`compute_retrace`)", [dummy]),
+            _table_truncation("Retrace(λ) – with truncations (`compute_retrace`)", [dummy_trunc]),
             _table_simple("λ-returns (`compute_lambda_returns`)", [dummy]),
             _table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", [dummy_trunc]),
             _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
@@ -2637,12 +2745,19 @@ def main():
             headline_tables.append(_table_truncation("V-Trace – with truncations (`compute_vtrace`)", _headline(vtrace_trunc_rows)))
 
     if "retrace" in selected_algos:
-        print("Running Retrace(λ) benchmark …", flush=True)
-        retrace_rows, retrace_prod, v = bench_retrace()
-        all_violations += v
-        production_rows_all += retrace_prod
-        full_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows))
-        headline_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", _headline(retrace_rows)))
+        if run_plain:
+            print("Running Retrace(λ) benchmark …", flush=True)
+            retrace_rows, retrace_prod, v = bench_retrace()
+            all_violations += v
+            production_rows_all += retrace_prod
+            full_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", retrace_rows))
+            headline_tables.append(_table_retrace("Retrace(λ) (`compute_retrace`)", _headline(retrace_rows)))
+        if run_trunc:
+            print("Running Retrace(λ) truncation-path benchmark …", flush=True)
+            retrace_trunc_rows, v = bench_retrace_truncation()
+            all_violations += v
+            full_tables.append(_table_truncation("Retrace(λ) – with truncations (`compute_retrace`)", retrace_trunc_rows))
+            headline_tables.append(_table_truncation("Retrace(λ) – with truncations (`compute_retrace`)", _headline(retrace_trunc_rows)))
 
     # bench_returns() alone produces: the "plain" table for lambda_returns/
     # discounted_returns (only when run_plain), and eligibility_traces' ONLY table
@@ -2812,26 +2927,31 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
 # keeps each subprocess's total compile count in the same range as gae/
 # vtrace/retrace's solo subprocesses, which do not reproduce that crash.
 #
-# (2) Variant-level isolation (why gae/vtrace/lambda_returns/discounted_returns
-# are further split into "_plain" and "_truncation" groups). Distinct from
-# (1): a LATER bisection found that TWO SEPARATE torch.compile(...) wrappers
-# of the IDENTICAL vectorized_*_with_truncations function, in one process,
-# can silently give wrong (finite, plausible-looking) output from one of
-# them once either wrapper has compiled at 2+ distinct shapes -- confirmed
-# independent of torch._dynamo.reset() usage, confirmed specific to
-# discounted-returns among the four algorithms with this two-wrapper
-# structure (see NOTES.md for the full characterization; GAE/V-Trace/
-# lambda-returns were tested under the identical pattern and did not
+# (2) Variant-level isolation (why gae/vtrace/retrace/lambda_returns/
+# discounted_returns are further split into "_plain" and "_truncation"
+# groups). Distinct from (1): a LATER bisection found that TWO SEPARATE
+# torch.compile(...) wrappers of the IDENTICAL vectorized function, in one
+# process, can silently give wrong (finite, plausible-looking) output from
+# one of them once either wrapper has compiled at 2+ distinct shapes --
+# confirmed independent of torch._dynamo.reset() usage, confirmed specific to
+# discounted-returns among the original four algorithms with this
+# two-wrapper structure (see NOTES.md for the full characterization; GAE/
+# V-Trace/lambda-returns were tested under the identical pattern and did not
 # reproduce it, but WHY they don't is not understood, so isolation is applied
-# to all four rather than relying on that gap). retrace, eligibility_traces,
-# and prefix_sum have only one torch.compile(...) wrapper of their function
-# each and need no variant split.
+# to all of them rather than relying on that gap). retrace fits the same
+# two-wrapper shape even though it has no separate with_truncations variant:
+# bench_retrace() and bench_retrace_truncation() each build their own
+# torch.compile(vectorized_retrace) wrapper of the SAME underlying function,
+# so it is split by --variant here too rather than assumed safe.
+# eligibility_traces and prefix_sum have only one torch.compile(...) wrapper
+# of their function each and need no variant split.
 _PARENT_SWEEP_GROUPS = [
     ("gae_plain",                   ["gae"],                "plain"),
     ("gae_truncation",              ["gae"],                "truncation"),
     ("vtrace_plain",                ["vtrace"],              "plain"),
     ("vtrace_truncation",           ["vtrace"],              "truncation"),
-    ("retrace",                     ["retrace"],             "all"),
+    ("retrace_plain",               ["retrace"],             "plain"),
+    ("retrace_truncation",          ["retrace"],             "truncation"),
     ("lambda_returns_plain",        ["lambda_returns"],      "plain"),
     ("lambda_returns_truncation",   ["lambda_returns"],      "truncation"),
     ("discounted_returns_plain",    ["discounted_returns"],  "plain"),

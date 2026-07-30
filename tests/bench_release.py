@@ -89,7 +89,7 @@ from rl_triton.ops.vtrace import compute_vtrace
 from rl_triton.ops.vtrace_fused import compute_vtrace_fused
 
 from test_gae import vectorized_gae, vectorized_gae_with_truncations
-from test_retrace import vectorized_retrace
+from test_retrace import reference_retrace, vectorized_retrace
 from test_returns import (
     _ref_discounted_sequential,
     _ref_lambda_sequential,
@@ -2215,29 +2215,31 @@ def promote(version: str) -> None:
 
 def _bench_truncation_headline(num_envs=4096, seq_len=128):
     """Truncation-path full-call speedup at the SAME (num_envs, seq_len) as the
-    README draft's main table, for the 4 algorithms that have a vectorized
+    README draft's main table, for the 5 algorithms that have a vectorized
     with-truncations baseline to compare against (GAE, V-Trace, lambda-returns,
-    discounted-returns). The other 3 algorithms in ALL_ALGOS are absent from
-    this dict for two DIFFERENT reasons -- render_readme_table_draft() states
-    each inline rather than silently dropping the row, see that function:
-      - Retrace's kernel supports truncations too (terminated/truncated are
-        both mandatory, distinct arguments — see compute_retrace's docstring)
-        and its baseline (vectorized_retrace, test_retrace.py) already takes
-        both flags with the correct distinct semantics -- there is no separate
-        "_with_truncations" variant to point at because Retrace's kernel has
-        no no-truncation specialization to begin with (unlike GAE/V-Trace).
-        Retrace is omitted from this headline not because no valid baseline
-        exists, but because nobody has wired it in here yet -- a real gap to
-        close, not a validity problem like the one bench_retrace() had.
-      - Eligibility-traces and episodic-prefix-sum have no truncation-path
-        concept at all: compute_eligibility_traces and
-        compute_episodic_prefix_sum each take only a single `dones` flag with
-        no terminated/truncated distinction and no bootstrap_values parameter
-        (see their signatures in rl_triton/ops/returns.py and
-        rl_triton/ops/prefix_sum.py) -- there is no "_with_truncations"
-        variant to build because the kernels themselves have nothing to
-        distinguish. This is a structurally different, permanent omission
-        from Retrace's, which is fixable and just hasn't been done yet.
+    discounted-returns, Retrace). The other 2 algorithms in ALL_ALGOS are
+    absent from this dict because they have no truncation-path concept at
+    all -- render_readme_table_draft() states this inline rather than
+    silently dropping the rows, see that function: compute_eligibility_traces
+    and compute_episodic_prefix_sum each take only a single `dones` flag with
+    no terminated/truncated distinction and no bootstrap_values parameter
+    (see their signatures in rl_triton/ops/returns.py and
+    rl_triton/ops/prefix_sum.py) -- there is no "_with_truncations" variant
+    to build because the kernels themselves have nothing to distinguish.
+
+    Retrace was previously omitted here even though its kernel supports
+    truncations and a valid baseline (vectorized_retrace, test_retrace.py)
+    already exists -- nobody had wired it into this specific headline table.
+    Now wired in below. Note this required its own sequential reference:
+    bench_release.py's other _ref_retrace (used by bench_retrace()'s main
+    sweep) takes a single combined `dones` flag and cannot distinguish
+    terminated (zero the Q-bootstrap) from truncated (keep the bootstrap,
+    sever the trace) -- it predates the truncation feature and is only valid
+    for bench_retrace()'s existing always-zero-truncateds usage. The Retrace
+    block below imports test_retrace.py's reference_retrace instead, the
+    real truncation-aware ground truth already used by
+    test_retrace_truncated_keeps_bootstrap and friends.
+
     Existing truncation-path tables in benchmarks.md run at the full CONFIGS
     grid (64x512 .. 16384x512), which already includes (4096,128) -- but
     those tables are keyed by algorithm and rendered straight to markdown, not
@@ -2343,6 +2345,50 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
                          gamma=0.99, n_iter=ni)
     results["discounted-returns"] = vec_ms / triton_ms
 
+    # Retrace has no no-truncation specialization to begin with -- both
+    # compute_retrace and vectorized_retrace take terminateds/truncateds as
+    # two mandatory, distinct arguments always (see compute_retrace's
+    # docstring: the Q-bootstrap is folded into next_q_values_all, so there
+    # is no separate bootstrap_values parameter to wire up here, unlike
+    # GAE/V-Trace/lambda-returns/discounted-returns above). bench_retrace()
+    # elsewhere in this file always passes truncateds=torch.zeros_like(dones)
+    # via _retrace_kernel_args, so this is the first place Retrace's
+    # truncation path is actually exercised with a non-zero truncateds at
+    # this headline config.
+    args_gpu_rt = _make_retrace(num_envs, seq_len)
+    rewards_rt, terminateds_rt, values_rt, next_q_all_rt, q_values_rt, actions_rt, apt_rt, apb_rt = args_gpu_rt
+    truncateds_rt = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float() * (1.0 - terminateds_rt)
+    compiled_rt = torch.compile(vectorized_retrace)
+
+    # bench_release.py's own _ref_retrace is stale here: it takes a single
+    # combined `dones` flag and has no way to distinguish terminated (zero
+    # the Q-bootstrap) from truncated (keep the bootstrap, sever the trace)
+    # -- it predates the truncation feature and is only valid for
+    # bench_retrace()'s existing always-zero-truncateds usage elsewhere in
+    # this file. reference_retrace (test_retrace.py) is the real
+    # truncation-aware ground truth already used by
+    # test_retrace_truncated_keeps_bootstrap and friends.
+    ref_out_rt, _ = reference_retrace(apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                                       rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99)
+    triton_out_rt, _ = compute_retrace(apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                                        rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99)
+    assert_correctness(triton_out_rt, ref_out_rt, f"headline_retrace_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+    # Check compiled_rt itself, not the eager vectorized_retrace it wraps --
+    # see bench_gae_truncation's matching comment.
+    vec_out_rt, _ = compiled_rt(apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                                 rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99)
+    assert_correctness(vec_out_rt, ref_out_rt, f"headline_retrace_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
+    _warmup_gpu(compute_retrace, apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99)
+    _warmup_gpu(compiled_rt, apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99)
+    triton_ms = _bench_gpu(compute_retrace, apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                            rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99, n_iter=ni)
+    vec_ms = _bench_gpu(compiled_rt, apt_rt, apb_rt, q_values_rt, next_q_all_rt, actions_rt,
+                         rewards_rt, terminateds_rt, truncateds_rt, gamma=0.99, n_iter=ni)
+    results["Retrace"] = vec_ms / triton_ms
+
     return results
 
 
@@ -2371,12 +2417,12 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
     loop naturally skips it -- that is a caller's explicit selection, not a
     hardcoded omission baked into this function.
 
-    The truncation-path table covers the 4 algorithms that have a genuine
-    vectorized with-truncations baseline (GAE, V-Trace, lambda-returns,
-    discounted-returns -- see _bench_truncation_headline). The other 3 are
-    stated inline with the actual reason, distinguishing a real gap (Retrace)
-    from a structural non-applicability (eligibility-traces, prefix-sum) --
-    never silently omitted.
+    The truncation-path table covers the 5 algorithms that have a genuine
+    vectorized with-truncations baseline (GAE, V-Trace, Retrace, lambda-returns,
+    discounted-returns -- see _bench_truncation_headline). The other 2
+    (eligibility-traces, prefix-sum) are stated inline with the actual reason
+    -- a structural non-applicability, since those kernels have no
+    terminated/truncated distinction to begin with -- never silently omitted.
     """
     gpu = gpu_label or _detect_gpu()
     date = datetime.date.today().isoformat()

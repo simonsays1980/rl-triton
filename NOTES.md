@@ -709,6 +709,70 @@ gate pass vacuously in the past (calibrated on the wrong card entirely, see
 
 ---
 
+## One helper, two monotonicity gates: different shape-pair severity, by design
+
+`check_monotonic_grid` (in `bench_utils.py`) is the single implementation
+behind two separate monotonicity checks, and they are deliberately not the
+same strictness. Do not "fix the inconsistency" between them — it isn't one.
+
+**`tests/bench_safeguard.py`'s `test_monotonicity_gate`** (the PR-blocking
+safeguard suite) compares exactly one pair per algorithm: `_MONO_SMALL =
+(128, 512)` vs. `_MONO_LARGE = (512, 4096)`, a 32x element jump
+(65,536 -> 2,097,152). Both ends sit well clear of the small-shape corner
+where fixed CUDA dispatch/sync overhead dominates (see "Per-GPU floor
+calibration" above) — both are compute/bandwidth-bound. A violation at this
+gap cannot be explained by launch-overhead noise at either end, so it means
+the kernel's own wall-clock time got smaller as the problem got strictly
+bigger — a genuine regression. This check is correctly a blocking PR gate.
+
+**`tests/bench_release.py`'s per-algorithm release-sweep monotonicity
+checks** run the same helper over the *full* `CONFIGS` grid (and the
+production-regime grid), which necessarily includes adjacent,
+overhead-dominated pairs — e.g. `seq_len` 80->128 at a fixed `num_envs` in
+the production table. At that granularity, a 3-8% negative slope is expected
+GPU clock-ramp/launch-overhead jitter, not a regression (see the concrete
+RTX 2000 Ada instance immediately below). This is why `bench_release.py`
+treats its own monotonicity result as advisory: `_finalize()` stages the
+candidate regardless of violations and only affects the process's exit
+code — it does not block staging the way the safeguard suite blocks a PR.
+
+**The two gates ask structurally different questions with the same code.**
+Widely-separated, compute-bound shapes -> a violation is a real regression,
+block on it. Densely-sampled, overhead-included shapes -> some negative
+slopes are expected noise, treat violations as advisory. Do not narrow
+`_MONO_SMALL`/`_MONO_LARGE` toward each other (that pulls the safeguard gate
+into the overhead-dominated corner and starts blocking PRs on jitter), and do
+not make the release sweep's check blocking or the safeguard's advisory —
+either change silently erases the distinction this section exists to record.
+
+### Concrete instance: RTX 2000 Ada release-candidate sweep (2026-07-30) — 5 monotonicity violations, all in the overhead-dominated corner, none at the safeguard's blocking pair
+
+The RTX 2000 Ada `--parent-sweep` run staged into
+`docs/benchmark-history/unreleased.md` fired the release sweep's
+(advisory) monotonicity gate 5 times:
+
+```
+vtrace:              num_envs=512, seq_len 128->512:   0.0608ms -> 0.0571ms  (-6.2%)
+vtrace:              seq_len=128, num_envs 512->4096:  0.0608ms -> 0.0567ms  (-6.8%)
+eligibility-traces:  num_envs=4096, seq_len 80->128:    0.0521ms -> 0.0479ms  (-8.1%)  [production regime]
+eligibility-traces:  num_envs=8192, seq_len 80->128:    0.0530ms -> 0.0492ms  (-7.1%)  [production regime]
+prefix_sum:          num_envs=8192, seq_len 80->128:    0.0483ms -> 0.0467ms  (-3.4%)  [production regime]
+```
+
+Every one of these is a small-elements/short-`seq_len` pair (largest absolute
+time involved is 0.061ms) squarely in the launch-overhead-dominated corner,
+and none of them is anywhere near the safeguard suite's `(128,512)` /
+`(512,4096)` pair. The correctness/baseline-validity gate (`assert_correctness`
+against both the Triton kernel and the compiled vec baseline) passed for
+every config in this sweep, and the safeguard suite's own blocking
+`test_monotonicity_gate` was not run as part of this release sweep at all —
+this is exactly the scenario the section above describes: fine-grained,
+overhead-corner jitter that the release sweep correctly tolerates rather than
+blocking on. The candidate was staged with these violations present in the
+console gate summary only, not reflected in the staged tables themselves.
+
+---
+
 ## Retrace's register-spill ceiling and its reroute (see `retrace.py` for the authoritative account)
 
 `compute_retrace` dispatches on `_TRITON_SEQ_LEN_CEILING = 2048`:

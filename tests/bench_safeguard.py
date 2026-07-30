@@ -82,28 +82,41 @@ _SPEEDUP_FLOOR = 1.8
 # side's *device* kernel time is only a few microseconds, dwarfed by ~25-30us
 # of fixed CUDA dispatch/sync overhead that both sides pay identically
 # (confirmed via bench_utils._device_profile: e.g. GAE's own device-only
-# ratio is 2.14x -- above its RTX-era 1.9x floor -- even though its full-call
+# ratio is 2.14x -- above the RTX floor that was in effect at the time (1.9x,
+# since retired and recalibrated -- see below) -- even though its full-call
 # wall-clock ratio, what this suite actually gates on, is ~1.5x). A faster
 # GPU shrinks the device time on both sides while the fixed overhead stays
 # the same, compressing the wall-clock ratio toward 1x. A floor calibrated on
 # one card is therefore not transferable to a faster one; keying by device
 # name is a correctness requirement here, not an optimization.
 #
-# "rtx_2000_ada" entries are the pre-existing floor values, UNCHANGED.
-# Investigated 2026-07-26 (three test_perf_gae/lambda_returns/
-# eligibility_traces failures on a CI run believed at the time to be H100,
-# later found to actually be H200 -- see below): commits 72b7299/b236ce9
-# that set these floors are both dated 2026-06-23, a full month before this
-# repo's first H100-branded commit (dc246a4, 2026-07-22), and b236ce9's own
-# prefix_sum comment from that same day describes "this card idles at
-# 210MHz and boosts to 3105MHz, 70W TDP" -- an RTX-2000-Ada-class
-# clock/power profile (the H200 card measured then, mislabelled H100 at the
-# time: ~345MHz idle / 1980MHz boost / 700W TDP via nvidia-smi). No commit
-# message from that date
-# names the GPU explicitly, so "RTX 2000 Ada" is inference from converging
-# evidence (matches docs/benchmark-history/v0.1.0.md's "NVIDIA RTX 2000 Ada
-# Generation" release, dated in between), not a confirmed first-hand record
-# -- labelled "existing/legacy" rather than asserted.
+# "rtx_2000_ada" entries below were RETIRED and are gone from this table.
+# The original values (gae 1.9, vtrace 1.8, retrace 1.35, lambda_returns 1.6,
+# discounted_returns 1.25, eligibility_traces 1.85, prefix_sum 1.1) were never
+# a genuine first-hand calibration to begin with: investigated 2026-07-26
+# (three test_perf_gae/lambda_returns/eligibility_traces failures on a CI run
+# believed at the time to be H100, later found to actually be H200 -- see
+# below), commits 72b7299/b236ce9 that set these floors are both dated
+# 2026-06-23, a full month before this repo's first H100-branded commit
+# (dc246a4, 2026-07-22), and b236ce9's own prefix_sum comment from that same
+# day describes "this card idles at 210MHz and boosts to 3105MHz, 70W TDP" --
+# an RTX-2000-Ada-class clock/power profile (the H200 card measured then,
+# mislabelled H100 at the time: ~345MHz idle / 1980MHz boost / 700W TDP via
+# nvidia-smi). No commit message from that date names the GPU explicitly, so
+# "RTX 2000 Ada" was inference from converging evidence (matches
+# docs/benchmark-history/v0.1.0.md's "NVIDIA RTX 2000 Ada Generation" release,
+# dated in between), not a confirmed first-hand record -- hence "existing/
+# legacy, not asserted" in this file's history. Also measured against the
+# same broken log-space-underflow baseline described in (2) below, same as
+# the original h100_sxm entries -- a second, independent reason those values
+# never carried real evidential weight.
+#
+# "rtx_2000_ada" entries now in the table below are the replacement: a
+# genuine first-hand calibration, measured 2026-07-30 on real RTX 2000 Ada
+# Generation hardware -- confirmed via torch.cuda.get_device_name(0) returning
+# "NVIDIA RTX 2000 Ada Generation". Same methodology and margin convention as
+# h200_sxm/h100_sxm below (3 independent process runs, lowest-of-3
+# min-of-5-trials x0.9, median-of-5-trials for prefix_sum).
 #
 # "h100_sxm" entries measured 2026-07-26 were RETIRED and are gone from this
 # table, on two independent grounds, either alone sufficient:
@@ -140,6 +153,18 @@ _SPEEDUP_FLOOR = 1.8
 # lowest-of-3 min-of-5-trials x0.9, median-of-5-trials for prefix_sum). This
 # is additive, not a replacement: both h100_sxm and h200_sxm are now real,
 # independently-measured entries for their respective cards.
+_RTX_2000_ADA_MEASURED_2026_07_30 = {
+    # algo: (run1, run2, run3) wall-clock speedup, 128x1024 -- min-of-5-trials
+    # per run, except prefix_sum which is median-of-5-trials per run (see above)
+    "gae":                 (3.110, 3.100, 3.052),
+    "vtrace":              (2.758, 2.995, 3.005),
+    "retrace":             (1.829, 1.814, 1.794),
+    "lambda_returns":      (2.685, 2.671, 2.733),
+    "discounted_returns":  (2.723, 2.805, 2.858),
+    "eligibility_traces":  (2.489, 2.371, 2.515),
+    "prefix_sum":          (2.530, 2.533, 2.584),  # median-gated, see test_perf_prefix_sum
+}
+
 _H200_MEASURED_2026_07_27 = {
     # algo: (run1, run2, run3) wall-clock speedup, 128x1024 -- min-of-5-trials
     # per run, except prefix_sum which is median-of-5-trials per run (see above)
@@ -166,8 +191,8 @@ _H100_MEASURED_2026_07_28 = {
 
 _FLOOR_TABLE = {
     "rtx_2000_ada": {
-        "gae": 1.9, "vtrace": 1.8, "retrace": 1.35, "lambda_returns": 1.6,
-        "discounted_returns": 1.25, "eligibility_traces": 1.85, "prefix_sum": 1.1,
+        algo: round(min(runs) * 0.9, 2)
+        for algo, runs in _RTX_2000_ADA_MEASURED_2026_07_30.items()
     },
     "h200_sxm": {
         algo: round(min(runs) * 0.9, 2)
@@ -270,8 +295,8 @@ def test_perf_gae():
     # GAE and V-Trace shared one floor (_SPEEDUP_FLOOR=1.5) pre-harness-fix.
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.9
-    # (3-run min 2.10x, ~10% margin, pre-existing). H200 SXM: 3.05
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.75
+    # (3-run min 3.052x, ~10% margin, measured 2026-07-30). H200 SXM: 3.05
     # (3-run min 3.389x, ~10% margin). H100 SXM: 3.15 (3-run min 3.500x,
     # ~10% margin).
     _GAE_FLOOR = _floor_for("gae")
@@ -311,8 +336,8 @@ def test_perf_gae():
 def test_perf_vtrace():
     # Re-calibrated after removing the torch.zeros(num_envs) bootstrap-default
     # allocation from the no-bootstrap kernel path (HAS_BOOTSTRAP constexpr).
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.8
-    # (3-run min 2.05x, ~10% margin, pre-existing). H200 SXM: 2.84
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.48
+    # (3-run min 2.758x, ~10% margin, measured 2026-07-30). H200 SXM: 2.84
     # (3-run min 3.159x, ~10% margin). H100 SXM: 2.85 (3-run min 3.167x,
     # ~10% margin).
     _VTRACE_FLOOR = _floor_for("vtrace")
@@ -349,8 +374,8 @@ def test_perf_retrace():
     # does the same two-output work.  At 128x1024 this dispatches to the fully
     # fused single-kernel path (compute_retrace_fused), which has no bootstrap-
     # default allocation to remove; the floor below is a fresh re-calibration.
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.35
-    # (3-run min 1.53x, ~10% margin, pre-existing). H200 SXM: 1.91
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.61
+    # (3-run min 1.794x, ~10% margin, measured 2026-07-30). H200 SXM: 1.91
     # (3-run min 2.127x, ~10% margin). H100 SXM: 1.95 (3-run min 2.164x,
     # ~10% margin).
     _RETRACE_FLOOR = _floor_for("retrace")
@@ -388,8 +413,8 @@ def test_perf_lambda_returns():
     # fully memory-bound at 128x1024.  Re-calibrated after removing the
     # torch.zeros(num_envs) bootstrap-default allocation from the no-bootstrap
     # kernel path (HAS_BOOTSTRAP constexpr).
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.6
-    # (3-run min 1.82x, ~10% margin, pre-existing). H200 SXM: 2.60
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.4
+    # (3-run min 2.671x, ~10% margin, measured 2026-07-30). H200 SXM: 2.60
     # (3-run min 2.892x, ~10% margin). H100 SXM: 2.64 (3-run min 2.938x,
     # ~10% margin).
     _LAMBDA_FLOOR = _floor_for("lambda_returns")
@@ -432,8 +457,8 @@ def test_perf_discounted_returns():
     # no-bootstrap kernel path (HAS_BOOTSTRAP constexpr); this is still the
     # noisiest, lightest kernel in the library (pre-fix runs dipped as low as
     # 1.046x), so its margin below the observed min is wider than the others.
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.25
-    # (3-run min 1.45x, wider-than-10% margin for tail-risk, pre-existing).
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.45
+    # (3-run min 2.723x, ~10% margin, measured 2026-07-30).
     # H200 SXM: 2.76 (3-run min 3.071x, ~10% margin). H100 SXM: 2.76
     # (3-run min 3.071x, ~10% margin -- coincidentally identical to H200 here).
     _DISC_FLOOR = _floor_for("discounted_returns")
@@ -475,8 +500,8 @@ def test_perf_eligibility_traces():
     # per-step arithmetic.  Both sides are memory-bound at 128x1024.
     # Re-calibrated after removing the torch.zeros(num_envs) seed-default
     # allocation from the no-seed kernel path (HAS_SEED constexpr).
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.85
-    # (3-run min 2.08x, ~10% margin, pre-existing). H200 SXM: 2.55
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.13
+    # (3-run min 2.371x, ~10% margin, measured 2026-07-30). H200 SXM: 2.55
     # (3-run min 2.836x, ~10% margin). H100 SXM: 2.62 (3-run min 2.911x,
     # ~10% margin).
     _ELIG_FLOOR = _floor_for("eligibility_traces")
@@ -532,9 +557,9 @@ def test_perf_prefix_sum():
     # down without reflecting the kernel's real performance; the median is
     # robust to that single bad trial. min/median/max are still printed below
     # so the spread stays visible.
-    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 1.1,
-    # below the ~1.24x median with margin, pre-existing. H200 SXM: 2.63
-    # (3-run min-of-medians 2.924x, ~10% margin). H100 SXM: 2.74
+    # floor is now per-GPU -- see _FLOOR_TABLE above. RTX 2000 Ada: 2.28
+    # (3-run min-of-medians 2.530x, ~10% margin, measured 2026-07-30).
+    # H200 SXM: 2.63 (3-run min-of-medians 2.924x, ~10% margin). H100 SXM: 2.74
     # (3-run min-of-medians 3.043x, ~10% margin).
     _PREFIX_FLOOR = _floor_for("prefix_sum")
     _skip_if_uncalibrated(_PREFIX_FLOOR)
@@ -572,6 +597,33 @@ def test_perf_prefix_sum():
 # uses) does the actual 2%-band comparison.
 # ---------------------------------------------------------------------------
 
+# This pair is deliberately far apart -- 128x512=65,536 elements vs.
+# 512x4096=2,097,152, a 32x jump -- so that both ends sit in the
+# compute/bandwidth-bound regime, well clear of the small-shape corner where
+# fixed CUDA dispatch/sync overhead (~25-30us, see the per-GPU floor comment
+# above) dominates the measured time. A violation at this gap means the
+# kernel's own wall-clock time got smaller as the problem got strictly
+# bigger -- not explainable by launch-overhead noise at either end -- so it
+# is a genuine regression signal and this test (test_monotonicity_gate,
+# below) is correctly a blocking PR gate.
+#
+# This is NOT the same question bench_release.py's release-sweep
+# monotonicity check asks with the same check_monotonic_grid helper. That
+# check runs over the full CONFIGS grid, which necessarily includes
+# adjacent, overhead-dominated pairs (e.g. seq_len 80->128 at a fixed
+# num_envs, in the production-regime table) where a 3-8% negative slope is
+# expected GPU clock-ramp/launch-overhead jitter, not a regression -- see the
+# RTX 2000 Ada 2026-07-30 sweep in NOTES.md for a concrete instance of
+# exactly this. That is why the release sweep's monotonicity check is
+# advisory (staged regardless, non-blocking) while this one is blocking:
+# same helper, deliberately different severity, because the shape pairs
+# being compared are structurally different questions. See NOTES.md's "One
+# helper, two monotonicity gates" section before changing either one.
+#
+# Do not narrow this gap. Moving _MONO_SMALL/_MONO_LARGE closer together
+# pulls this pair back into the overhead-dominated corner and starts
+# blocking PRs on ordinary jitter, exactly the failure mode the release
+# sweep already tolerates by treating its own check as advisory.
 _MONO_SMALL = (128, 512)   # (num_envs, seq_len)
 _MONO_LARGE = (512, 4096)
 

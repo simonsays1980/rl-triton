@@ -2553,20 +2553,18 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
         lines.append("")
         lines.append(
             "With truncations (terminations + time-limit truncations + bootstrap values), "
-            "same config. Two algorithms have no row here, for two DIFFERENT reasons, stated "
-            "explicitly rather than silently dropped: Retrace's kernel supports truncations "
-            "(terminated/truncated are both mandatory, distinct arguments) and has a valid "
-            "vectorized baseline (`vectorized_retrace`), but that baseline isn't wired into this "
-            "headline table yet — a real gap to close, not a validity problem. Eligibility-traces "
-            "and episodic-prefix-sum have no truncation-path concept at all: both kernels take "
-            "only a single `dones` flag with no terminated/truncated distinction and no bootstrap "
-            "values, so there is no baseline to compare against for either — a structural "
-            "non-applicability, not an unwired gap:"
+            "same config. Eligibility-traces and episodic-prefix-sum have no row here, for a "
+            "structural reason, not an unwired gap: both kernels take only a single `dones` flag "
+            "with no terminated/truncated distinction and no bootstrap values, so there is no "
+            "truncation-path baseline to compare against for either. Every other algorithm, "
+            "including Retrace (terminated/truncated are both mandatory, distinct arguments, and "
+            "no separate bootstrap_values parameter -- the continuation value is folded into "
+            "next_q_values_all every step, see docs/kernels/retrace.md §4), has a row below."
         )
         lines.append("")
         lines.append("| algorithm | speedup vs torch.compile, with truncations (full-call) |")
         lines.append("|:---|:---:|")
-        for algo in ["GAE", "V-Trace", "lambda-returns", "discounted-returns"]:
+        for algo in ["GAE", "V-Trace", "Retrace", "lambda-returns", "discounted-returns"]:
             if algo in truncation_headline:
                 lines.append(f"| {algo} | {truncation_headline[algo]:.1f}× |")
 

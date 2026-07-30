@@ -2215,22 +2215,37 @@ def promote(version: str) -> None:
 
 def _bench_truncation_headline(num_envs=4096, seq_len=128):
     """Truncation-path full-call speedup at the SAME (num_envs, seq_len) as the
-    README draft's main table, for the 3 algorithms that have a vectorized
-    with-truncations baseline to compare against (GAE, V-Trace, lambda-returns).
-    Retrace's kernel supports truncations too (terminated/truncated are both
-    mandatory, distinct arguments — see compute_retrace's docstring) and its
-    baseline (vectorized_retrace, test_retrace.py) already takes both flags
-    with the correct distinct semantics -- there is no separate
-    "_with_truncations" variant to point at because Retrace's kernel has no
-    no-truncation specialization to begin with (unlike GAE/V-Trace). Retrace
-    is still omitted from this headline, not because no valid baseline
-    exists, but because nobody has wired it in here yet -- a real gap to
-    close, not a validity problem like the one bench_retrace() had. Existing
-    truncation-path tables in benchmarks.md only run at the headline CONFIGS
-    (64x512 .. 16384x512), never at the production (4096,128) config the
-    README table uses, so the truncation-path number was previously missing
-    from the README draft entirely; this fills that gap without touching the
-    full sweep.
+    README draft's main table, for the 4 algorithms that have a vectorized
+    with-truncations baseline to compare against (GAE, V-Trace, lambda-returns,
+    discounted-returns). The other 3 algorithms in ALL_ALGOS are absent from
+    this dict for two DIFFERENT reasons -- render_readme_table_draft() states
+    each inline rather than silently dropping the row, see that function:
+      - Retrace's kernel supports truncations too (terminated/truncated are
+        both mandatory, distinct arguments — see compute_retrace's docstring)
+        and its baseline (vectorized_retrace, test_retrace.py) already takes
+        both flags with the correct distinct semantics -- there is no separate
+        "_with_truncations" variant to point at because Retrace's kernel has
+        no no-truncation specialization to begin with (unlike GAE/V-Trace).
+        Retrace is omitted from this headline not because no valid baseline
+        exists, but because nobody has wired it in here yet -- a real gap to
+        close, not a validity problem like the one bench_retrace() had.
+      - Eligibility-traces and episodic-prefix-sum have no truncation-path
+        concept at all: compute_eligibility_traces and
+        compute_episodic_prefix_sum each take only a single `dones` flag with
+        no terminated/truncated distinction and no bootstrap_values parameter
+        (see their signatures in rl_triton/ops/returns.py and
+        rl_triton/ops/prefix_sum.py) -- there is no "_with_truncations"
+        variant to build because the kernels themselves have nothing to
+        distinguish. This is a structurally different, permanent omission
+        from Retrace's, which is fixable and just hasn't been done yet.
+    Existing truncation-path tables in benchmarks.md run at the full CONFIGS
+    grid (64x512 .. 16384x512), which already includes (4096,128) -- but
+    those tables are keyed by algorithm and rendered straight to markdown, not
+    exposed as a flat structure this function could reuse without threading
+    new plumbing through --parent-sweep's JSON payload. Recomputing directly
+    here (correctness-gated the same way) is the smaller change; it also
+    means this headline never silently drifts from a table row it wasn't
+    actually re-derived from.
 
     Unlike every bench_*() function above, this one used to compute all three
     ratios with NO correctness check anywhere -- neither the Triton output nor
@@ -2306,13 +2321,35 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
                          bootstrap_lr, gamma=0.99, lambda_=0.95, n_iter=ni)
     results["lambda-returns"] = vec_ms / triton_ms
 
+    rewards_dr, _, terminateds_dr = _make_returns(num_envs, seq_len)
+    truncateds_dr, bootstrap_dr = _make_trunc_extras(num_envs, seq_len, terminateds_dr)
+    compiled_dr = torch.compile(vectorized_discounted_returns_with_truncations)
+
+    ref_out_dr = _ref_discounted_sequential(rewards_dr, terminateds_dr, truncateds_dr,
+                                             bootstrap_dr, gamma=0.99)
+    triton_out_dr = compute_discounted_returns(rewards_dr, terminateds_dr, truncateds=truncateds_dr,
+                                                gamma=0.99, bootstrap_values=bootstrap_dr)
+    assert_correctness(triton_out_dr, ref_out_dr, f"headline_disc_trunc[{num_envs}x{seq_len}] (triton vs ref)")
+    vec_out_dr = compiled_dr(rewards_dr, terminateds_dr, truncateds_dr, bootstrap_dr, gamma=0.99)
+    assert_correctness(vec_out_dr, ref_out_dr, f"headline_disc_trunc[{num_envs}x{seq_len}] (vectorized baseline vs ref)")
+
+    _warmup_gpu(compute_discounted_returns, rewards_dr, terminateds_dr, truncateds=truncateds_dr,
+                gamma=0.99, bootstrap_values=bootstrap_dr)
+    _warmup_gpu(compiled_dr, rewards_dr, terminateds_dr, truncateds_dr, bootstrap_dr, gamma=0.99)
+    triton_ms = _bench_gpu(compute_discounted_returns, rewards_dr, terminateds_dr,
+                            truncateds=truncateds_dr, gamma=0.99,
+                            bootstrap_values=bootstrap_dr, n_iter=ni)
+    vec_ms = _bench_gpu(compiled_dr, rewards_dr, terminateds_dr, truncateds_dr, bootstrap_dr,
+                         gamma=0.99, n_iter=ni)
+    results["discounted-returns"] = vec_ms / triton_ms
+
     return results
 
 
 def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
                                truncation_headline: dict | None = None) -> str:
-    """Render the README's ~4-row H100 production-relevant summary table WITHOUT
-    touching README.md — README prose edits are a STOP-and-report item under the
+    """Render the README's production-relevant summary table WITHOUT touching
+    README.md — README prose edits are a STOP-and-report item under the
     autonomy boundary, and this script has no code path that writes README.md at
     all. Caller should write this to a draft file for human review and manual
     inclusion in README.md.
@@ -2321,11 +2358,31 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
     apples-to-apples comparison across algorithms — mixing different sizes per
     row (an earlier version of this function did) makes speedups incomparable
     and risks reading as cherry-picked even when it isn't.
+
+    Includes all 7 of ALL_ALGOS in the plain table (all 7 always have a
+    production row -- see bench_release.py's per-algorithm bench_*() functions,
+    each of which contributes to production_rows_all regardless of which
+    algorithms were run). An earlier version of this function hardcoded a
+    4-algorithm subset here with no stated reason for the other 3 -- traced
+    back to this function's very first version (commit bac9325), never
+    revisited. Silently dropping algorithms from the front-page table is not
+    acceptable; if an algorithm's production row is genuinely missing (e.g. a
+    partial --algos run), it is just absent from `production_rows` and this
+    loop naturally skips it -- that is a caller's explicit selection, not a
+    hardcoded omission baked into this function.
+
+    The truncation-path table covers the 4 algorithms that have a genuine
+    vectorized with-truncations baseline (GAE, V-Trace, lambda-returns,
+    discounted-returns -- see _bench_truncation_headline). The other 3 are
+    stated inline with the actual reason, distinguishing a real gap (Retrace)
+    from a structural non-applicability (eligibility-traces, prefix-sum) --
+    never silently omitted.
     """
     gpu = gpu_label or _detect_gpu()
     date = datetime.date.today().isoformat()
     fixed_num_envs, fixed_seq_len = 4096, 128  # PufferLib/Gigaflow-default rollout size
-    algos = ["GAE", "V-Trace", "Retrace", "lambda-returns"]
+    algos = ["GAE", "V-Trace", "Retrace", "lambda-returns", "discounted-returns",
+             "eligibility-traces", "prefix-sum"]
     lines = [
         f"<!-- README_BENCH_DRAFT: NOT auto-applied. Prepared {date} on {gpu}. -->",
         "",
@@ -2346,15 +2403,20 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
         lines.append("")
         lines.append(
             "With truncations (terminations + time-limit truncations + bootstrap values), "
-            "same config — Retrace's kernel supports truncations (terminated/truncated are "
-            "both mandatory, distinct arguments) but has no vectorized-baseline benchmark for "
-            "that path yet, so it's omitted here rather than compared against an invalid "
-            "baseline:"
+            "same config. Two algorithms have no row here, for two DIFFERENT reasons, stated "
+            "explicitly rather than silently dropped: Retrace's kernel supports truncations "
+            "(terminated/truncated are both mandatory, distinct arguments) and has a valid "
+            "vectorized baseline (`vectorized_retrace`), but that baseline isn't wired into this "
+            "headline table yet — a real gap to close, not a validity problem. Eligibility-traces "
+            "and episodic-prefix-sum have no truncation-path concept at all: both kernels take "
+            "only a single `dones` flag with no terminated/truncated distinction and no bootstrap "
+            "values, so there is no baseline to compare against for either — a structural "
+            "non-applicability, not an unwired gap:"
         )
         lines.append("")
         lines.append("| algorithm | speedup vs torch.compile, with truncations (full-call) |")
         lines.append("|:---|:---:|")
-        for algo in ["GAE", "V-Trace", "lambda-returns"]:
+        for algo in ["GAE", "V-Trace", "lambda-returns", "discounted-returns"]:
             if algo in truncation_headline:
                 lines.append(f"| {algo} | {truncation_headline[algo]:.1f}× |")
 

@@ -709,6 +709,86 @@ gate pass vacuously in the past (calibrated on the wrong card entirely, see
 
 ---
 
+## Open question: the H100-vs-RTX margin direction is shape-dependent, not fixed — no consumer-vs-datacenter framing is supportable
+
+Comparing the two GPUs at two different shapes gives two different answers
+about which card shows the larger Triton-vs-`torch.compile` margin. Both are
+correct measurements; neither generalizes to "this card is better."
+
+**At (num_envs=128, seq_len=1024)** — the `bench_safeguard.py` floor-
+calibration shape, 3 independent runs each, min-of-5-trials per run (see
+`_H100_MEASURED_2026_07_28` / `_RTX_2000_ADA_MEASURED_2026_07_30` in that
+file):
+
+| algo | H100 (min-of-3) | RTX (min-of-3) | RTX vs H100 |
+|---|---|---|---|
+| gae | 3.500 | 3.052 | -13% |
+| vtrace | 3.167 | 2.758 | -13% |
+| retrace | 2.164 | 1.794 | -17% |
+| lambda_returns | 2.938 | 2.671 | -9% |
+
+RTX is *smaller* than H100 across every algorithm at this shape.
+
+**At (num_envs=4096, seq_len=128)** — the production-regime shape the README
+summary table uses (see `benchmarks.md`'s v0.1.1 production tables, `vs vec
+(full-call)`):
+
+| algo | H100 | RTX | RTX vs H100 |
+|---|---|---|---|
+| GAE | 3.50 | 5.15 | +47% |
+| V-Trace | 3.40 | 5.66 | +66% |
+| Retrace | 1.83 | 1.60 | -13% |
+| lambda-returns | 3.03 | 4.57 | +51% |
+
+RTX is *larger* than H100 for GAE/V-Trace/lambda-returns at this shape —
+the opposite direction from the floor-calibration shape. Retrace is smaller
+on RTX at both shapes; it does not reverse.
+
+**Decomposition — what actually moves.** Comparing each card against
+*itself* across the two shapes isolates the driver:
+
+| algo | H100 @128×1024 | H100 @4096×128 | RTX @128×1024 | RTX @4096×128 |
+|---|---|---|---|---|
+| GAE | 3.500 | 3.50 | 3.052 | 5.15 |
+| V-Trace | 3.167 | 3.40 | 2.758 | 5.66 |
+| lambda-returns | 2.938 | 3.03 | 2.671 | 4.57 |
+| retrace | 2.164 | 1.83 | 1.794 | 1.60 |
+
+H100's margin is roughly flat across the two shapes (within ~0.3x either
+way). RTX's margin nearly *doubles* at (4096,128) versus (128,1024) for
+GAE/V-Trace/lambda-returns specifically. **That is what flips the cross-card
+comparison — RTX getting relatively better at the production shape, not
+H100 degrading.** Retrace moves the same direction on both cards (down at
+the production shape vs. the floor-calibration shape), just from different
+starting points, and stays RTX-lower than H100 at both.
+
+**What this means, stated plainly:** the direction of "which card shows the
+larger margin" is a function of problem shape, not a fixed property of
+either card. Any framing along the lines of "consumer GPUs show [larger /
+smaller] margins than datacenter GPUs" is directly contradicted by this
+data — the sign of the comparison flips depending on which shape you look
+at. Neither this project's benchmarks nor the forthcoming paper should make
+that claim in either direction until the mechanism is understood.
+
+**The mechanism is not understood.** No hypothesis here has been checked
+against data yet. Plausible candidate directions (untested): the vec
+baseline's log2(seq_len)-doubling-scan launch count differs between
+seq_len=1024 (~10 launches) and seq_len=128 (~7 launches), and whatever
+governs Triton's own launch/wrapper overhead may scale differently with
+num_envs than with seq_len — but this is speculation, not an explanation
+derived from measurement.
+
+**The obvious next probe needs no GPU.** Both staged candidates already
+carry a `dev` (device-only) column alongside `triton` (full-call) at every
+config, in both the floor-calibration-adjacent full CONFIGS grid and the
+production-regime table (see either GPU's section in `benchmarks.md`). Since
+this data already exists for both cards at both shapes, decomposing the
+reversal into "device-time behavior" vs. "launch/wrapper-overhead behavior"
+is a pure analysis pass over already-collected numbers — no new sweep, no
+GPU time, before reaching for a hardware-level explanation.
+
+---
+
 ## One helper, two monotonicity gates: different shape-pair severity, by design
 
 `check_monotonic_grid` (in `bench_utils.py`) is the single implementation

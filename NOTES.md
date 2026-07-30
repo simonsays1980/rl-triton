@@ -482,7 +482,47 @@ masking story above, "hasn't misfired yet" was already true of that one function
 before it was ever run in genuine isolation, so the fix is applied uniformly rather
 than only where a failure has actually been observed. Treat any *future* CONFIGS loop
 added to this file the same way: reusing one compiled object across shapes needs this
-reset unless proven otherwise, not the other way around.
+reset unless proven otherwise, not the other way around. (`bench_retrace_truncation()`'s
+CONFIGS loop, added later, received the same per-shape reset from the start — see its
+own comment.)
+
+### The reset() fix is verified for the CONFIGS loops; its effect on the post-sweep headline path is inferred, not measured
+
+`_bench_truncation_headline()` (called once, at a single fixed shape, from
+`_finalize()` after a full sweep's CONFIGS-loop functions have already run in the
+same process) had shown a 24-27% run-to-run swing in GAE/V-Trace/lambda-returns
+before the CONFIGS-loop `reset()` fix above landed, with discounted-returns and
+Retrace comparatively stable (~2.6%/3.5%). The theory: `_bench_truncation_headline()`
+builds its own fresh `torch.compile(...)` wrappers at one new shape, late in a
+process that has already accumulated Dynamo/Inductor state from many prior
+compiles at other shapes in the CONFIGS grid — the same cross-shape corruption
+mechanism as Bug 2 above, just surfacing as timing noise here rather than wrong
+values, since `_bench_truncation_headline()` is never itself checked bit-for-bit
+against a fixed expected number.
+
+Attempted to confirm the fix directly: four back-to-back calls to
+`_bench_truncation_headline()` alone, each in its own fresh, otherwise-idle
+process (H100, 2026-07-30). Result was inconclusive by construction, not
+reassuring: an isolated call like this never runs any CONFIGS-loop code first, so
+it never had the contamination path available to it *either before or after* the
+fix — tight numbers here (V-Trace 5.2%, lambda-returns 3.9%, GAE 11.0%,
+discounted-returns 6.4%, Retrace 5.4% spread across the 4 runs) mostly show the
+compiled objects/kernels are individually stable, not that the fix resolved the
+original post-sweep contamination. GAE's 11.0% is worth flagging on its own terms
+(down substantially from 24%, but still ~2x the other four's spread here, driven
+by one low outlier run) but the isolated-process methodology cannot speak to
+whether that residual is the same phenomenon as the original swing.
+
+The one data point actually produced under the original failure conditions (full
+sweep, `_bench_truncation_headline()` running post-CONFIGS-loops, fix active) is
+the H100 `--parent-sweep` candidate staged 2026-07-30: GAE headline = 1.9x,
+within the pre-fix 1.70-2.11x range. Consistent with the fix working, but a
+single post-fix sample cannot distinguish "fixed" from "still swings and this
+run landed in-range" — treat the post-sweep headline path as *plausibly* fixed
+by the same mechanism as the CONFIGS loops, not *confirmed* by direct repeated
+measurement under matching conditions. Confirming it properly would mean
+rerunning the full sweep 3-4 times and comparing the embedded headline number
+each time (each run ~12 min on H100) — not yet done.
 
 ### A third, distinct `torch.compile` bug: cross-object miscompilation — not Bug 2, and `reset()` does not help
 
@@ -850,6 +890,46 @@ this is exactly the scenario the section above describes: fine-grained,
 overhead-corner jitter that the release sweep correctly tolerates rather than
 blocking on. The candidate was staged with these violations present in the
 console gate summary only, not reflected in the staged tables themselves.
+
+### Concrete instance: H100 release-candidate sweep (2026-07-30) — 14 monotonicity violations, all in the overhead-dominated corner, zero in Retrace
+
+The H100 `--parent-sweep` run staged into `docs/benchmark-history/unreleased.md`
+(the corrected v0.1.1 candidate, CONFIGS-loop `reset()` fix and
+`bench_retrace_truncation()` both active) fired the release sweep's (advisory)
+monotonicity gate 14 times, spanning gae, vtrace, discounted_returns,
+eligibility_traces, and prefix_sum (both the `triton_ms` and production-regime
+checks) — none in lambda-returns' `triton_ms` check, none anywhere in Retrace
+(plain, production, or the new truncation table):
+
+```
+gae:                 seq_len=1024, num_envs 128->256:        0.0377ms -> 0.0342ms  (-9.1%)
+vtrace:              seq_len=1024, num_envs 128->256:        0.0390ms -> 0.0380ms  (-2.5%)
+vtrace:              seq_len=128, num_envs 4096->8192:       0.0452ms -> 0.0404ms  (-10.7%)  [production regime]
+lambda-returns:      seq_len=128, num_envs 8192->16384:      0.0414ms -> 0.0377ms  (-9.0%)   [production regime]
+discounted_returns:  seq_len=1024, num_envs 128->256:        0.0326ms -> 0.0303ms  (-7.1%)
+discounted_returns:  seq_len=128, num_envs 512->4096:        0.0315ms -> 0.0308ms  (-2.2%)
+discounted-returns:  num_envs=8192, seq_len 80->128:         0.0387ms -> 0.0324ms  (-16.1%)  [production regime]
+discounted-returns:  num_envs=8192, seq_len 80->16384(*):    0.0387ms -> 0.0350ms  (-9.5%)   [production regime]
+eligibility_traces:  num_envs=512, seq_len 2048->4096:       0.0311ms -> 0.0298ms  (-4.0%)
+eligibility-traces:  num_envs=8192, seq_len 80->128:         0.0303ms -> 0.0295ms  (-2.5%)   [production regime]
+eligibility-traces:  seq_len=128, num_envs 4096->8192:       0.0303ms -> 0.0295ms  (-2.4%)   [production regime]
+prefix_sum:          num_envs=512, seq_len 128->512:         0.0282ms -> 0.0268ms  (-5.0%)
+prefix_sum:          num_envs=32768, seq_len 80->128:        0.0470ms -> 0.0427ms  (-9.1%)   [production regime]
+prefix_sum:          num_envs=38400, seq_len 80->128:        0.0497ms -> 0.0460ms  (-7.5%)   [production regime]
+```
+(*) the seq_len axis is fixed at 80 here; the pair varies num_envs 8192->16384.
+
+Every one is a small-elements/short-`seq_len` pair (absolute times 0.027-0.050ms
+throughout, percentages 2.2-16.1%) in the same launch-overhead-dominated corner
+as the RTX instance above, and none is near the safeguard suite's `(128,512)` /
+`(512,4096)` pair. The correctness gate passed for every config reached across
+all 12 `--parent-sweep` subprocess groups, including both of
+`bench_retrace_truncation()`'s gates (Triton vs `reference_retrace`, and
+`compiled_vec_trunc` vs `reference_retrace`) at all 12 CONFIGS shapes — and
+Retrace's monotonicity checks (plain, production, and truncation) all passed
+cleanly, no violations. The candidate was staged with these 14 violations
+present in the console gate summary only, not reflected in the staged tables
+themselves.
 
 ---
 

@@ -298,3 +298,303 @@
 | prefix-sum           |    16384 |      16 |     0.0323 |     0.0110 |     0.0167 |        0.0629 |        0.0074 |   1.95x |   0.67x | ⚠️
 
 *⚠️ marks the boundary-marker row (num_envs=16384, seq_len=16). **vs vec (full-call)** is the headline ratio — the complete `compute_*(tensors) -> tensors` call including launch/wrapper overhead, which a caller pays every invocation. **vs vec (device)** is a diagnostic showing the same ratio for CUDA-kernel-only time; where full-call and device speedups diverge, the gap is launch + wrapper overhead. **triton amortized** is N calls timed inside one region (separates harness per-call sync overhead from genuine per-call cost) — reported alongside, not used for any ratio.*
+
+
+## unreleased – 2026-07-31 – NVIDIA RTX 2000 Ada Generation
+
+*Measured on NVIDIA RTX 2000 Ada Generation · 2026-07-31 · [`triton`](https://github.com/openai/triton) kernels vs `torch.compile` baselines and NumPy CPU.*
+
+**Configuration.**  dtype float32 (all kernels require it; see NOTES.md on bf16 and autocast).  gamma=0.99, lambda=0.95 (lambda=0.9 for eligibility traces).  Termination probability ~5% per step; truncation-path tables additionally inject ~5% interior truncated steps (mutually exclusive with terminations) with populated `bootstrap_values`.
+
+**Methodology.**  All GPU full-call timings use CUDA events (start/stop around the complete `compute_*(tensors) -> tensors` call, explicit sync immediately before start); reported value is the min-of-medians across 5 independent trials to filter clock-state noise. Every config is warmed up at its exact shape (20 untimed calls) before any timed call, so `torch.compile` JIT/autotuning and Triton kernel compilation never land in the timed region. A tolerance-based correctness gate (atol=rtol=1e-4 vs. a sequential reference implementation) runs before every timed config — not bit-identical, since `tl.associative_scan` reorders float ops depending on num_warps/block layout, so cross-config last-bit differences are legitimate. A monotonicity gate (2% band) then asserts a larger problem never measures faster than a smaller one along either swept axis. CPU timings are wall-clock (perf_counter), run until at least 0.5 s of samples.
+
+**Two timing granularities.**  **triton** (headline) is full-call wall time — what a caller pays every invocation, including launch overhead and wrapper setup (HAS_TRUNCATIONS/HAS_BOOTSTRAP dispatch, allocation, layout). All speedup ratios are computed from this number. **dev** is device-only CUDA time (`torch.profiler` CUDA activity around steady-state calls, ncu/nsys being unavailable in typical containerized GPU environments) — a diagnostic showing pure kernel execution time; where dev is much smaller than the full-call number, the gap is launch + wrapper overhead the caller still pays. The production-regime table additionally reports an **amortized** variant (N calls in one timed region) for its short-seq_len rows, to separate harness per-call sync overhead from genuine per-call cost — the single-call full-call number remains the ratio basis throughout.
+
+**Columns.**  **triton**: full-call wall time, headline (CUDA events).  **dev**: device-only kernel time, diagnostic (see above).  **compile(vec)**: `torch.compile` applied to the strongest *correct* vectorized PyTorch equivalent found so far – a log2(T)-doubling associative scan (`parallel_suffix_scan`/`parallel_prefix_scan`, no Python loop, no log-space); the same implementation used for the with-truncations tables (called here with truncateds=0) – an earlier log-space cumsum version of this baseline silently underflowed to inf/nan at every size in this table and was replaced (see NOTES.md's log-space-underflow note for the investigation); there is no longer a separate specialized no-truncation baseline to compare against, so the prior compile(assoc) column has been dropped as redundant. This is not necessarily the fastest possible correct baseline – it pays 6-12 kernel launches per call (one per doubling step) where the Triton kernel pays 1-2, and a numerically-stable non-log-space cumsum formulation may exist and would be faster; see NOTES.md for that caveat in full.  **compile(vec-trunc)**: `torch.compile` of the vectorized truncation baseline, used in the with-truncations tables (itself asserted correct against the sequential truncation reference before being trusted as a baseline).  **loop (gpu)**: uncompiled sequential Python loop dispatching GPU ops – the pattern used by CleanRL, RLlib, and most RL codebases today; no `torch.compile`, no vectorization; wall-clock timing.  **np→triton→np**: end-to-end wall-clock for the NumPy adoption path (CPU → GPU transfer, kernel, GPU → CPU transfer).  **numpy cpu**: sequential NumPy loop on CPU – same algorithm as the kernel, no GPU; establishes the CPU reference for each algorithm.  Headline tables below show 4 representative sizes per algorithm (small/parity, mid, main-grid-large, production-adjacent-large); the full CONFIGS grid is reproducible via `python tests/bench_release.py`.
+#### GAE (`compute_gae`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|
+|       64 |     512 |      0.024 |     0.002 |         0.079 |         0.018 |    3.3x |    8.3x |     37.001 |  1519.4x |     14.675 |    602.6x |          0.269 |    54.5x |
+|      128 |    1024 |      0.029 |     0.005 |         0.103 |         0.047 |    3.6x |   10.1x |     74.400 |  2589.1x |    198.167 |   6896.1x |          0.821 |   241.5x |
+|      256 |    1024 |      0.029 |     0.008 |         0.120 |         0.083 |    4.2x |   10.2x |     74.688 |  2602.0x |    198.635 |   6920.1x |          1.542 |   128.8x |
+|      512 |    2048 |      0.058 |     0.037 |         0.954 |         0.922 |   16.3x |   24.8x |    149.283 |  2556.2x |    230.186 |   3941.5x |          5.407 |    42.6x |
+|      512 |    4096 |      0.182 |     0.160 |         2.787 |         2.745 |   15.3x |   17.1x |    300.278 |  1650.3x |    301.882 |   1659.1x |         10.815 |    27.9x |
+|      512 |     128 |      0.029 |     0.003 |         0.088 |         0.023 |    3.1x |    8.9x |      9.370 |   328.6x |    159.240 |   5585.0x |          0.465 |   342.7x |
+|      512 |     512 |      0.029 |     0.007 |         0.111 |         0.075 |    3.8x |   10.2x |     37.219 |  1282.3x |    178.711 |   6157.3x |          1.543 |   115.8x |
+|     4096 |     128 |      0.034 |     0.013 |         0.196 |         0.169 |    5.8x |   13.0x |      9.325 |   273.9x |    178.239 |   5234.9x |          2.831 |    63.0x |
+|     4096 |     512 |      0.179 |     0.157 |         2.155 |         2.116 |   12.1x |   13.4x |     37.076 |   207.5x |    237.484 |   1328.8x |         10.588 |    22.4x |
+|     4096 |    2048 |      0.649 |     0.625 |         9.812 |         9.758 |   15.1x |   15.6x |    147.575 |   227.4x |    599.943 |    924.4x |         50.045 |    12.0x |
+|    16384 |     128 |      0.178 |     0.157 |         1.840 |         1.805 |   10.4x |   11.5x |      9.363 |    52.7x |    219.811 |   1237.0x |         10.728 |    20.5x |
+|    16384 |     512 |      0.648 |     0.624 |         8.561 |         8.507 |   13.2x |   13.6x |     37.216 |    57.5x |    498.490 |    769.7x |         50.034 |    10.0x |
+
+#### GAE – with truncations (`compute_gae`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec-trunc) (ms) | compile(vec-trunc) device (ms) | vs vec-trunc (full-call) | vs vec-trunc (device) |
+|:--------:|:-------:|:----------------------:|:-------------------:|:-----------------------:|:-------------------------------:|:-------------------------:|:----------------------:|
+|       64 |     512 |      0.043 |     0.004 |             0.085 |             0.018 |       2.0x |       4.6x |
+|      128 |    1024 |      0.053 |     0.008 |             0.106 |             0.054 |       2.0x |       6.9x |
+|      256 |    1024 |      0.055 |     0.013 |             0.132 |             0.095 |       2.4x |       7.3x |
+|      512 |    2048 |      0.102 |     0.056 |             0.959 |             0.922 |       9.4x |      16.4x |
+|      512 |    4096 |      0.288 |     0.243 |             2.786 |             2.744 |       9.7x |      11.3x |
+|      512 |     128 |      0.053 |     0.005 |             0.091 |             0.026 |       1.7x |       5.0x |
+|      512 |     512 |      0.054 |     0.012 |             0.122 |             0.085 |       2.2x |       7.1x |
+|     4096 |     128 |      0.065 |     0.022 |             0.215 |             0.187 |       3.3x |       8.3x |
+|     4096 |     512 |      0.282 |     0.239 |             2.155 |             2.115 |       7.6x |       8.9x |
+|     4096 |    2048 |      0.989 |     0.943 |             9.821 |             9.761 |       9.9x |      10.3x |
+|    16384 |     128 |      0.279 |     0.239 |             1.842 |             1.804 |       6.6x |       7.6x |
+|    16384 |     512 |      0.988 |     0.944 |             8.560 |             8.504 |       8.7x |       9.0x |
+
+#### V-Trace (`compute_vtrace`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|
+|       64 |     512 |      0.028 |     0.003 |         0.093 |         0.021 |    3.3x |    7.8x |     13.389 |   471.2x |    178.668 |   6287.6x |          0.450 |   396.8x |
+|      128 |    1024 |      0.034 |     0.006 |         0.128 |         0.056 |    3.8x |   10.1x |     26.419 |   777.4x |   1362.265 |  40085.5x |          1.402 |   971.5x |
+|      256 |    1024 |      0.036 |     0.010 |         0.145 |         0.104 |    4.1x |   10.6x |     26.271 |   737.6x |   1440.045 |  40432.5x |          2.673 |   538.7x |
+|      512 |    2048 |      0.164 |     0.137 |         1.221 |         1.183 |    7.5x |    8.7x |     52.746 |   322.0x |   1399.678 |   8544.6x |         11.909 |   117.5x |
+|      512 |    4096 |      0.301 |     0.274 |         3.389 |         3.336 |   11.3x |   12.2x |    104.826 |   348.7x |   1500.303 |   4990.9x |         18.833 |    79.7x |
+|      512 |     128 |      0.034 |     0.003 |         0.105 |         0.026 |    3.1x |    8.9x |      3.494 |   104.0x |   1400.149 |  41671.1x |          0.930 |  1505.2x |
+|      512 |     512 |      0.035 |     0.009 |         0.129 |         0.090 |    3.7x |   10.2x |     13.234 |   378.4x |   1479.678 |  42305.5x |          2.675 |   553.2x |
+|     4096 |     128 |      0.043 |     0.016 |         0.262 |         0.228 |    6.1x |   14.1x |      3.484 |    81.9x |   1401.063 |  32919.7x |          4.932 |   284.1x |
+|     4096 |     512 |      0.299 |     0.272 |         2.613 |         2.569 |    8.7x |    9.4x |     13.250 |    44.3x |   1421.678 |   4758.2x |         18.910 |    75.2x |
+|     4096 |    2048 |      1.119 |     1.090 |        11.624 |        11.559 |   10.4x |   10.6x |     52.802 |    47.2x |   1862.675 |   1664.8x |         90.559 |    20.6x |
+|    16384 |     128 |      0.299 |     0.272 |         2.296 |         2.254 |    7.7x |    8.3x |      3.495 |    11.7x |   1482.413 |   4962.5x |         19.203 |    77.2x |
+|    16384 |     512 |      1.119 |     1.090 |        10.373 |        10.310 |    9.3x |    9.5x |     13.895 |    12.4x |   1902.661 |   1700.5x |         90.514 |    21.0x |
+
+#### V-Trace – with truncations (`compute_vtrace`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec-trunc) (ms) | compile(vec-trunc) device (ms) | vs vec-trunc (full-call) | vs vec-trunc (device) |
+|:--------:|:-------:|:----------------------:|:-------------------:|:-----------------------:|:-------------------------------:|:-------------------------:|:----------------------:|
+|       64 |     512 |      0.030 |     0.003 |             0.095 |             0.021 |       3.1x |       6.7x |
+|      128 |    1024 |      0.036 |     0.008 |             0.128 |             0.064 |       3.5x |       7.9x |
+|      256 |    1024 |      0.041 |     0.014 |             0.157 |             0.119 |       3.8x |       8.3x |
+|      512 |    2048 |      0.209 |     0.180 |             1.222 |             1.186 |       5.9x |       6.6x |
+|      512 |    4096 |      0.395 |     0.360 |             3.399 |             3.336 |       8.6x |       9.3x |
+|      512 |     128 |      0.035 |     0.004 |             0.106 |             0.030 |       3.0x |       7.1x |
+|      512 |     512 |      0.041 |     0.013 |             0.139 |             0.103 |       3.4x |       8.1x |
+|     4096 |     128 |      0.052 |     0.024 |             0.283 |             0.250 |       5.4x |      10.3x |
+|     4096 |     512 |      0.382 |     0.353 |             2.613 |             2.568 |       6.8x |       7.3x |
+|     4096 |    2048 |      1.438 |     1.406 |            11.628 |            11.562 |       8.1x |       8.2x |
+|    16384 |     128 |      0.382 |     0.353 |             2.299 |             2.256 |       6.0x |       6.4x |
+|    16384 |     512 |      1.436 |     1.405 |            10.369 |            10.307 |       7.2x |       7.3x |
+
+#### Retrace(λ) (`compute_retrace`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|
+|       64 |     512 |      0.036 |     0.007 |         0.071 |         0.015 |    2.0x |    2.3x |     12.973 |   358.1x |     14.719 |    406.3x |          0.888 |    16.6x |
+|      128 |    1024 |      0.053 |     0.019 |         0.092 |         0.037 |    1.7x |    2.0x |     25.842 |   484.2x |     58.197 |   1090.3x |          2.812 |    20.7x |
+|      256 |    1024 |      0.069 |     0.035 |         0.097 |         0.066 |    1.4x |    1.9x |     25.959 |   374.5x |    118.819 |   1714.3x |          5.336 |    22.3x |
+|      512 |    2048 |      0.397 |     0.361 |         0.811 |         0.773 |    2.0x |    2.1x |     55.428 |   139.8x |    471.346 |   1188.4x |         20.111 |    23.4x |
+|      512 |    4096 |      2.647 |     2.636 |         2.072 |         2.018 |    0.8x |    0.8x |    102.337 |    38.7x |   1542.675 |    582.8x |         41.356 |    37.3x |
+|      512 |     128 |      0.043 |     0.008 |         0.078 |         0.018 |    1.8x |    2.2x |      3.404 |    79.5x |     30.340 |    708.6x |          1.529 |    19.8x |
+|      512 |     512 |      0.066 |     0.032 |         0.094 |         0.063 |    1.4x |    2.0x |     13.027 |   198.0x |    118.604 |   1802.7x |          5.318 |    22.3x |
+|     4096 |     128 |      0.212 |     0.178 |         0.350 |         0.322 |    1.6x |    1.8x |      3.387 |    15.9x |    243.334 |   1145.6x |         10.239 |    23.8x |
+|     4096 |     512 |      0.743 |     0.706 |         1.800 |         1.758 |    2.4x |    2.5x |     13.025 |    17.5x |   1852.845 |   2493.4x |         39.579 |    46.8x |
+|     4096 |    2048 |      2.877 |     2.830 |         8.377 |         8.314 |    2.9x |    2.9x |     51.735 |    18.0x |  11318.712 |   3934.7x |        165.401 |    68.4x |
+|    16384 |     128 |      0.742 |     0.705 |         1.701 |         1.669 |    2.3x |    2.4x |      3.375 |     4.5x |   1611.504 |   2171.9x |         40.247 |    40.0x |
+|    16384 |     512 |      2.857 |     2.814 |         7.729 |         7.679 |    2.7x |    2.7x |     13.717 |     4.8x |  10906.600 |   3818.0x |        165.917 |    65.7x |
+
+#### Retrace(λ) – with truncations (`compute_retrace`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec-trunc) (ms) | compile(vec-trunc) device (ms) | vs vec-trunc (full-call) | vs vec-trunc (device) |
+|:--------:|:-------:|:----------------------:|:-------------------:|:-----------------------:|:-------------------------------:|:-------------------------:|:----------------------:|
+|       64 |     512 |      0.036 |     0.007 |             0.072 |             0.015 |       2.0x |       2.3x |
+|      128 |    1024 |      0.056 |     0.022 |             0.093 |             0.043 |       1.7x |       2.0x |
+|      256 |    1024 |      0.075 |     0.041 |             0.106 |             0.075 |       1.4x |       1.9x |
+|      512 |    2048 |      0.400 |     0.364 |             0.821 |             0.789 |       2.1x |       2.2x |
+|      512 |    4096 |      2.638 |     2.623 |             2.088 |             2.012 |       0.8x |       0.8x |
+|      512 |     128 |      0.044 |     0.010 |             0.080 |             0.021 |       1.8x |       2.2x |
+|      512 |     512 |      0.071 |     0.036 |             0.101 |             0.071 |       1.4x |       2.0x |
+|     4096 |     128 |      0.214 |     0.178 |             0.356 |             0.322 |       1.7x |       1.8x |
+|     4096 |     512 |      0.745 |     0.706 |             1.806 |             1.780 |       2.4x |       2.5x |
+|     4096 |    2048 |      2.872 |     2.830 |             8.369 |             8.313 |       2.9x |       2.9x |
+|    16384 |     128 |      0.744 |     0.706 |             1.712 |             1.679 |       2.3x |       2.4x |
+|    16384 |     512 |      2.857 |     2.814 |             7.731 |             7.682 |       2.7x |       2.7x |
+
+#### λ-returns (`compute_lambda_returns`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|
+|       64 |     512 |      0.024 |     0.002 |         0.069 |         0.017 |    2.9x |    7.8x |     31.743 |  1333.3x |      2.914 |    122.4x |
+|      128 |    1024 |      0.028 |     0.005 |         0.090 |         0.045 |    3.3x |    9.9x |     63.335 |  2275.0x |      7.491 |    269.1x |
+|      256 |    1024 |      0.028 |     0.008 |         0.106 |         0.080 |    3.8x |   10.1x |     63.311 |  2261.1x |     12.333 |    440.5x |
+|      512 |    2048 |      0.057 |     0.036 |         0.935 |         0.905 |   16.4x |   24.9x |    127.135 |  2224.5x |     40.943 |    716.4x |
+|      512 |    4096 |      0.183 |     0.162 |         2.744 |         2.708 |   15.0x |   16.8x |    254.342 |  1392.5x |     85.572 |    468.5x |
+|      512 |     128 |      0.028 |     0.002 |         0.075 |         0.021 |    2.7x |    8.6x |      7.931 |   284.2x |      1.365 |     48.9x |
+|      512 |     512 |      0.028 |     0.007 |         0.097 |         0.071 |    3.5x |   10.2x |     31.610 |  1131.5x |      7.173 |    256.8x |
+|     4096 |     128 |      0.033 |     0.012 |         0.180 |         0.155 |    5.5x |   12.5x |      8.003 |   242.8x |      6.150 |    186.6x |
+|     4096 |     512 |      0.178 |     0.157 |         2.114 |         2.080 |   11.9x |   13.2x |     31.930 |   179.0x |     48.004 |    269.1x |
+|     4096 |    2048 |      0.649 |     0.625 |         9.629 |         9.580 |   14.8x |   15.3x |    126.856 |   195.6x |    338.974 |    522.7x |
+|    16384 |     128 |      0.178 |     0.157 |         1.793 |         1.760 |   10.1x |   11.2x |      7.934 |    44.5x |     31.983 |    179.3x |
+|    16384 |     512 |      0.647 |     0.625 |         8.368 |         8.321 |   12.9x |   13.3x |     31.805 |    49.1x |    246.063 |    380.2x |
+
+#### λ-returns – with truncations (`compute_lambda_returns`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec-trunc) (ms) | compile(vec-trunc) device (ms) | vs vec-trunc (full-call) | vs vec-trunc (device) |
+|:--------:|:-------:|:----------------------:|:-------------------:|:-----------------------:|:-------------------------------:|:-------------------------:|:----------------------:|
+|       64 |     512 |      0.025 |     0.003 |             0.070 |             0.017 |       2.8x |       6.5x |
+|      128 |    1024 |      0.030 |     0.006 |             0.090 |             0.052 |       3.0x |       8.3x |
+|      256 |    1024 |      0.033 |     0.011 |             0.117 |             0.091 |       3.5x |       8.3x |
+|      512 |    2048 |      0.075 |     0.053 |             0.939 |             0.904 |      12.4x |      17.0x |
+|      512 |    4096 |      0.265 |     0.241 |             2.748 |             2.708 |      10.4x |      11.3x |
+|      512 |     128 |      0.030 |     0.004 |             0.077 |             0.025 |       2.6x |       6.8x |
+|      512 |     512 |      0.032 |     0.010 |             0.108 |             0.081 |       3.3x |       8.2x |
+|     4096 |     128 |      0.042 |     0.020 |             0.189 |             0.164 |       4.5x |       8.2x |
+|     4096 |     512 |      0.260 |     0.236 |             2.113 |             2.077 |       8.1x |       8.8x |
+|     4096 |    2048 |      0.964 |     0.938 |             9.632 |             9.581 |      10.0x |      10.2x |
+|    16384 |     128 |      0.260 |     0.236 |             1.796 |             1.758 |       6.9x |       7.5x |
+|    16384 |     512 |      0.964 |     0.938 |             8.367 |             8.320 |       8.7x |       8.9x |
+
+#### Discounted returns (`compute_discounted_returns`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|
+|       64 |     512 |      0.023 |     0.002 |         0.064 |         0.015 |    2.8x |    7.2x |     20.595 |   909.0x |      1.837 |     81.1x |
+|      128 |    1024 |      0.027 |     0.006 |         0.084 |         0.041 |    3.1x |    7.3x |     41.096 |  1516.2x |      4.902 |    180.9x |
+|      256 |    1024 |      0.029 |     0.010 |         0.097 |         0.072 |    3.3x |    7.1x |     41.244 |  1427.3x |      6.989 |    241.9x |
+|      512 |    2048 |      0.054 |     0.035 |         0.877 |         0.849 |   16.2x |   24.3x |     82.465 |  1523.1x |     26.139 |    482.8x |
+|      512 |    4096 |      0.110 |     0.091 |         2.551 |         2.517 |   23.2x |   27.6x |    164.989 |  1501.9x |     52.725 |    480.0x |
+|      512 |     128 |      0.027 |     0.002 |         0.071 |         0.019 |    2.6x |    8.3x |      5.167 |   192.2x |      0.870 |     32.4x |
+|      512 |     512 |      0.027 |     0.008 |         0.090 |         0.065 |    3.3x |    8.6x |     20.517 |   756.1x |      4.620 |    170.2x |
+|     4096 |     128 |      0.031 |     0.012 |         0.174 |         0.150 |    5.6x |   12.9x |      5.159 |   166.7x |      4.197 |    135.6x |
+|     4096 |     512 |      0.073 |     0.053 |         1.920 |         1.887 |   26.4x |   35.9x |     20.628 |   283.5x |     33.801 |    464.5x |
+|     4096 |    2048 |      0.488 |     0.468 |         8.853 |         8.803 |   18.1x |   18.8x |     82.785 |   169.6x |    241.951 |    495.7x |
+|    16384 |     128 |      0.073 |     0.054 |         1.600 |         1.568 |   21.9x |   29.1x |      5.158 |    70.5x |     20.600 |    281.6x |
+|    16384 |     512 |      0.488 |     0.468 |         7.593 |         7.546 |   15.6x |   16.1x |     20.533 |    42.1x |    181.954 |    373.2x |
+
+#### Discounted returns – with truncations (`compute_discounted_returns`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec-trunc) (ms) | compile(vec-trunc) device (ms) | vs vec-trunc (full-call) | vs vec-trunc (device) |
+|:--------:|:-------:|:----------------------:|:-------------------:|:-----------------------:|:-------------------------------:|:-------------------------:|:----------------------:|
+|       64 |     512 |      0.024 |     0.003 |             0.063 |             0.015 |       2.7x |       5.8x |
+|      128 |    1024 |      0.029 |     0.008 |             0.084 |             0.047 |       2.9x |       5.7x |
+|      256 |    1024 |      0.036 |     0.015 |             0.107 |             0.083 |       3.0x |       5.4x |
+|      512 |    2048 |      0.070 |     0.050 |             0.879 |             0.853 |      12.5x |      17.1x |
+|      512 |    4096 |      0.224 |     0.202 |             2.550 |             2.515 |      11.4x |      12.5x |
+|      512 |     128 |      0.028 |     0.003 |             0.070 |             0.022 |       2.5x |       6.4x |
+|      512 |     512 |      0.032 |     0.012 |             0.099 |             0.074 |       3.1x |       6.4x |
+|     4096 |     128 |      0.040 |     0.019 |             0.186 |             0.162 |       4.7x |       8.4x |
+|     4096 |     512 |      0.218 |     0.197 |             1.919 |             1.886 |       8.8x |       9.6x |
+|     4096 |    2048 |      0.805 |     0.782 |             8.849 |             8.803 |      11.0x |      11.3x |
+|    16384 |     128 |      0.216 |     0.196 |             1.600 |             1.569 |       7.4x |       8.0x |
+|    16384 |     512 |      0.804 |     0.782 |             7.588 |             7.544 |       9.4x |       9.7x |
+
+#### Eligibility traces (`compute_eligibility_traces`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) | loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|:-------------:|:-------:|:--------------:|:--------:|
+|       64 |     512 |      0.021 |     0.002 |         0.054 |         0.008 |    2.5x |    4.9x |     20.861 |   978.8x |      1.855 |     87.0x |
+|      128 |    1024 |      0.025 |     0.004 |         0.071 |         0.020 |    2.8x |    5.3x |     41.866 |  1649.8x |      4.951 |    195.1x |
+|      256 |    1024 |      0.026 |     0.006 |         0.072 |         0.029 |    2.8x |    4.6x |     41.704 |  1612.9x |      8.044 |    311.1x |
+|      512 |    2048 |      0.031 |     0.013 |         0.134 |         0.112 |    4.4x |    8.8x |     83.023 |  2705.4x |     25.314 |    824.9x |
+|      512 |    4096 |      0.062 |     0.043 |         0.874 |         0.852 |   14.1x |   19.7x |    166.728 |  2692.6x |     52.345 |    845.4x |
+|      512 |     128 |      0.025 |     0.002 |         0.058 |         0.009 |    2.3x |    4.7x |      5.207 |   205.0x |      0.896 |     35.3x |
+|      512 |     512 |      0.025 |     0.005 |         0.063 |         0.025 |    2.5x |    5.2x |     20.648 |   818.9x |      5.258 |    208.5x |
+|     4096 |     128 |      0.026 |     0.008 |         0.062 |         0.040 |    2.4x |    5.2x |      5.228 |   200.5x |      4.137 |    158.6x |
+|     4096 |     512 |      0.057 |     0.039 |         0.623 |         0.607 |   10.9x |   15.4x |     20.917 |   364.8x |     33.676 |    587.3x |
+|     4096 |    2048 |      0.486 |     0.468 |         3.803 |         3.770 |    7.8x |    8.1x |     83.856 |   172.5x |    231.044 |    475.3x |
+|    16384 |     128 |      0.062 |     0.044 |         0.517 |         0.499 |    8.3x |   11.3x |      5.246 |    84.5x |     20.075 |    323.2x |
+|    16384 |     512 |      0.486 |     0.467 |         3.171 |         3.139 |    6.5x |    6.7x |     20.925 |    43.0x |    166.555 |    342.5x |
+
+#### Episodic prefix sum (`compute_episodic_prefix_sum`)
+
+| num_envs | seq_len | triton full-call (ms) | triton device (ms) | compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |
+|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|
+|       64 |     512 |      0.022 |     0.002 |         0.057 |         0.008 |    2.5x |    4.8x |
+|      128 |    1024 |      0.026 |     0.004 |         0.075 |         0.019 |    2.9x |    5.2x |
+|      256 |    1024 |      0.027 |     0.006 |         0.074 |         0.029 |    2.7x |    4.7x |
+|      512 |    2048 |      0.031 |     0.013 |         0.137 |         0.114 |    4.4x |    8.9x |
+|      512 |    4096 |      0.049 |     0.032 |         0.883 |         0.859 |   18.0x |   27.0x |
+|      512 |     128 |      0.026 |     0.002 |         0.059 |         0.009 |    2.2x |    4.6x |
+|      512 |     512 |      0.027 |     0.006 |         0.067 |         0.029 |    2.5x |    5.2x |
+|     4096 |     128 |      0.027 |     0.008 |         0.062 |         0.039 |    2.3x |    5.1x |
+|     4096 |     512 |      0.056 |     0.037 |         0.627 |         0.619 |   11.2x |   16.7x |
+|     4096 |    2048 |      0.487 |     0.468 |         3.808 |         3.771 |    7.8x |    8.1x |
+|    16384 |     128 |      0.055 |     0.038 |         0.531 |         0.509 |    9.7x |   13.5x |
+|    16384 |     512 |      0.486 |     0.468 |         3.171 |         3.138 |    6.5x |    6.7x |
+
+#### Production regime — seq_len [80,128] × num_envs [4096..38400], all algorithms (plus one boundary-marker row, num_envs=16384/seq_len=16)
+
+| algo | num_envs | seq_len | triton full-call (ms) | triton device (ms) | triton amortized (ms) | compile(vec) full-call (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| GAE                  |     4096 |      80 |     0.0338 |     0.0128 |     0.0200 |        0.1163 |        0.0677 |   3.44x |   5.30x |
+| GAE                  |     8192 |      80 |     0.0456 |     0.0243 |     0.0248 |        0.2034 |        0.1611 |   4.46x |   6.62x |
+| GAE                  |    16384 |      80 |     0.0714 |     0.0477 |     0.0482 |        0.7740 |        0.7457 |  10.84x |  15.62x |
+| GAE                  |    32768 |      80 |     0.2175 |     0.1963 |     0.1971 |        1.9727 |        1.9570 |   9.07x |   9.97x |
+| GAE                  |    38400 |      80 |     0.2509 |     0.2296 |     0.2305 |        2.3326 |        2.3155 |   9.30x |  10.09x |
+| GAE                  |     4096 |     128 |     0.0360 |     0.0149 |     0.0200 |        0.2255 |        0.1886 |   6.27x |  12.64x |
+| GAE                  |     8192 |     128 |     0.0462 |     0.0248 |     0.0253 |        0.7184 |        0.6834 |  15.56x |  27.54x |
+| GAE                  |    16384 |     128 |     0.1787 |     0.1572 |     0.1584 |        1.8612 |        1.8460 |  10.41x |  11.74x |
+| GAE                  |    32768 |     128 |     0.3345 |     0.3129 |     0.3140 |        3.7929 |        3.7751 |  11.34x |  12.06x |
+| GAE                  |    38400 |     128 |     0.3878 |     0.3664 |     0.3674 |        4.4499 |        4.4322 |  11.47x |  12.10x |
+| GAE                  |    16384 |      16 |     0.0397 |     0.0187 |     0.0199 |        0.1120 |        0.0516 |   2.82x |   2.76x | ⚠️
+| V-Trace              |     4096 |      80 |     0.0421 |     0.0159 |     0.0250 |        0.1463 |        0.0936 |   3.48x |   5.89x |
+| V-Trace              |     8192 |      80 |     0.0573 |     0.0303 |     0.0308 |        0.3472 |        0.2963 |   6.06x |   9.78x |
+| V-Trace              |    16384 |      80 |     0.1958 |     0.1696 |     0.1706 |        1.2245 |        1.1759 |   6.25x |   6.93x |
+| V-Trace              |    32768 |      80 |     0.3678 |     0.3409 |     0.3421 |        2.8030 |        2.7701 |   7.62x |   8.13x |
+| V-Trace              |    38400 |      80 |     0.4261 |     0.3994 |     0.4009 |        3.2852 |        3.2646 |   7.71x |   8.17x |
+| V-Trace              |     4096 |     128 |     0.0423 |     0.0162 |     0.0249 |        0.2866 |        0.2395 |   6.78x |  14.80x |
+| V-Trace              |     8192 |     128 |     0.1612 |     0.1344 |     0.1352 |        0.9832 |        0.9373 |   6.10x |   6.97x |
+| V-Trace              |    16384 |     128 |     0.2979 |     0.2720 |     0.2735 |        2.3500 |        2.3092 |   7.89x |   8.49x |
+| V-Trace              |    32768 |     128 |     0.5716 |     0.5446 |     0.5463 |        4.7138 |        4.6955 |   8.25x |   8.62x |
+| V-Trace              |    38400 |     128 |     0.6660 |     0.6385 |     0.6402 |        5.5299 |        5.5108 |   8.30x |   8.63x |
+| V-Trace              |    16384 |      16 |     0.0505 |     0.0248 |     0.0250 |        0.1514 |        0.0873 |   3.00x |   3.52x | ⚠️
+| Retrace              |     4096 |      80 |     0.0921 |     0.0573 |     0.0578 |        0.1862 |        0.1606 |   2.02x |   2.80x |
+| Retrace              |     8192 |      80 |     0.2582 |     0.2226 |     0.2235 |        0.6149 |        0.5831 |   2.38x |   2.62x |
+| Retrace              |    16384 |      80 |     0.4778 |     0.4422 |     0.4439 |        1.4912 |        1.4531 |   3.12x |   3.29x |
+| Retrace              |    32768 |      80 |     0.9188 |     0.8808 |     0.8828 |        3.2511 |        3.2053 |   3.54x |   3.64x |
+| Retrace              |    38400 |      80 |     1.0709 |     1.0322 |     1.0341 |        3.8114 |        3.7649 |   3.56x |   3.65x |
+| Retrace              |     4096 |     128 |     0.2137 |     0.1779 |     0.1790 |        0.3500 |        0.3175 |   1.64x |   1.78x |
+| Retrace              |     8192 |     128 |     0.3898 |     0.3537 |     0.3551 |        0.7749 |        0.7356 |   1.99x |   2.08x |
+| Retrace              |    16384 |     128 |     0.7422 |     0.7052 |     0.7069 |        1.7198 |        1.6678 |   2.32x |   2.36x |
+| Retrace              |    32768 |     128 |     1.4461 |     1.4074 |     1.4093 |        3.5709 |        3.5262 |   2.47x |   2.51x |
+| Retrace              |    38400 |     128 |     1.6879 |     1.6487 |     1.6511 |        4.1779 |        4.1302 |   2.48x |   2.51x |
+| Retrace              |    16384 |      16 |     0.0831 |     0.0482 |     0.0487 |        0.0839 |        0.0489 |   1.01x |   1.01x | ⚠️
+| lambda-returns       |     4096 |      80 |     0.0329 |     0.0121 |     0.0198 |        0.1028 |        0.0644 |   3.13x |   5.32x |
+| lambda-returns       |     8192 |      80 |     0.0443 |     0.0230 |     0.0235 |        0.1987 |        0.1622 |   4.49x |   7.04x |
+| lambda-returns       |    16384 |      80 |     0.0691 |     0.0452 |     0.0456 |        0.7625 |        0.7349 |  11.04x |  16.27x |
+| lambda-returns       |    32768 |      80 |     0.2170 |     0.1963 |     0.1972 |        1.9246 |        1.9095 |   8.87x |   9.73x |
+| lambda-returns       |    38400 |      80 |     0.2509 |     0.2297 |     0.2305 |        2.2622 |        2.2476 |   9.01x |   9.79x |
+| lambda-returns       |     4096 |     128 |     0.0332 |     0.0124 |     0.0197 |        0.1879 |        0.1544 |   5.65x |  12.44x |
+| lambda-returns       |     8192 |     128 |     0.0446 |     0.0236 |     0.0241 |        0.7181 |        0.6857 |  16.10x |  29.03x |
+| lambda-returns       |    16384 |     128 |     0.1784 |     0.1572 |     0.1580 |        1.8330 |        1.8185 |  10.27x |  11.57x |
+| lambda-returns       |    32768 |     128 |     0.3341 |     0.3128 |     0.3140 |        3.6938 |        3.6775 |  11.06x |  11.76x |
+| lambda-returns       |    38400 |     128 |     0.3877 |     0.3663 |     0.3675 |        4.3284 |        4.3132 |  11.16x |  11.77x |
+| lambda-returns       |    16384 |      16 |     0.0439 |     0.0210 |     0.0239 |        0.1105 |        0.0578 |   2.52x |   2.75x | ⚠️
+| discounted-returns   |     4096 |      80 |     0.0304 |     0.0114 |     0.0179 |        0.0920 |        0.0554 |   3.03x |   4.88x |
+| discounted-returns   |     8192 |      80 |     0.0413 |     0.0216 |     0.0221 |        0.1826 |        0.1479 |   4.42x |   6.83x |
+| discounted-returns   |    16384 |      80 |     0.0649 |     0.0425 |     0.0429 |        0.6640 |        0.6394 |  10.24x |  15.06x |
+| discounted-returns   |    32768 |      80 |     0.1623 |     0.1425 |     0.1442 |        1.6973 |        1.6834 |  10.46x |  11.81x |
+| discounted-returns   |    38400 |      80 |     0.1885 |     0.1700 |     0.1710 |        1.9988 |        1.9845 |  10.60x |  11.67x |
+| discounted-returns   |     4096 |     128 |     0.0310 |     0.0116 |     0.0177 |        0.1859 |        0.1529 |   6.00x |  13.15x |
+| discounted-returns   |     8192 |     128 |     0.0417 |     0.0221 |     0.0226 |        0.6820 |        0.6540 |  16.34x |  29.56x |
+| discounted-returns   |    16384 |     128 |     0.0683 |     0.0490 |     0.0488 |        1.6412 |        1.6269 |  24.05x |  33.24x |
+| discounted-returns   |    32768 |     128 |     0.2520 |     0.2333 |     0.2343 |        3.3037 |        3.2882 |  13.11x |  14.10x |
+| discounted-returns   |    38400 |     128 |     0.2932 |     0.2737 |     0.2751 |        3.8716 |        3.8564 |  13.21x |  14.09x |
+| discounted-returns   |    16384 |      16 |     0.0405 |     0.0211 |     0.0217 |        0.0906 |        0.0454 |   2.24x |   2.15x | ⚠️
+| eligibility-traces   |     4096 |      80 |     0.0256 |     0.0076 |     0.0165 |        0.0709 |        0.0454 |   2.77x |   5.95x |
+| eligibility-traces   |     8192 |      80 |     0.0323 |     0.0141 |     0.0168 |        0.1070 |        0.0848 |   3.31x |   6.00x |
+| eligibility-traces   |    16384 |      80 |     0.0502 |     0.0282 |     0.0275 |        0.5021 |        0.4784 |  10.01x |  16.94x |
+| eligibility-traces   |    32768 |      80 |     0.1575 |     0.1396 |     0.1411 |        1.4300 |        1.4003 |   9.08x |  10.03x |
+| eligibility-traces   |    38400 |      80 |     0.1857 |     0.1689 |     0.1697 |        1.6764 |        1.6451 |   9.03x |   9.74x |
+| eligibility-traces   |     4096 |     128 |     0.0262 |     0.0077 |     0.0168 |        0.0624 |        0.0400 |   2.38x |   5.17x |
+| eligibility-traces   |     8192 |     128 |     0.0324 |     0.0143 |     0.0168 |        0.1274 |        0.1030 |   3.93x |   7.23x |
+| eligibility-traces   |    16384 |     128 |     0.0552 |     0.0353 |     0.0345 |        0.5126 |        0.4905 |   9.28x |  13.88x |
+| eligibility-traces   |    32768 |     128 |     0.2492 |     0.2320 |     0.2333 |        1.2805 |        1.2516 |   5.14x |   5.39x |
+| eligibility-traces   |    38400 |     128 |     0.2918 |     0.2737 |     0.2750 |        1.4981 |        1.4686 |   5.13x |   5.37x |
+| eligibility-traces   |    16384 |      16 |     0.0393 |     0.0211 |     0.0217 |        0.0544 |        0.0209 |   1.38x |   0.99x | ⚠️
+| prefix-sum           |     4096 |      80 |     0.0266 |     0.0076 |     0.0169 |        0.0715 |        0.0456 |   2.69x |   5.99x |
+| prefix-sum           |     8192 |      80 |     0.0347 |     0.0163 |     0.0169 |        0.1197 |        0.0981 |   3.45x |   6.03x |
+| prefix-sum           |    16384 |      80 |     0.0515 |     0.0282 |     0.0275 |        0.5051 |        0.4796 |   9.82x |  17.00x |
+| prefix-sum           |    32768 |      80 |     0.1588 |     0.1407 |     0.1420 |        1.4323 |        1.4010 |   9.02x |   9.95x |
+| prefix-sum           |    38400 |      80 |     0.1843 |     0.1675 |     0.1687 |        1.6813 |        1.6487 |   9.12x |   9.84x |
+| prefix-sum           |     4096 |     128 |     0.0268 |     0.0077 |     0.0168 |        0.0631 |        0.0395 |   2.36x |   5.13x |
+| prefix-sum           |     8192 |     128 |     0.0325 |     0.0142 |     0.0170 |        0.1276 |        0.1037 |   3.93x |   7.28x |
+| prefix-sum           |    16384 |     128 |     0.0565 |     0.0383 |     0.0377 |        0.5149 |        0.4919 |   9.11x |  12.84x |
+| prefix-sum           |    32768 |     128 |     0.2506 |     0.2328 |     0.2341 |        1.2827 |        1.2526 |   5.12x |   5.38x |
+| prefix-sum           |    38400 |     128 |     0.2915 |     0.2737 |     0.2752 |        1.4992 |        1.4691 |   5.14x |   5.37x |
+| prefix-sum           |    16384 |      16 |     0.0395 |     0.0212 |     0.0217 |        0.0543 |        0.0206 |   1.38x |   0.97x | ⚠️
+
+*⚠️ marks the boundary-marker row (num_envs=16384, seq_len=16). **vs vec (full-call)** is the headline ratio — the complete `compute_*(tensors) -> tensors` call including launch/wrapper overhead, which a caller pays every invocation. **vs vec (device)** is a diagnostic showing the same ratio for CUDA-kernel-only time; where full-call and device speedups diverge, the gap is launch + wrapper overhead. **triton amortized** is N calls timed inside one region (separates harness per-call sync overhead from genuine per-call cost) — reported alongside, not used for any ratio.*

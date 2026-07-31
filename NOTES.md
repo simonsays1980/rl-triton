@@ -719,6 +719,27 @@ numbers this project published before the underflow was found. Add-only, not
 yet built: nobody has implemented the faster correct baseline to check how
 much of the gap it would close.
 
+**Strategy for when that baseline gets built.** The 4x gap above is
+launch-count-bound, not arithmetic-bound: torch.compile/Inductor does not
+fuse this elementwise-then-scan pattern into as few kernels as a
+hand-written Triton kernel can, so a faster correct PyTorch baseline
+plausibly closes part of the gap but not all of it -- the launch-count
+floor is architectural, not an artifact of this particular baseline being
+unoptimized. If/when a faster correct baseline is built (segmented or
+periodically-renormalizing cumsum, per the paragraph above), re-running the
+comparison and republishing lower ratios is expected routine maintenance,
+not a regression or a threat to the library's validity -- the same way this
+project's move from the broken log-space baseline to the current
+doubling-scan one produced a one-time, honest correction rather than a
+loss. Any published "N× vs. torch.compile" ratio should be read as bounded
+by the strongest *correct* baseline known at publication time, with the
+mechanism (single-kernel fusion vs. torch.compile's multi-launch
+decomposition of the same algorithm) as the durable claim, not the specific
+number. Same discipline applies to torch.compile/Inductor itself improving
+this pattern's fusion in a future PyTorch release -- pin the PyTorch
+version per benchmark (already done) and re-verify on major version bumps
+rather than assuming old ratios still hold.
+
 ---
 
 ## Per-GPU floor calibration is a correctness requirement, not an optimisation

@@ -14,18 +14,36 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Correctness — runs on every branch push and on PRs
+  # Correctness -- runs on every branch push and on PRs
   # ---------------------------------------------------------------------------
   correctness:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: [self-hosted, linux, gpu]
+    # A branch with an open PR fires BOTH the push and pull_request triggers
+    # for the same commit -- without this, two correctness runs land on the
+    # same single self-hosted GPU runner at once, contending for the GPU and
+    # perturbing each other's torch.compile/Dynamo state (a likely contributor
+    # to the cross-object miscompile test's context-dependent XPASS -- see its
+    # xfail reason in tests/test_returns.py). Cancel the older run so only one
+    # ever executes per ref.
+    concurrency:
+      group: correctness-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
       # Package already installed by start.sh; pull latest changes for this ref.
-      - run: pip install --quiet --no-deps -e .
+      # No --quiet: a silent failure here previously showed as a job failure
+      # with zero log output, since the next step (which prints via tee)
+      # never ran. Verbose install output is cheap and this step failing
+      # invisibly has cost real debugging time -- always show what happened.
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
       - name: Run correctness tests
+        env:
+          PYTHONUNBUFFERED: "1"
+          TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           set -o pipefail
           pytest tests/ \
@@ -41,20 +59,30 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # Safeguard benchmarks — PR gate only, never on plain branch pushes
+  # Safeguard benchmarks -- PR gate only, never on plain branch pushes
   # ---------------------------------------------------------------------------
   safeguard:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, linux, gpu]
     permissions:
       pull-requests: write
+    # Same GPU-contention concern as correctness: a rapid double-push to an
+    # open PR can otherwise queue two safeguard runs on the same runner at
+    # once.
+    concurrency:
+      group: safeguard-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-      - run: pip install --quiet --no-deps -e .
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
       - name: Run safeguard benchmarks
         id: bench
+        env:
+          PYTHONUNBUFFERED: "1"
+          TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           set -o pipefail
           pytest tests/bench_safeguard.py \
@@ -70,14 +98,14 @@ jobs:
         run: |
           STATUS="${{ steps.bench.outcome }}"
           ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
-          BODY=$(printf '%s Safeguard benchmarks — %s\n\n```\n%s\n```' \
+          BODY=$(printf '%s Safeguard benchmarks -- %s\n\n```\n%s\n```' \
             "$ICON" "$STATUS" "$(grep -E 'PASSED|FAILED|speedup|triton=' /tmp/pytest-safeguard.txt || cat /tmp/pytest-safeguard.txt)")
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
             --body "$BODY"
 
   # ---------------------------------------------------------------------------
-  # Release-CANDIDATE benchmarks — manual dispatch only. Stages a full sweep
+  # Release-CANDIDATE benchmarks -- manual dispatch only. Stages a full sweep
   # into docs/benchmark-history/unreleased.md via a PR for human review; never
   # pushes to main and never touches benchmarks.md. Promoting a staged
   # candidate to benchmarks.md + a version-tagged archive file is a separate,
@@ -90,11 +118,17 @@ jobs:
     permissions:
       contents: write        # needed to push the candidate branch
       pull-requests: write   # needed to open the PR
+    # Guards against an accidental double-dispatch queuing two full sweeps on
+    # the same runner at once.
+    concurrency:
+      group: release-bench-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-      - run: pip install --quiet --no-deps -e .
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
       - name: Assert GPU identity
         run: |
           GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")

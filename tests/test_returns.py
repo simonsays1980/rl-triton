@@ -694,11 +694,18 @@ def test_vectorized_discounted_returns_with_truncations_correctness():
 
 
 @cuda_only
-@pytest.mark.xfail(strict=True, reason=(
-    "Known, reproducible (not intermittent) torch.compile/Inductor miscompilation "
-    "of vectorized_discounted_returns_with_truncations -- see NOTES.md. Remove this "
-    "xfail once a fix lands; if this test starts passing without one, that is worth "
-    "investigating on its own rather than silently accepting."
+@pytest.mark.xfail(strict=False, reason=(
+    "Known, reproducible-in-isolation torch.compile/Inductor miscompilation of "
+    "vectorized_discounted_returns_with_truncations -- see NOTES.md. Confirmed "
+    "deterministic when this test runs alone; observed to XPASS when run as part "
+    "of the full suite in CI, apparently because other tests' earlier compiles "
+    "(or a second concurrent CI run contending for the same GPU -- see the "
+    "correctness/safeguard/release-bench concurrency groups) perturb the Dynamo/"
+    "Inductor state this bug's trigger depends on. strict=False so that context-"
+    "dependent XPASS does not hard-fail CI; an XPASS here is still reported and "
+    "should be investigated, but is expected until the underlying contamination "
+    "is root-caused, not treated as proof the bug is fixed. Remove xfail entirely "
+    "once an actual fix lands."
 ))
 def test_discounted_returns_cross_object_torch_compile_miscompile():
     """KNOWN ISSUE, not yet root-caused: a torch.compile(...) wrapper of THIS

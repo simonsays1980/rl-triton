@@ -12,11 +12,19 @@ the Triton-GAE arm and the torch.compile-GAE arm as separate timed blocks
 made the "optimizer" stage come out 43% different between arms (0.294ms vs
 0.518ms) -- impossible
 from a GAE-only change, since GAE finishes well before the optimizer step and
-has no way to affect Adam's cost. That is the signature of the two arms not
-being measured identically (GPU clock state / allocator warmth drifting
-between the two blocks). Fix here: interleave both arms in ONE process, same
-seeds, alternating which arm runs first every iteration, so any slow drift
-affects both arms equally instead of contaminating whichever arm ran second.
+has no way to affect Adam's cost. That is the signature of the arms not being
+measured identically (GPU clock state / allocator warmth drifting between
+separate blocks). Fix here: interleave all arms in ONE process, same seeds,
+cycling through every ordering of the arms across iterations (round-robin
+over itertools.permutations), so any slow drift affects all arms equally
+instead of consistently favoring/penalizing whichever arm runs in a given
+position.
+
+Three arms: the Triton kernel (compute_gae), a torch.compile'd fully
+vectorized parallel-scan baseline (vectorized_gae, log2(T)-doubling, no
+Python loop), and a torch.compile'd pure-Python sequential backward-scan
+baseline (reference_gae, one CUDA op per timestep from Python -- the
+"naive" reference implementation someone would actually write by hand).
 
 Setup: synthetic rollout buffer (no real env -- this measures update-step cost,
 not env-interaction cost), num_envs=4096, seq_len=128, Isaac-Gym-Ant-like MLP
@@ -31,6 +39,7 @@ Usage:
 """
 import argparse
 import datetime
+import itertools
 import sys
 import time
 from pathlib import Path
@@ -41,8 +50,22 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent / "tests"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from test_gae import vectorized_gae
+from test_gae import reference_gae, vectorized_gae
 from rl_triton.ops.gae import compute_gae
+
+ARMS = [
+    {"key": "triton", "label": "Triton GAE", "make_gae_fn": lambda: compute_gae},
+    {
+        "key": "vectorized",
+        "label": "baseline (torch.compile vectorized) GAE",
+        "make_gae_fn": lambda: torch.compile(vectorized_gae),
+    },
+    {
+        "key": "loop",
+        "label": "baseline (torch.compile sequential loop) GAE",
+        "make_gae_fn": lambda: torch.compile(reference_gae),
+    },
+]
 
 torch._dynamo.config.cache_size_limit = 64  # avoid the silent eager-fallback bug from Experiment 1
 # TF32 tensor cores for fp32 matmul: a real production PPO deployment on Ampere/Hopper would
@@ -157,50 +180,45 @@ def _run_ppo_update(net, optimizer, rollout, gae_fn, timers):
 
 
 def measure(hidden, compiled, device="cuda"):
-    """Interleaved A/B: arm 'triton' (compute_gae) vs arm 'baseline'
-    (torch.compile(vectorized_gae)), alternating which arm runs first every
-    iteration, same rollout/seed for both arms within an iteration."""
+    """Interleaved N-arm: one net+optimizer+gae_fn triple per entry in ARMS,
+    all with identical init, cycling through every ordering of the arms
+    (round-robin over itertools.permutations) so slow drift affects all arms
+    equally instead of consistently favoring/penalizing one position."""
     torch.manual_seed(SEED)
-    net_a = ActorCritic(hidden).to(device)
-    net_b = ActorCritic(hidden).to(device)
-    net_b.load_state_dict(net_a.state_dict())  # identical init -- isolates the GAE-arm difference
+    n_arms = len(ARMS)
+    nets = [ActorCritic(hidden).to(device) for _ in ARMS]
+    for net in nets[1:]:
+        net.load_state_dict(nets[0].state_dict())  # identical init -- isolates the GAE-arm difference
 
     if compiled:
-        net_a_fwd = torch.compile(net_a)
-        net_b_fwd = torch.compile(net_b)
+        net_fwds = [torch.compile(net) for net in nets]
     else:
-        net_a_fwd, net_b_fwd = net_a, net_b
+        net_fwds = list(nets)
 
-    opt_a = torch.optim.Adam(net_a.parameters(), lr=3e-4)
-    opt_b = torch.optim.Adam(net_b.parameters(), lr=3e-4)
+    opts = [torch.optim.Adam(net.parameters(), lr=3e-4) for net in nets]
+    gae_fns = [arm["make_gae_fn"]() for arm in ARMS]
 
-    gae_baseline = torch.compile(vectorized_gae)
+    def run_arm(idx, rollout, timers):
+        _run_ppo_update(net_fwds[idx], opts[idx], rollout, gae_fns[idx], timers)
 
-    def run_arm(net_fwd, optimizer, gae_fn, rollout, timers):
-        _run_ppo_update(net_fwd, optimizer, rollout, gae_fn, timers)
-
-    timers_a = {"forward": 0.0, "gae": 0.0, "loss": 0.0, "backward": 0.0, "optimizer": 0.0}
-    timers_b = {"forward": 0.0, "gae": 0.0, "loss": 0.0, "backward": 0.0, "optimizer": 0.0}
+    timers_list = [{"forward": 0.0, "gae": 0.0, "loss": 0.0, "backward": 0.0, "optimizer": 0.0} for _ in ARMS]
+    orderings = list(itertools.permutations(range(n_arms)))
 
     for i in range(N_WARMUP):
         rollout = _make_rollout(seed=1000 + i, device=device)
-        run_arm(net_a_fwd, opt_a, compute_gae, rollout, {"forward": 0, "gae": 0, "loss": 0, "backward": 0, "optimizer": 0})
-        run_arm(net_b_fwd, opt_b, gae_baseline, rollout, {"forward": 0, "gae": 0, "loss": 0, "backward": 0, "optimizer": 0})
+        for idx in range(n_arms):
+            run_arm(idx, rollout, {"forward": 0, "gae": 0, "loss": 0, "backward": 0, "optimizer": 0})
 
     for i in range(N_ITERS):
         rollout = _make_rollout(seed=2000 + i, device=device)
-        if i % 2 == 0:
-            run_arm(net_a_fwd, opt_a, compute_gae, rollout, timers_a)
-            run_arm(net_b_fwd, opt_b, gae_baseline, rollout, timers_b)
-        else:
-            run_arm(net_b_fwd, opt_b, gae_baseline, rollout, timers_b)
-            run_arm(net_a_fwd, opt_a, compute_gae, rollout, timers_a)
+        for idx in orderings[i % len(orderings)]:
+            run_arm(idx, rollout, timers_list[idx])
 
-    for timers in (timers_a, timers_b):
+    for timers in timers_list:
         for k in timers:
             timers[k] /= N_ITERS
 
-    return timers_a, timers_b
+    return timers_list
 
 
 def main():
@@ -210,17 +228,23 @@ def main():
         print("CUDA not available -- skipping.")
         return
 
+    arm_keys = [arm["key"] for arm in ARMS]
+    arm_labels = [arm["label"] for arm in ARMS]
+
     print(f"GPU: {torch.cuda.get_device_name(0)}  torch: {torch.__version__}")
     print(f"num_envs={NUM_ENVS} seq_len={SEQ_LEN} epochs={N_EPOCHS} minibatches={N_MINIBATCHES}")
-    print(f"Interleaved A/B, {N_ITERS} timed iterations ({N_WARMUP} warmup), same seeds per iteration.\n")
+    print(f"Arms: {', '.join(arm_keys)}")
+    print(f"Interleaved (round-robin over all {len(ARMS)}!={len(list(itertools.permutations(arm_keys)))} orderings), "
+          f"{N_ITERS} timed iterations ({N_WARMUP} warmup), same seeds per iteration.\n")
 
     report_lines = [
         f"# PPO end-to-end measurement -- {datetime.date.today().isoformat()}",
         "",
         "ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.",
         f"GPU: {torch.cuda.get_device_name(0)} · torch {torch.__version__}",
+        f"Arms: {', '.join(arm_labels)}.",
         f"num_envs={NUM_ENVS}, seq_len={SEQ_LEN}, {N_EPOCHS} epochs x {N_MINIBATCHES} minibatches, "
-        f"{N_ITERS} interleaved-A/B iterations ({N_WARMUP} warmup).",
+        f"{N_ITERS} interleaved iterations ({N_WARMUP} warmup), round-robin over all arm orderings.",
         "",
     ]
 
@@ -228,36 +252,47 @@ def main():
         for compiled in [False, True]:
             mode = "torch.compile" if compiled else "eager"
             print(f"=== hidden={hidden}  net mode={mode} ===")
-            timers_a, timers_b = measure(hidden, compiled)
-            total_a = sum(timers_a.values())
-            total_b = sum(timers_b.values())
-            print(f"{'stage':<12} {'triton GAE':>14} {'baseline GAE':>16}")
+            timers_list = measure(hidden, compiled)
+            totals = [sum(t.values()) for t in timers_list]
+
+            header = "".join(f"{label:>28}" for label in arm_labels)
+            print(f"{'stage':<12}{header}")
             for stage in ("forward", "gae", "loss", "backward", "optimizer"):
-                pa = timers_a[stage] / total_a * 100
-                pb = timers_b[stage] / total_b * 100
-                print(f"{stage:<12} {timers_a[stage]:>10.4f}ms ({pa:>5.1f}%) {timers_b[stage]:>12.4f}ms ({pb:>5.1f}%)")
-            print(f"{'total':<12} {total_a:>10.4f}ms {'':>7} {total_b:>12.4f}ms")
-            speedup = total_b / total_a
-            gae_pct_a = timers_a["gae"] / total_a * 100
-            gae_pct_b = timers_b["gae"] / total_b * 100
-            print(f"GAE share of step: {gae_pct_a:.2f}% (triton arm) / {gae_pct_b:.2f}% (baseline arm)")
-            print(f"End-to-end speedup (total_b / total_a): {speedup:.3f}x\n")
+                row = "".join(
+                    f"{t[stage]:>14.4f}ms ({t[stage] / total * 100:>5.1f}%)"
+                    for t, total in zip(timers_list, totals)
+                )
+                print(f"{stage:<12}{row}")
+            totals_row = "".join(f"{total:>21.4f}ms" for total in totals)
+            print(f"{'total':<12}{totals_row}")
+
+            gae_pcts = [t["gae"] / total * 100 for t, total in zip(timers_list, totals)]
+            gae_share_str = ", ".join(f"{pct:.2f}% ({key})" for pct, key in zip(gae_pcts, arm_keys))
+            print(f"GAE share of step: {gae_share_str}")
+            speedups = [totals[i] / totals[0] for i in range(1, len(ARMS))]
+            speedup_str = ", ".join(
+                f"{s:.3f}x ({arm_keys[i + 1]} / {arm_keys[0]})" for i, s in enumerate(speedups)
+            )
+            print(f"End-to-end speedup vs. triton arm: {speedup_str}\n")
 
             report_lines += [
                 f"### hidden={hidden}, net mode={mode}",
                 "",
-                "| stage | Triton GAE | baseline (torch.compile vectorized) GAE |",
-                "|---|---|---|",
+                "| stage | " + " | ".join(arm_labels) + " |",
+                "|---|" + "---|" * len(ARMS),
             ]
             for stage in ("forward", "gae", "loss", "backward", "optimizer"):
-                pa = timers_a[stage] / total_a * 100
-                pb = timers_b[stage] / total_b * 100
-                report_lines.append(f"| {stage} | {timers_a[stage]:.4f} ms ({pa:.1f}%) | {timers_b[stage]:.4f} ms ({pb:.1f}%) |")
+                cells = " | ".join(
+                    f"{t[stage]:.4f} ms ({t[stage] / total * 100:.1f}%)"
+                    for t, total in zip(timers_list, totals)
+                )
+                report_lines.append(f"| {stage} | {cells} |")
+            total_cells = " | ".join(f"**{total:.4f} ms**" for total in totals)
             report_lines += [
-                f"| **total** | **{total_a:.4f} ms** | **{total_b:.4f} ms** |",
+                f"| **total** | {total_cells} |",
                 "",
-                f"GAE share of step: {gae_pct_a:.2f}% (triton arm) / {gae_pct_b:.2f}% (baseline arm). "
-                f"End-to-end speedup: {speedup:.3f}x.",
+                f"GAE share of step: {gae_share_str}. "
+                f"End-to-end speedup vs. triton arm: {speedup_str}.",
                 "",
             ]
 

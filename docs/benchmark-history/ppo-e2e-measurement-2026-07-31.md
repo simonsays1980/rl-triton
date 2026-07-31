@@ -2,56 +2,57 @@
 
 ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.
 GPU: NVIDIA H100 80GB HBM3 · torch 2.4.1+cu124
-num_envs=4096, seq_len=128, 4 epochs x 4 minibatches, 30 interleaved-A/B iterations (10 warmup).
+Arms: Triton GAE, baseline (torch.compile vectorized) GAE, baseline (torch.compile sequential loop) GAE.
+num_envs=4096, seq_len=128, 4 epochs x 4 minibatches, 30 interleaved iterations (10 warmup), round-robin over all arm orderings.
 
 ### hidden=(256, 256), net mode=eager
 
-| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
-|---|---|---|
-| forward | 12.5889 ms (15.3%) | 12.5018 ms (14.9%) |
-| gae | 0.2698 ms (0.3%) | 0.7431 ms (0.9%) |
-| loss | 11.5932 ms (14.1%) | 11.7037 ms (14.0%) |
-| backward | 46.0470 ms (56.1%) | 46.7309 ms (55.8%) |
-| optimizer | 11.6407 ms (14.2%) | 12.0861 ms (14.4%) |
-| **total** | **82.1396 ms** | **83.7656 ms** |
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE | baseline (torch.compile sequential loop) GAE |
+|---|---|---|---|
+| forward | 12.4881 ms (15.0%) | 12.4435 ms (14.9%) | 12.4374 ms (14.8%) |
+| gae | 0.2301 ms (0.3%) | 0.6136 ms (0.7%) | 1.4521 ms (1.7%) |
+| loss | 11.7655 ms (14.1%) | 11.9412 ms (14.3%) | 11.8545 ms (14.1%) |
+| backward | 47.1454 ms (56.7%) | 46.8590 ms (56.1%) | 46.7039 ms (55.6%) |
+| optimizer | 11.5716 ms (13.9%) | 11.7358 ms (14.0%) | 11.6078 ms (13.8%) |
+| **total** | **83.2007 ms** | **83.5930 ms** | **84.0557 ms** |
 
-GAE share of step: 0.33% (triton arm) / 0.89% (baseline arm). End-to-end speedup: 1.020x.
+GAE share of step: 0.28% (triton), 0.73% (vectorized), 1.73% (loop). End-to-end speedup vs. triton arm: 1.005x (vectorized / triton), 1.010x (loop / triton).
 
 ### hidden=(256, 256), net mode=torch.compile
 
-| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
-|---|---|---|
-| forward | 19.8104 ms (20.3%) | 19.7985 ms (20.0%) |
-| gae | 0.2946 ms (0.3%) | 0.6322 ms (0.6%) |
-| loss | 13.7309 ms (14.1%) | 13.9419 ms (14.1%) |
-| backward | 49.8528 ms (51.1%) | 50.4707 ms (51.0%) |
-| optimizer | 13.9169 ms (14.3%) | 14.0993 ms (14.2%) |
-| **total** | **97.6057 ms** | **98.9426 ms** |
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE | baseline (torch.compile sequential loop) GAE |
+|---|---|---|---|
+| forward | 19.6680 ms (20.6%) | 19.5821 ms (20.3%) | 19.6113 ms (20.2%) |
+| gae | 0.2785 ms (0.3%) | 0.6323 ms (0.7%) | 1.6201 ms (1.7%) |
+| loss | 14.4447 ms (15.1%) | 14.4341 ms (15.0%) | 14.3608 ms (14.8%) |
+| backward | 47.1792 ms (49.3%) | 47.7503 ms (49.5%) | 47.5125 ms (48.9%) |
+| optimizer | 14.1072 ms (14.7%) | 14.0478 ms (14.6%) | 14.0192 ms (14.4%) |
+| **total** | **95.6776 ms** | **96.4466 ms** | **97.1238 ms** |
 
-GAE share of step: 0.30% (triton arm) / 0.64% (baseline arm). End-to-end speedup: 1.014x.
+GAE share of step: 0.29% (triton), 0.66% (vectorized), 1.67% (loop). End-to-end speedup vs. triton arm: 1.008x (vectorized / triton), 1.015x (loop / triton).
 
 ### hidden=(1024, 1024), net mode=eager
 
-| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
-|---|---|---|
-| forward | 42.2184 ms (26.8%) | 42.1354 ms (26.9%) |
-| gae | 0.1595 ms (0.1%) | 0.4397 ms (0.3%) |
-| loss | 6.5433 ms (4.2%) | 6.5205 ms (4.2%) |
-| backward | 101.3289 ms (64.4%) | 100.7590 ms (64.3%) |
-| optimizer | 7.1068 ms (4.5%) | 6.8560 ms (4.4%) |
-| **total** | **157.3569 ms** | **156.7105 ms** |
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE | baseline (torch.compile sequential loop) GAE |
+|---|---|---|---|
+| forward | 41.3315 ms (27.6%) | 41.3507 ms (27.5%) | 41.3534 ms (27.4%) |
+| gae | 0.0935 ms (0.1%) | 0.2358 ms (0.2%) | 0.5326 ms (0.4%) |
+| loss | 4.7650 ms (3.2%) | 4.8157 ms (3.2%) | 4.8013 ms (3.2%) |
+| backward | 99.1410 ms (66.1%) | 99.2792 ms (66.0%) | 99.4392 ms (66.0%) |
+| optimizer | 4.5880 ms (3.1%) | 4.6575 ms (3.1%) | 4.6118 ms (3.1%) |
+| **total** | **149.9190 ms** | **150.3390 ms** | **150.7383 ms** |
 
-GAE share of step: 0.10% (triton arm) / 0.28% (baseline arm). End-to-end speedup: 0.996x.
+GAE share of step: 0.06% (triton), 0.16% (vectorized), 0.35% (loop). End-to-end speedup vs. triton arm: 1.003x (vectorized / triton), 1.005x (loop / triton).
 
 ### hidden=(1024, 1024), net mode=torch.compile
 
-| stage | Triton GAE | baseline (torch.compile vectorized) GAE |
-|---|---|---|
-| forward | 45.0436 ms (28.3%) | 44.9526 ms (28.3%) |
-| gae | 0.1559 ms (0.1%) | 0.3741 ms (0.2%) |
-| loss | 6.8701 ms (4.3%) | 6.8641 ms (4.3%) |
-| backward | 99.6012 ms (62.6%) | 99.1272 ms (62.4%) |
-| optimizer | 7.5470 ms (4.7%) | 7.5461 ms (4.8%) |
-| **total** | **159.2178 ms** | **158.8641 ms** |
+| stage | Triton GAE | baseline (torch.compile vectorized) GAE | baseline (torch.compile sequential loop) GAE |
+|---|---|---|---|
+| forward | 43.0024 ms (28.6%) | 43.0015 ms (28.6%) | 43.0049 ms (28.5%) |
+| gae | 0.0908 ms (0.1%) | 0.2162 ms (0.1%) | 0.5454 ms (0.4%) |
+| loss | 5.0061 ms (3.3%) | 4.9947 ms (3.3%) | 5.0056 ms (3.3%) |
+| backward | 97.4316 ms (64.8%) | 97.1658 ms (64.7%) | 97.2651 ms (64.6%) |
+| optimizer | 4.7828 ms (3.2%) | 4.7912 ms (3.2%) | 4.8098 ms (3.2%) |
+| **total** | **150.3138 ms** | **150.1693 ms** | **150.6308 ms** |
 
-GAE share of step: 0.10% (triton arm) / 0.24% (baseline arm). End-to-end speedup: 0.998x.
+GAE share of step: 0.06% (triton), 0.14% (vectorized), 0.36% (loop). End-to-end speedup vs. triton arm: 0.999x (vectorized / triton), 1.002x (loop / triton).

@@ -64,7 +64,7 @@ def reference_vtrace(
     c_bar: float = 1.0,
     bootstrap_values: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch V-Trace backward scan — ground truth for correctness tests.
+    """Pure-PyTorch V-Trace backward scan -- ground truth for correctness tests.
 
     Derives next_values as values[:, t+1] with bootstrap_values at the boundary,
     matching exactly what the Triton kernel computes internally.
@@ -112,7 +112,7 @@ def numpy_vtrace(
     rho_bar: float = 1.0,
     c_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """CPU V-Trace backward loop — plain Python loop on CPU tensors."""
+    """CPU V-Trace backward loop -- plain Python loop on CPU tensors."""
     cpu = lambda t: t.cpu().float()
     log_pi_target, log_pi_behavior = cpu(log_pi_target), cpu(log_pi_behavior)
     values, rewards, terminateds = cpu(values), cpu(rewards), cpu(terminateds)
@@ -378,7 +378,7 @@ def _ref_vtrace_sequential(
     rho_bar: float = 1.0,
     c_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure step-by-step Python loop — ground truth for per-step bootstrap_values.
+    """Pure step-by-step Python loop -- ground truth for per-step bootstrap_values.
 
     Handles interior truncated steps (bootstrap_values[n, t] used as v_next when
     truncateds[n, t]=1) in addition to the window boundary (t=T-1).
@@ -515,7 +515,7 @@ def test_vtrace_fused_two_interior_truncations():
 def test_vtrace_bootstrap_values_full_tensor():
     """Passing a full [num_envs, seq_len] bootstrap_values tensor (no last_value).
 
-    Exercises the public bootstrap_values API directly — values at truncated steps
+    Exercises the public bootstrap_values API directly -- values at truncated steps
     plus a non-zero boundary column for a continuing episode.
     """
     torch.manual_seed(42)
@@ -621,8 +621,8 @@ def vectorized_vtrace(
     bootstrap_values: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Fully vectorized V-Trace — strong compiled baseline. Thin wrapper around
-    vectorized_vtrace_with_truncations (truncateds=0) — see vectorized_gae's
+    Fully vectorized V-Trace -- strong compiled baseline. Thin wrapper around
+    vectorized_vtrace_with_truncations (truncateds=0) -- see vectorized_gae's
     docstring (test_gae.py) for why: the log-space suffix-cumsum formula this
     used to compute directly was broken (90%+ non-finite output at every size
     actually benchmarked, never checked), and parallel_suffix_scan isn't.
@@ -658,11 +658,11 @@ def test_vtrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
 
-      fused              — single Triton kernel  (CUDA events)
-      pt.compile(vec)    — torch.compile on vectorized_vtrace  (CUDA events)
-      pt.compile(loop)   — torch.compile on reference_vtrace loop  (wall-clock)
-      np->triton->np     — NumPy->GPU->NumPy adoption path  (wall-clock)
-      numpy(cpu)         — CPU Python loop  (wall-clock)
+      fused              -- single Triton kernel  (CUDA events)
+      pt.compile(vec)    -- torch.compile on vectorized_vtrace  (CUDA events)
+      pt.compile(loop)   -- torch.compile on reference_vtrace loop  (wall-clock)
+      np->triton->np     -- NumPy->GPU->NumPy adoption path  (wall-clock)
+      numpy(cpu)         -- CPU Python loop  (wall-clock)
 
     Assertions:
       - fused must be >=1.5x faster than pt.compile(vec).
@@ -717,12 +717,12 @@ def test_vtrace_performance():
         )
 
     print(
-        "\nfused            : CUDA events — single kernel, IS ratios + scan + targets fused."
-        "\ncompile(vec)     : CUDA events — vectorized log-space cumsum, no Python loop."
-        "\ncompile(loop)    : wall-clock  — one CUDA op per timestep from Python;"
+        "\nfused            : CUDA events -- single kernel, IS ratios + scan + targets fused."
+        "\ncompile(vec)     : CUDA events -- vectorized log-space cumsum, no Python loop."
+        "\ncompile(loop)    : wall-clock  -- one CUDA op per timestep from Python;"
         "\n                   CUDA events would miss the CPU stall."
-        "\nnp->tri->np      : wall-clock  — NumPy->GPU->NumPy, realistic adoption path."
-        "\nnumpy(cpu)       : wall-clock  — pure CPU Python loop."
+        "\nnp->tri->np      : wall-clock  -- NumPy->GPU->NumPy, realistic adoption path."
+        "\nnumpy(cpu)       : wall-clock  -- pure CPU Python loop."
         "\nspeedups vs fused kernel."
     )
 
@@ -753,7 +753,7 @@ def vectorized_vtrace_with_truncations(
     c_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Vectorized V-Trace with truncation support — log-depth parallel scan baseline.
+    Vectorized V-Trace with truncation support -- log-depth parallel scan baseline.
 
     Uses parallel_suffix_scan (the same associative operator as tl.associative_scan
     in the kernel) to compute the value-delta suffix scan in O(log2(T)) passes,
@@ -847,12 +847,12 @@ def test_vtrace_truncation_performance():
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_vtrace_with_truncations).
 
-    vectorized_vtrace_with_truncations uses parallel_suffix_scan — a log-depth
+    vectorized_vtrace_with_truncations uses parallel_suffix_scan -- a log-depth
     parallel associative scan with no Python time loop, compiles cleanly.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True (7 full-width reads).
-    No floor is asserted — the truncation path is a correctness feature.
+    No floor is asserted -- the truncation path is a correctness feature.
     This test makes the speedup visible and tracked.
     """
     compiled_vec_trunc = torch.compile(vectorized_vtrace_with_truncations)

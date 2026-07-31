@@ -24,7 +24,7 @@ def reference_lambda_returns(
     lambda_: float,
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch TD(λ) backward scan — ground truth for correctness tests."""
+    """Pure-PyTorch TD(λ) backward scan -- ground truth for correctness tests."""
     T       = rewards.shape[1]
     out     = torch.zeros_like(rewards)
     carry   = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
@@ -45,7 +45,7 @@ def reference_discounted_returns(
     gamma: float,
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch discounted-return backward scan — ground truth."""
+    """Pure-PyTorch discounted-return backward scan -- ground truth."""
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
     carry = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
@@ -82,7 +82,7 @@ def numpy_lambda_returns(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """CPU TD(λ) backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU TD(λ) backward loop -- moves GPU tensors to CPU and runs a plain Python loop."""
     rewards, next_values, dones = rewards.cpu(), next_values.cpu(), dones.cpu()
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
@@ -101,7 +101,7 @@ def numpy_discounted_returns(
     dones: torch.Tensor,
     gamma: float,
 ) -> torch.Tensor:
-    """CPU discounted-return backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU discounted-return backward loop -- moves GPU tensors to CPU and runs a plain Python loop."""
     rewards, dones = rewards.cpu(), dones.cpu()
     T     = rewards.shape[1]
     out   = torch.zeros_like(rewards)
@@ -118,7 +118,7 @@ def numpy_eligibility_traces(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """CPU eligibility-trace forward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU eligibility-trace forward loop -- moves GPU tensors to CPU and runs a plain Python loop."""
     gradients, dones = gradients.cpu(), dones.cpu()
     T     = gradients.shape[1]
     out   = torch.zeros_like(gradients)
@@ -170,7 +170,7 @@ def np_to_triton_to_np_eligibility(
 
 
 # ---------------------------------------------------------------------------
-# Ground-truth value tests — compute_lambda_returns
+# Ground-truth value tests -- compute_lambda_returns
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -188,7 +188,7 @@ def test_lambda_returns_known_values_lambda0():
 
 @cuda_only
 def test_lambda_returns_known_values_lambda1():
-    # lambda=1: reduces to discounted returns — V(s_{t+1}) drops out of u.
+    # lambda=1: reduces to discounted returns -- V(s_{t+1}) drops out of u.
     # G[1] = 2 + 1*0 = 2  (bootstrap=0, no next G)
     # G[0] = 1 + 1*2 = 3
     rewards     = torch.tensor([[1.0, 2.0]], device="cuda")
@@ -245,7 +245,7 @@ def test_lambda_returns_known_values_bootstrap():
 
 
 # ---------------------------------------------------------------------------
-# Correctness vs reference — compute_lambda_returns
+# Correctness vs reference -- compute_lambda_returns
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -289,7 +289,7 @@ def test_lambda_returns_lambda1_matches_discounted_returns():
 
 
 # ---------------------------------------------------------------------------
-# Ground-truth value tests — compute_eligibility_traces
+# Ground-truth value tests -- compute_eligibility_traces
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -347,7 +347,7 @@ def test_eligibility_traces_lambda0():
 
 
 # ---------------------------------------------------------------------------
-# Correctness vs reference — compute_eligibility_traces
+# Correctness vs reference -- compute_eligibility_traces
 # ---------------------------------------------------------------------------
 
 def reference_eligibility_traces(
@@ -357,7 +357,7 @@ def reference_eligibility_traces(
     lambda_: float,
     seed_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch forward scan — ground truth."""
+    """Pure-PyTorch forward scan -- ground truth."""
     T     = gradients.shape[1]
     out   = torch.zeros_like(gradients)
     carry = torch.zeros(gradients.shape[0], device=gradients.device, dtype=gradients.dtype)
@@ -397,7 +397,7 @@ def test_eligibility_traces_correctness_seed():
 
 
 # ---------------------------------------------------------------------------
-# Ground-truth value tests — compute_discounted_returns
+# Ground-truth value tests -- compute_discounted_returns
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -442,7 +442,7 @@ def _ref_lambda_sequential(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """Pure step-by-step Python loop — ground truth for interior truncation correctness.
+    """Pure step-by-step Python loop -- ground truth for interior truncation correctness.
 
     Mirrors the kernel recurrence exactly:
       u[t]    = r[t] + gamma*(1-lambda_)*not_done[t]*next_values[t]
@@ -475,7 +475,7 @@ def _ref_discounted_sequential(
     bootstrap_values: torch.Tensor,
     gamma: float,
 ) -> torch.Tensor:
-    """Pure step-by-step Python loop — ground truth for interior truncation correctness.
+    """Pure step-by-step Python loop -- ground truth for interior truncation correctness.
 
       G[t] = r[t] + gamma*(1-done[t])*carry + gamma*truncated[t]*bootstrap_values[n,t]
 
@@ -582,7 +582,7 @@ def vectorized_lambda_returns_with_truncations(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    TD(λ) returns with truncation support — log-depth parallel scan baseline.
+    TD(λ) returns with truncation support -- log-depth parallel scan baseline.
 
     Mirrors the kernel recurrence exactly:
       u[t]    = r[t] + gamma*(1-lambda_)*not_done[t]*next_values[t]
@@ -616,7 +616,7 @@ def vectorized_discounted_returns_with_truncations(
     gamma: float,
 ) -> torch.Tensor:
     """
-    Discounted returns with truncation support — log-depth parallel scan baseline.
+    Discounted returns with truncation support -- log-depth parallel scan baseline.
 
     G[t] = r[t] + gamma*(1-done[t])*G[t+1] + gamma*truncated[t]*bootstrap_values[n,t]
     i.e.  u[t] = r[t] + gamma*truncated[t]*bootstrap[t],  decay[t] = gamma*(1-done[t])
@@ -765,8 +765,8 @@ def vectorized_lambda_returns(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    TD(λ) returns — strong compiled baseline. Thin wrapper around
-    vectorized_lambda_returns_with_truncations (truncateds=0) — see
+    TD(λ) returns -- strong compiled baseline. Thin wrapper around
+    vectorized_lambda_returns_with_truncations (truncateds=0) -- see
     vectorized_gae's docstring (test_gae.py) for why: the log-space suffix
     cumsum this used to compute directly was broken (90%+ non-finite output
     at every size actually benchmarked, never checked), and
@@ -785,16 +785,16 @@ def vectorized_discounted_returns(
     gamma: float,
 ) -> torch.Tensor:
     """
-    Discounted returns — strong compiled baseline. Thin wrapper around
+    Discounted returns -- strong compiled baseline. Thin wrapper around
     vectorized_discounted_returns_with_truncations (truncateds=0).
 
     Unlike the other four plain baselines this replaces, this one did NOT
-    underflow to inf/nan — it was silently WRONG instead, which is worse: a
+    underflow to inf/nan -- it was silently WRONG instead, which is worse: a
     done step contributed log(gamma)*0=0 to the log-space suffix sum (no
     discontinuity at all, since not_done=0 there rather than the decay itself
     being clamped near-zero), so the discount chain was never actually
     severed at episode boundaries. Measured directly against the sequential
-    reference at a 64-step random case: max abs error 42.9 — not a rounding-
+    reference at a 64-step random case: max abs error 42.9 -- not a rounding-
     level discrepancy, a materially different (and wrong) number, undetected
     because this baseline's output was only ever timed, never correctness-
     checked. vectorized_discounted_returns_with_truncations, called with
@@ -815,8 +815,8 @@ def vectorized_eligibility_traces(
     seed_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Eligibility traces — strong compiled baseline via parallel_prefix_scan
-    (log2(T)-doubling, no log/exp — mirrors parallel_suffix_scan for this
+    Eligibility traces -- strong compiled baseline via parallel_prefix_scan
+    (log2(T)-doubling, no log/exp -- mirrors parallel_suffix_scan for this
     algorithm's forward recurrence z[t] = g[t] + decay[t]*z[t-1]).
 
     This used to compute a forward log-space cumsum directly (log(decay)
@@ -919,12 +919,12 @@ def test_lambda_returns_performance():
         )
 
     print(
-        "\ntriton      : CUDA events — pure kernel time."
-        "\ncompile(vec): CUDA events — vectorized backward cumsum, no Python loop."
-        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\ntriton      : CUDA events -- pure kernel time."
+        "\ncompile(vec): CUDA events -- vectorized backward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock -- one CUDA op per timestep from Python;"
         "\n               CUDA events would miss the CPU stall."
-        "\nnp->tri->np : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
-        "\nnumpy(cpu)  : wall-clock — plain Python loop on CPU tensors."
+        "\nnp->tri->np : wall-clock -- NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)  : wall-clock -- plain Python loop on CPU tensors."
         "\nspeedups vs triton kernel."
     )
     assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
@@ -1004,12 +1004,12 @@ def test_discounted_returns_performance():
         )
 
     print(
-        "\ntriton       : CUDA events — pure kernel time."
-        "\ncompile(vec) : CUDA events — vectorized backward cumsum, no Python loop."
-        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\ntriton       : CUDA events -- pure kernel time."
+        "\ncompile(vec) : CUDA events -- vectorized backward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock -- one CUDA op per timestep from Python;"
         "\n               CUDA events would miss the CPU stall."
-        "\nnp->tri->np  : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
-        "\nnumpy(cpu)   : wall-clock — plain Python loop on CPU tensors."
+        "\nnp->tri->np  : wall-clock -- NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)   : wall-clock -- plain Python loop on CPU tensors."
         "\nspeedups vs triton kernel."
     )
     assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
@@ -1024,7 +1024,7 @@ def test_discounted_returns_performance():
 # Eligibility traces: no truncation/bootstrap path.
 # compute_eligibility_traces is a forward scan that accumulates gradient-weighted
 # eligibility e[t] = g[t] + gamma*lambda*(1-done[t])*e[t-1].  There is no
-# continuation value from the future — the only boundary value is seed_values
+# continuation value from the future -- the only boundary value is seed_values
 # (a scalar per env, not per-step).  `truncated` has no meaning here: there is
 # no next-state value to inject at a truncated step.  No truncation correctness
 # test or truncation benchmark is added.
@@ -1100,12 +1100,12 @@ def test_eligibility_traces_performance():
         )
 
     print(
-        "\ntriton       : CUDA events — pure kernel time."
-        "\ncompile(vec) : CUDA events — vectorized forward cumsum, no Python loop."
-        "\ncompile(loop): wall-clock — one CUDA op per timestep from Python;"
+        "\ntriton       : CUDA events -- pure kernel time."
+        "\ncompile(vec) : CUDA events -- vectorized forward cumsum, no Python loop."
+        "\ncompile(loop): wall-clock -- one CUDA op per timestep from Python;"
         "\n               CUDA events would miss the CPU stall."
-        "\nnp->tri->np  : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
-        "\nnumpy(cpu)   : wall-clock — plain Python loop on CPU tensors."
+        "\nnp->tri->np  : wall-clock -- NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)   : wall-clock -- plain Python loop on CPU tensors."
         "\nspeedups vs triton kernel."
     )
     assert min(all_speedups_vec) >= SPEEDUP_THRESHOLD, (
@@ -1128,12 +1128,12 @@ def test_lambda_returns_truncation_performance():
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_lambda_returns_with_truncations).
 
-    vectorized_lambda_returns_with_truncations uses parallel_suffix_scan —
+    vectorized_lambda_returns_with_truncations uses parallel_suffix_scan --
     a log-depth parallel associative scan with no Python time loop, compiles cleanly.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True.
-    No floor is asserted — the truncation path is a correctness feature.
+    No floor is asserted -- the truncation path is a correctness feature.
     This test makes the speedup visible and tracked.
     """
     compiled_vec_trunc = torch.compile(vectorized_lambda_returns_with_truncations)
@@ -1209,12 +1209,12 @@ def test_discounted_returns_truncation_performance():
     Truncation-path performance: HAS_TRUNCATIONS=True kernel vs
     torch.compile(vectorized_discounted_returns_with_truncations).
 
-    vectorized_discounted_returns_with_truncations uses parallel_suffix_scan —
+    vectorized_discounted_returns_with_truncations uses parallel_suffix_scan --
     a log-depth parallel associative scan with no Python time loop, compiles cleanly.
 
     Inputs have ~5% truncated steps (mutually exclusive with terminated),
     so the kernel dispatches HAS_TRUNCATIONS=True.
-    No floor is asserted — the truncation path is a correctness feature.
+    No floor is asserted -- the truncation path is a correctness feature.
     This test makes the speedup visible and tracked.
     """
     compiled_vec_trunc = torch.compile(vectorized_discounted_returns_with_truncations)

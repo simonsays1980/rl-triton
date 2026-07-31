@@ -4,7 +4,7 @@
 
 Having covered state-value and Q-value targets (GAE, V-Trace, Retrace), we now look at three simpler but equally important estimators that complete the toolkit: **discounted returns**, **TD(λ) returns**, and **eligibility traces**.
 
-Despite their apparent simplicity, all three share the same first-order linear recurrence structure as the more complex algorithms. They map directly onto the same Triton scan kernel without modification — the only difference is how the inputs $\alpha$ and $\beta$ are computed in PyTorch before the kernel launches.
+Despite their apparent simplicity, all three share the same first-order linear recurrence structure as the more complex algorithms. They map directly onto the same Triton scan kernel without modification -- the only difference is how the inputs $\alpha$ and $\beta$ are computed in PyTorch before the kernel launches.
 
 The shared kernel solves the backward recurrence
 
@@ -22,7 +22,7 @@ The discounted return (reward-to-go) accumulates future rewards with exponential
 
 $$G_t = r_t + \gamma\, G_{t+1}$$
 
-This is the purest form of the backward recurrence — no value function, no importance sampling correction, no eligibility weight, just rewards compounded by $\gamma$. The sum naturally terminates at the episode boundary because $r_t = 0$ and $G_t = 0$ beyond termination.
+This is the purest form of the backward recurrence -- no value function, no importance sampling correction, no eligibility weight, just rewards compounded by $\gamma$. The sum naturally terminates at the episode boundary because $r_t = 0$ and $G_t = 0$ beyond termination.
 
 In a rollout buffer a single sequence may contain multiple episodes or end mid-episode at a truncation boundary. To prevent returns from summing across episode boundaries, the kernel introduces masked versions that depend on two mutually exclusive flags, $d_t^{\text{term}}$ and $d_t^{\text{trunc}}$:
 
@@ -54,7 +54,7 @@ The kernel consumes `rewards`, `terminateds`, `truncateds`, and `bootstrap_value
 
 #### Terminated steps
 
-At a terminated step $t$, $d_t = 1$ zeros $\beta_t$ — the carry stops and no continuation value is needed. `bootstrap_values` is ignored at terminated steps.
+At a terminated step $t$, $d_t = 1$ zeros $\beta_t$ -- the carry stops and no continuation value is needed. `bootstrap_values` is ignored at terminated steps.
 
 #### Truncated steps
 
@@ -66,15 +66,15 @@ At the last step of the window, the caller supplies `bootstrap_values[env, T-1] 
 
 #### The unifying rule
 
-`bootstrap_values` holds the true continuation value $V(s_{t+1}^{\text{true}})$ at exactly those positions where the episode continues beyond the current step — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`.
+`bootstrap_values` holds the true continuation value $V(s_{t+1}^{\text{true}})$ at exactly those positions where the episode continues beyond the current step -- truncated steps and the final column -- and zero everywhere else. Its shape is `[num_envs, seq_len]`.
 
 ### Boundary summary
 
 | Situation | $d_t$ | $d_t^{\text{term}}$ | $\alpha_t$ | $\beta_t$ |
 |---|---|---|---|---|
-| **Terminated** | 1 | 1 | $r_t$ | $0$ — carry stops |
-| **Truncated** | 1 | 0 | $r_t + \gamma\,V(s_{t+1}^{\text{true}})$; caller supplies via `bootstrap_values[env, t]` | $0$ — carry stops |
-| **Window end** | 0 | 0 | $r_{T-1} + \gamma\,V(s_T)$; caller supplies via `bootstrap_values[env, T-1]` | $\gamma$ — continues |
+| **Terminated** | 1 | 1 | $r_t$ | $0$ -- carry stops |
+| **Truncated** | 1 | 0 | $r_t + \gamma\,V(s_{t+1}^{\text{true}})$; caller supplies via `bootstrap_values[env, t]` | $0$ -- carry stops |
+| **Window end** | 0 | 0 | $r_{T-1} + \gamma\,V(s_T)$; caller supplies via `bootstrap_values[env, T-1]` | $\gamma$ -- continues |
 
 ---
 
@@ -129,14 +129,14 @@ At the last step of the window, $V(s_T)$ lies one step past the end of the `valu
 
 #### The unifying rule
 
-`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`.
+`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid -- truncated steps and the final column -- and zero everywhere else. Its shape is `[num_envs, seq_len]`.
 
 ### Boundary summary
 
 | Situation | $d_t$ | $d_t^{\text{term}}$ | $V(s_{t+1})$ in $\alpha_t$ | $\beta_t$ |
 |---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed by $d_t^{\text{term}}$; `bootstrap_values` ignored | $0$ — carry stops |
-| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ — carry stops |
+| **Terminated** | 1 | 1 | Zeroed by $d_t^{\text{term}}$; `bootstrap_values` ignored | $0$ -- carry stops |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- carry stops |
 | **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]` | $\gamma\lambda$ |
 
 ---
@@ -153,9 +153,9 @@ The trace $\mathbf{z}_t$ is a decayed accumulation of the value-function gradien
 
 $$\mathbf{z}_t = \gamma\lambda(1 - d_t)\,\mathbf{z}_{t-1} + \nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t), \qquad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
 
-which resets the trace to zero at every episode boundary. This is the general semi-gradient TD(λ) trace and applies to any differentiable function approximator — including the neural-network value functions this library targets.
+which resets the trace to zero at every episode boundary. This is the general semi-gradient TD(λ) trace and applies to any differentiable function approximator -- including the neural-network value functions this library targets.
 
-Unlike the backward algorithms, the distinction between terminated and truncated steps does not matter here. In GAE, V-Trace, and Retrace, a truncated step requires injecting $V(s_{t+1}^{\text{true}})$ as a bootstrap into the TD error. The eligibility trace carries no TD error and no continuation value: $\alpha_t = \mathbf{g}_t$ is simply the gradient at the current step. At any boundary, terminated or truncated, the correct action is the same — zero $\beta_t$ to prevent gradients from the ending episode from bleeding into the new one. The step at $t+1$ starts a fresh trace from $\mathbf{g}_{t+1}$ with no memory of what came before. The caller passes `terminateds` and `truncateds` and the kernel combines them as $d_t$; no `bootstrap_values` argument exists for eligibility traces.
+Unlike the backward algorithms, the distinction between terminated and truncated steps does not matter here. In GAE, V-Trace, and Retrace, a truncated step requires injecting $V(s_{t+1}^{\text{true}})$ as a bootstrap into the TD error. The eligibility trace carries no TD error and no continuation value: $\alpha_t = \mathbf{g}_t$ is simply the gradient at the current step. At any boundary, terminated or truncated, the correct action is the same -- zero $\beta_t$ to prevent gradients from the ending episode from bleeding into the new one. The step at $t+1$ starts a fresh trace from $\mathbf{g}_{t+1}$ with no memory of what came before. The caller passes `terminateds` and `truncateds` and the kernel combines them as $d_t$; no `bootstrap_values` argument exists for eligibility traces.
 
 > The trace accumulates the value gradient $\nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t)$, **not** the feature vector $x_t$. Throughout this documentation $x_t$ denotes features; the eligibility-trace input is the gradient.
 
@@ -163,7 +163,7 @@ Unlike the backward algorithms, the distinction between terminated and truncated
 
 In TD(λ) there are two equivalent views of the same algorithm:
 
-- **Forward view**: compute the full λ-weighted mixture of $n$-step returns $G^\lambda_t$ looking forward in time, then update $\mathbf{w}$ toward that target. This requires the complete trajectory before any update can be issued — it is what `compute_lambda_returns` computes (via a backward scan over the trajectory).
+- **Forward view**: compute the full λ-weighted mixture of $n$-step returns $G^\lambda_t$ looking forward in time, then update $\mathbf{w}$ toward that target. This requires the complete trajectory before any update can be issued -- it is what `compute_lambda_returns` computes (via a backward scan over the trajectory).
 
 - **Backward view**: at each step $t$, apply a weight update using only the current one-step TD error
 
@@ -173,7 +173,7 @@ distributed across all previously visited states according to their current elig
 
 $$\mathbf{w}_{t+1} = \mathbf{w}_t + \alpha\,\delta_t\,\mathbf{z}_t$$
 
-The decay rate $\gamma\lambda$ ensures that a state visited $k$ steps ago contributes with weight $(\gamma\lambda)^k$ — more recent states receive more credit. This is the backward-view answer to the credit-assignment problem: rather than waiting for a full trajectory and computing the λ-return forward, the trace propagates each TD error backward to all past states online at each step.
+The decay rate $\gamma\lambda$ ensures that a state visited $k$ steps ago contributes with weight $(\gamma\lambda)^k$ -- more recent states receive more credit. This is the backward-view answer to the credit-assignment problem: rather than waiting for a full trajectory and computing the λ-return forward, the trace propagates each TD error backward to all past states online at each step.
 
 ### Linear special case
 
@@ -185,11 +185,11 @@ This is the **only** place $x_t$ enters the trace. The feature-vector form is th
 
 ### Nonlinear function approximation
 
-The gradient trace is a well-defined, usable update for nonlinear approximators such as neural networks — it is not mathematically unsound. The practical complication is **gradient staleness**: under online updates, $\mathbf{w}$ moves at every step, so consecutive terms in the trace are gradients evaluated at slightly different parameter vectors. This makes the online backward-view update a **biased approximation** whose error scales with the step size $\alpha$ — negligible for shallow networks or small step sizes, and larger for deep networks with large updates. The forward–backward equivalence is exact offline (when $\mathbf{w}$ is held fixed across the episode), and remains exact online only for linear FA via the True Online TD(λ) dutch-trace derivation; for nonlinear online there is no guaranteed exact equivalence, only the biased approximation above.
+The gradient trace is a well-defined, usable update for nonlinear approximators such as neural networks -- it is not mathematically unsound. The practical complication is **gradient staleness**: under online updates, $\mathbf{w}$ moves at every step, so consecutive terms in the trace are gradients evaluated at slightly different parameter vectors. This makes the online backward-view update a **biased approximation** whose error scales with the step size $\alpha$ -- negligible for shallow networks or small step sizes, and larger for deep networks with large updates. The forward–backward equivalence is exact offline (when $\mathbf{w}$ is held fixed across the episode), and remains exact online only for linear FA via the True Online TD(λ) dutch-trace derivation; for nonlinear online there is no guaranteed exact equivalence, only the biased approximation above.
 
 ### Forward view in deep RL
 
-The field responded to staleness by preferring the forward view: compute the λ-weighted return over a (possibly truncated) rollout, then update. GAE, V-Trace, and Retrace are all forward-view variants of this idea — eligibility traces in substance, computed over a trajectory rather than maintained as an online backward accumulation. The backward online trace is rare in deep RL for practical reasons (per-step online updates conflict with minibatch/replay training; the trace vector has as many entries as the full parameter vector; staleness in deep nets), not because the construction is invalid. Recent work has shown the backward trace can be made to work with deep nets by correcting for parameter drift — see Kobayashi (2020/2022), Daley & Amato (2019), and Harb & Precup (2017).
+The field responded to staleness by preferring the forward view: compute the λ-weighted return over a (possibly truncated) rollout, then update. GAE, V-Trace, and Retrace are all forward-view variants of this idea -- eligibility traces in substance, computed over a trajectory rather than maintained as an online backward accumulation. The backward online trace is rare in deep RL for practical reasons (per-step online updates conflict with minibatch/replay training; the trace vector has as many entries as the full parameter vector; staleness in deep nets), not because the construction is invalid. Recent work has shown the backward trace can be made to work with deep nets by correcting for parameter drift -- see Kobayashi (2020/2022), Daley & Amato (2019), and Harb & Precup (2017).
 
 ### Mapping to the associative scan
 
@@ -203,7 +203,7 @@ The $\lambda=0$ case collapses the trace to $\mathbf{z}_t = \mathbf{g}_t$ (curre
 
 ### How the parallel scan computes a backward-looking trace
 
-The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_t)\,\mathbf{z}_{t-1}$ is sequential in appearance — each step depends on the previous — but the same associative structure that enables the backward scan parallelises it equally well in the forward direction.
+The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_t)\,\mathbf{z}_{t-1}$ is sequential in appearance -- each step depends on the previous -- but the same associative structure that enables the backward scan parallelises it equally well in the forward direction.
 
 The combine function is identical to the backward case:
 
@@ -221,13 +221,13 @@ The seed $\mathbf{z}_{-1}$ is then folded in with a single fused addition:
 
 $$\mathbf{z}_t = \alpha_{0..t} + \beta_{0..t} \cdot \mathbf{z}_{-1}$$
 
-Done flags collapse any $\beta$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary — exactly the correct trace reset.
+Done flags collapse any $\beta$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary -- exactly the correct trace reset.
 
 The key observation is that the scan runs the same reduction tree as the backward kernel; the only implementation difference is that the input array is loaded in forward order rather than reversed. Every position in the output corresponds to a partial scan from $t=0$ up to that position, which is precisely the decayed sum of past gradients the trace requires.
 
 ### Implementation note
 
-`compute_eligibility_traces` computes the forward scan over a generic per-step input `gradients` $\mathbf{g}_t$; mathematically that input is the value gradient $\nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t)$ (or the feature vector $x_t$ in the linear special case). Because the trace at step $t$ depends on every state visited from $t = 0$ up to the present, it is inherently a function of the past — there is no choice but to scan forward.
+`compute_eligibility_traces` computes the forward scan over a generic per-step input `gradients` $\mathbf{g}_t$; mathematically that input is the value gradient $\nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t)$ (or the feature vector $x_t$ in the linear special case). Because the trace at step $t$ depends on every state visited from $t = 0$ up to the present, it is inherently a function of the past -- there is no choice but to scan forward.
 
 ### Limitation
 

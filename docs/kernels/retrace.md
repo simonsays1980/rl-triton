@@ -4,7 +4,7 @@
 
 Having successfully accelerated both Generalized Advantage Estimation (GAE) and V-Trace, we can now adapt our $O(\log N)$ parallel associative scan to evaluate action-values using **Retrace($\lambda$)**.
 
-Retrace($\lambda$) (Munos et al., 2016) is a foundational off-policy algorithm that shares the same recursive DNA as V-Trace, but is designed for Q-learning rather than Actor-Critic state values. Because the underlying first-order recurrence remains identical, the Triton kernel requires no changes — only the PyTorch inputs need adjustment to account for an essential **index shift** in the importance sampling weights.
+Retrace($\lambda$) (Munos et al., 2016) is a foundational off-policy algorithm that shares the same recursive DNA as V-Trace, but is designed for Q-learning rather than Actor-Critic state values. Because the underlying first-order recurrence remains identical, the Triton kernel requires no changes -- only the PyTorch inputs need adjustment to account for an essential **index shift** in the importance sampling weights.
 
 ---
 
@@ -58,7 +58,7 @@ The expression in parentheses is exactly $\Delta_{t+1}$, which yields the **firs
 
 $$\Delta_t = \delta_t + \gamma c_{t+1} \cdot \Delta_{t+1}$$
 
-This is the mathematically exact recurrence within a single episode. No done flags appear — the sum in the Retrace definition naturally terminates at the episode boundary.
+This is the mathematically exact recurrence within a single episode. No done flags appear -- the sum in the Retrace definition naturally terminates at the episode boundary.
 
 In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent accumulation from crossing episode boundaries, the kernel introduces masked versions of $\alpha_t$ and $\beta_t$ that depend on two mutually exclusive flags, $d_t^{\text{term}}$ and $d_t^{\text{trunc}}$:
 
@@ -95,21 +95,21 @@ Setting $\lambda = 1$ recovers the full importance sampling weight; setting $\la
 
 The kernel consumes `q_values`, `next_q_values_all`, `terminateds`, and `truncateds`. It never sees observations. The equations for $\alpha_t$ and $\beta_t$ were established in Section 2; this section describes the caller's responsibility for preparing the input arrays correctly.
 
-Retrace differs structurally from GAE and V-Trace in one important respect: it requires no `bootstrap_values` argument. The continuation value $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ is embedded directly in $\alpha_t$ via `next_q_values_all`, which the caller must supply for every step including the final column. This means the scan carry $\Delta_T$ is always zero — all boundary information is already encoded in $\alpha$ before the scan runs.
+Retrace differs structurally from GAE and V-Trace in one important respect: it requires no `bootstrap_values` argument. The continuation value $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ is embedded directly in $\alpha_t$ via `next_q_values_all`, which the caller must supply for every step including the final column. This means the scan carry $\Delta_T$ is always zero -- all boundary information is already encoded in $\alpha$ before the scan runs.
 
 ### Terminated steps
 
-At a terminated step $t$, $(1 - d_t^{\text{term}})$ zeros $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ inside $\alpha_t$ — correct, a terminal state has no continuation value. $(1 - d_t)$ zeros $\beta_t$, stopping trace propagation into the previous episode.
+At a terminated step $t$, $(1 - d_t^{\text{term}})$ zeros $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ inside $\alpha_t$ -- correct, a terminal state has no continuation value. $(1 - d_t)$ zeros $\beta_t$, stopping trace propagation into the previous episode.
 
 ### Truncated steps
 
-At a truncated step $t$, the episode continues, so the bootstrap $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ is kept in $\alpha_t$ — `next_q_values_all[env, t, :]` holds the correct continuation values and is used directly. $(1 - d_t)$ zeros $\beta_t$ so no accumulation propagates across the boundary.
+At a truncated step $t$, the episode continues, so the bootstrap $\mathbb{E}_\pi[Q(s_{t+1},\cdot)]$ is kept in $\alpha_t$ -- `next_q_values_all[env, t, :]` holds the correct continuation values and is used directly. $(1 - d_t)$ zeros $\beta_t$ so no accumulation propagates across the boundary.
 
 ### Window boundary at $t = T-1$
 
-At the last step of the window, `next_q_values_all[env, T-1, :]` must hold $Q(s_T, \cdot)$ — the action-values at the state one step past the buffer. The caller supplies this from a fresh critic forward pass when the episode continues past the window, or passes zeros if the episode terminated at $T-1$ (in which case $d_{T-1}^{\text{term}} = 1$ zeros it anyway).
+At the last step of the window, `next_q_values_all[env, T-1, :]` must hold $Q(s_T, \cdot)$ -- the action-values at the state one step past the buffer. The caller supplies this from a fresh critic forward pass when the episode continues past the window, or passes zeros if the episode terminated at $T-1$ (in which case $d_{T-1}^{\text{term}} = 1$ zeros it anyway).
 
-The scan carry $\Delta_T = 0$ is correct in both cases: all future information at the boundary is already encoded in $\alpha_{T-1}$ via `next_q_values_all`. Additionally, the decay coefficient that would propagate a nonzero carry into $\Delta_{T-1}$ is $\beta_{T-1} = \gamma c_T (1 - d_{T-1})$, where $c_T$ requires the action $a_T$ drawn by the behavior policy at $s_T$ — an action that was never sampled and is not in the rollout buffer. The kernel hardcodes $c_T = 0$, making $\beta_{T-1} = 0$ regardless of $\Delta_T$.
+The scan carry $\Delta_T = 0$ is correct in both cases: all future information at the boundary is already encoded in $\alpha_{T-1}$ via `next_q_values_all`. Additionally, the decay coefficient that would propagate a nonzero carry into $\Delta_{T-1}$ is $\beta_{T-1} = \gamma c_T (1 - d_{T-1})$, where $c_T$ requires the action $a_T$ drawn by the behavior policy at $s_T$ -- an action that was never sampled and is not in the rollout buffer. The kernel hardcodes $c_T = 0$, making $\beta_{T-1} = 0$ regardless of $\Delta_T$.
 
 ### The unifying rule
 
@@ -119,11 +119,11 @@ The caller supplies `terminateds[env, t] = 1` at true episode endings and `trunc
 
 | Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap in $\alpha_t$ | Trace decay $\beta_t$ |
 |---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed: $r_t - Q_t$ | $0$ — scan stops |
-| **Truncated** | 1 | 0 | Kept: $r_t + \gamma\mathbb{E}_\pi[Q(s_{t+1},\cdot)] - Q_t$ | $0$ — scan stops |
-| **Window end** | 0 | 0 | Kept: $r_{T-1} + \gamma\mathbb{E}_\pi[Q(s_T,\cdot)] - Q_{T-1}$ | $0$ — $c_T$ undefined |
+| **Terminated** | 1 | 1 | Zeroed: $r_t - Q_t$ | $0$ -- scan stops |
+| **Truncated** | 1 | 0 | Kept: $r_t + \gamma\mathbb{E}_\pi[Q(s_{t+1},\cdot)] - Q_t$ | $0$ -- scan stops |
+| **Window end** | 0 | 0 | Kept: $r_{T-1} + \gamma\mathbb{E}_\pi[Q(s_T,\cdot)] - Q_{T-1}$ | $0$ -- $c_T$ undefined |
 
-**Performance note.** Unlike GAE/V-Trace, `retrace_fused_kernel` has no `HAS_TRUNCATIONS`-style compile-time specialization — it unconditionally loads both `terminated_ptr` and `truncated_ptr` on every call. Measured directly (H200 SXM, num_envs=4096, seq_len=128): full-call and device time are identical whether `truncateds` is all-zero or has real truncations mixed in (0.0114ms device either way, full-call within noise across repeated runs). Truncation support costs zero marginal runtime here.
+**Performance note.** Unlike GAE/V-Trace, `retrace_fused_kernel` has no `HAS_TRUNCATIONS`-style compile-time specialization -- it unconditionally loads both `terminated_ptr` and `truncated_ptr` on every call. Measured directly (H200 SXM, num_envs=4096, seq_len=128): full-call and device time are identical whether `truncateds` is all-zero or has real truncations mixed in (0.0114ms device either way, full-call within noise across repeated runs). Truncation support costs zero marginal runtime here.
 
 ---
 
@@ -150,7 +150,7 @@ Substituting our chronological Retrace definitions (reversed index $k$ maps to t
 
 $$\alpha_{1..4} = \delta_1 + (\gamma c_2)\delta_2 + (\gamma c_2)(\gamma c_3)\delta_3 + (\gamma c_2)(\gamma c_3)(\gamma c_4)\delta_4$$
 
-Notice that $c_1$ does not appear anywhere in this polynomial. This is the index shift in action. The Retrace definition assigns each $\delta_k$ a weight equal to $\prod_{i=t+1}^{k} c_i$: the product starts one step ahead of the base step $t$, so the base term $\delta_1$ (where $k=t=1$) carries the empty product and enters unscaled. The first IS correction, $c_2$, only appears on $\delta_2$ — reflecting that Retrace treats the action $a_1$ being evaluated as fixed and begins correcting for off-policy divergence only from $a_2$ onward.
+Notice that $c_1$ does not appear anywhere in this polynomial. This is the index shift in action. The Retrace definition assigns each $\delta_k$ a weight equal to $\prod_{i=t+1}^{k} c_i$: the product starts one step ahead of the base step $t$, so the base term $\delta_1$ (where $k=t=1$) carries the empty product and enters unscaled. The first IS correction, $c_2$, only appears on $\delta_2$ -- reflecting that Retrace treats the action $a_1$ being evaluated as fixed and begins correcting for off-policy divergence only from $a_2$ onward.
 
 This is exactly $\Delta_1$ from the unrolled recurrence above: each TD error $\delta_k$ is multiplied by the product of $c$ weights starting at index $k$ (one step ahead of the originating state), precisely matching the $\prod_{i=t+1}^{k} c_i$ product in the Retrace target.
 
@@ -160,15 +160,15 @@ This is exactly $\Delta_1$ from the unrolled recurrence above: each TD error $\d
 
 Once the $O(\log N)$ scan finishes, the fused kernel computes the Q-value target and the actor advantage in the same Triton program before returning to the host. This mirrors the V-Trace fused kernel exactly.
 
-**Step 3 — Q-value targets.** The scan result $\Delta_t$ is added to $Q(s_t, a_t)$ in registers before the final write to HBM, avoiding a separate round-trip:
+**Step 3 -- Q-value targets.** The scan result $\Delta_t$ is added to $Q(s_t, a_t)$ in registers before the final write to HBM, avoiding a separate round-trip:
 
 $$Q^{ret}_t = \Delta_t + Q(s_t, a_t)$$
 
-**Step 4 — Advantages.** After a synchronisation barrier, each thread reloads $Q^{ret}_{t+1}$ from HBM and computes:
+**Step 4 -- Advantages.** After a synchronisation barrier, each thread reloads $Q^{ret}_{t+1}$ from HBM and computes:
 
 $$A_t = \rho_t \left( r_t + \gamma\,(1 - d_t^{\text{term}})\,Q^{ret}_{t+1} - Q(s_t, a_t) \right)$$
 
-where $\rho_t = \min\!\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$ is the clipped importance weight for the actor update. At $t = T-1$, $Q^{ret}_T$ is out-of-bounds and treated as $0$ — the one-step bootstrap is already inside $\delta_{T-1}$ via `next_q_values_all`, so the advantage reflects only the immediate TD correction at the window boundary.
+where $\rho_t = \min\!\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)$ is the clipped importance weight for the actor update. At $t = T-1$, $Q^{ret}_T$ is out-of-bounds and treated as $0$ -- the one-step bootstrap is already inside $\delta_{T-1}$ via `next_q_values_all`, so the advantage reflects only the immediate TD correction at the window boundary.
 
 For sequences exceeding the flat kernel limit, the chunked path performs both additions in PyTorch after the scan.
 
@@ -187,4 +187,4 @@ Retrace($\lambda$) was introduced by DeepMind to solve the variance explosion pr
 
 ## Further Reading
 
-* [Off-Policy Correction](https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/) — A visual explanation of off-policy correction methods, covering the importance sampling rationale behind Retrace and related algorithms.
+* [Off-Policy Correction](https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/) -- A visual explanation of off-policy correction methods, covering the importance sampling rationale behind Retrace and related algorithms.

@@ -65,17 +65,17 @@ def gae_fused_kernel(
     """
     Fully-fused GAE kernel: computes advantages in a single program per environment.
 
-    bootstrap_ptr is [num_envs, seq_len] when HAS_TRUNCATIONS=True — nonzero only
+    bootstrap_ptr is [num_envs, seq_len] when HAS_TRUNCATIONS=True -- nonzero only
     at truncated steps and the window boundary.  When HAS_TRUNCATIONS=False,
     bootstrap_ptr is [num_envs] (one scalar per env) and truncateds_ptr is unused,
     saving two full HBM reads.
 
     HAS_BOOTSTRAP only applies when HAS_TRUNCATIONS=False: if the caller has no
-    last_value to inject (the common case — most episodes simply end with
+    last_value to inject (the common case -- most episodes simply end with
     terminated=1 at the window boundary), bootstrap_ptr is unused and the literal
     0.0 is substituted in-register.  This lets the wrapper skip allocating and
     launching a torch.zeros(num_envs) kernel just to hand this kernel a buffer of
-    zeros — measured at ~33% of this op's total time at 128x1024.
+    zeros -- measured at ~33% of this op's total time at 128x1024.
 
       terminated[t]: 1 if episode ended naturally (value bootstrap zeroed in delta).
       done[t]:       1 if episode ended for any reason (trace decay zeroed).
@@ -96,8 +96,8 @@ def gae_fused_kernel(
         gamma:           Discount factor (runtime value).
         lambda_:         GAE trace parameter (runtime value).
         BLOCK_SIZE:      Must be >= seq_len and a power of 2 (constexpr).
-        HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
-        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+        HAS_TRUNCATIONS: Compile-time flag -- False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False --
                          False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
@@ -126,7 +126,7 @@ def gae_fused_kernel(
         # the boundary lane. truncated==0 is NOT needed in the predicate: the
         # tl.where below already discards v_next_raw whenever truncated==1 (it
         # picks bootstrap there regardless of what was loaded), so dropping that
-        # comparison removes one per-lane predicate op with no behavior change —
+        # comparison removes one per-lane predicate op with no behavior change --
         # this load is the one HBM round-trip lambda_returns' equivalent kernel
         # avoids entirely by taking next_values pre-shifted from the caller.
         v_next_raw = tl.load(values_ptr + base + rev + 1,

@@ -9,7 +9,7 @@ entry points are:
     which dispatches to `torch.ops.pufferlib.compute_puff_advantage`.
   - CUDA kernel:     `puff_advantage_row_cuda()` in
     `pufferlib/extensions/cuda/pufferlib.cu` (one CUDA thread per
-    environment row; sequential O(T) scan within each thread — this is a
+    environment row; sequential O(T) scan within each thread -- this is a
     genuine hand-written CUDA kernel, not a Python loop).
   - CPU fallback:    `puff_advantage_row()` in `pufferlib/extensions/pufferlib.cpp`.
   - Torch schema:     registered under the `pufferlib::compute_puff_advantage`
@@ -28,7 +28,7 @@ process-wide side effects we do not want in a benchmark harness (it installs
 a SIGINT handler that calls `os._exit(0)` and sets `warnings.filterwarnings
 ('error', category=RuntimeWarning)` globally). Compiling only the two
 extension source files via `torch.utils.cpp_extension.load` gives the exact
-same compiled kernel — same source, same `TORCH_LIBRARY` registration — none
+same compiled kernel -- same source, same `TORCH_LIBRARY` registration -- none
 of that.
 
 If PufferLib happens to be fully installed already, we prefer its prebuilt

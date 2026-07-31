@@ -127,7 +127,7 @@ def _ref_gae(rewards, values, dones, gamma, lambda_):
 
 def _ref_gae_trunc(rewards, values, terminateds, truncateds, bootstrap_values, gamma, lambda_):
     """Vectorized-over-N (loop over T only) ground truth with interior
-    truncations — same recurrence as test_gae.py's O(N*T) _ref_gae_sequential,
+    truncations -- same recurrence as test_gae.py's O(N*T) _ref_gae_sequential,
     but fast enough to run at every swept config (production regime included).
     """
     N, T = rewards.shape
@@ -489,7 +489,7 @@ CONFIGS = [
     (256, 1024),
     (512, 2048),
     (512, 4096),
-    # Main grid addition — massively-parallel-sim regime (high-N/short-T):
+    # Main grid addition -- massively-parallel-sim regime (high-N/short-T):
     # rollout lengths GPUDrive 90 / Nocturne 80 / Gigaflow 128 / PufferLib
     # default 128; env counts Isaac Gym 4096-16384, Gigaflow 38,400.
     (512,   128),
@@ -550,13 +550,13 @@ def _needs_pad(seq_len):
 def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_inputs_fn, kwargs):
     """Shared production-regime + boundary-marker sweep for algorithms whose
     triton/compiled/reference callables all accept the SAME positional args
-    (everything except Retrace, whose kernel needs a reordered arg tuple —
+    (everything except Retrace, whose kernel needs a reordered arg tuple --
     see its own inline block in bench_retrace).
 
     Runs PRODUCTION_CONFIGS (seq_len [80,128] x num_envs [4096..38400]) plus
     the single BOUNDARY_CONFIG marker row, reporting full-call ms (headline),
     device-only ms (diagnostic), and the amortized (N-calls-per-region)
-    variant — the latter specifically to separate harness per-call sync
+    variant -- the latter specifically to separate harness per-call sync
     overhead from genuine per-call cost at these short seq_lens. Asserts
     tolerance-based correctness (atol=1e-4) at every config before trusting
     the timing.
@@ -1217,7 +1217,7 @@ def bench_retrace():
 
     # Retrace's kernel args need reordering vs. the vec/ref call signature
     # (see _retrace_kernel_args), so it can't use the shared
-    # _bench_production_regime helper — inline production sweep instead.
+    # _bench_production_regime helper -- inline production sweep instead.
     production_rows = []
     # See _bench_production_regime's matching comment: reset only at a
     # padding-regime transition (compiled_vec already only saw non-padded
@@ -1847,7 +1847,7 @@ def bench_prefix_sum():
         _warmup_gpu(compute_episodic_prefix_sum, inputs, dones)
         _warmup_gpu(compiled, inputs, dones)
         # NOTE: the compiled baseline is timed with _bench_gpu (CUDA events,
-        # explicit sync), not _bench_cpu — _bench_cpu never syncs the GPU, so
+        # explicit sync), not _bench_cpu -- _bench_cpu never syncs the GPU, so
         # timing an async-dispatching compiled fn with it would silently
         # measure only CPU-side launch time and understate the baseline.
         triton_ms   = _bench_gpu(compute_episodic_prefix_sum, inputs, dones, n_iter=ni)
@@ -2015,27 +2015,27 @@ def _table_production(title, rows):
     body = "\n".join(_fmt_row_production(r) for r in rows)
     footnote = (
         "\n\n*⚠️ marks the boundary-marker row (num_envs=16384, seq_len=16). "
-        "**vs vec (full-call)** is the headline ratio — the complete "
+        "**vs vec (full-call)** is the headline ratio -- the complete "
         "`compute_*(tensors) -> tensors` call including launch/wrapper overhead, "
         "which a caller pays every invocation. **vs vec (device)** is a diagnostic "
         "showing the same ratio for CUDA-kernel-only time; where full-call and device "
         "speedups diverge, the gap is launch + wrapper overhead. **triton amortized** "
         "is N calls timed inside one region (separates harness per-call sync overhead "
-        "from genuine per-call cost) — reported alongside, not used for any ratio.*"
+        "from genuine per-call cost) -- reported alongside, not used for any ratio.*"
     )
     return header + "\n" + body + footnote
 
 
 def _headline(rows):
     """Filter a rows list down to HEADLINE_CONFIGS for benchmarks.md's headline
-    tables (~4 representative sizes/algorithm) — the full CONFIGS grid stays
+    tables (~4 representative sizes/algorithm) -- the full CONFIGS grid stays
     reproducible via `python tests/bench_release.py` and is not duplicated here."""
     wanted = set(HEADLINE_CONFIGS)
     return [r for r in rows if (r["num_envs"], r["seq_len"]) in wanted]
 
 
 def _methodology_text(gpu_label: str) -> str:
-    """Shared methodology header — used by both _section() (console/staged
+    """Shared methodology header -- used by both _section() (console/staged
     candidate) and promote() (benchmarks.md carries it forward unchanged from
     whatever was staged), so benchmarks.md always has the full dtype/
     gamma-lambda/truncation-density/harness explanation, not just a summary."""
@@ -2057,22 +2057,22 @@ def _methodology_text(gpu_label: str) -> str:
         f"noise. Every config is warmed up at its exact shape (20 untimed calls) before any timed "
         f"call, so `torch.compile` JIT/autotuning and Triton kernel compilation never land in the "
         f"timed region. A tolerance-based correctness gate (atol=rtol=1e-4 vs. a sequential "
-        f"reference implementation) runs before every timed config — not bit-identical, since "
+        f"reference implementation) runs before every timed config -- not bit-identical, since "
         f"`tl.associative_scan` reorders float ops depending on num_warps/block layout, so "
         f"cross-config last-bit differences are legitimate. A monotonicity gate (2% band) then "
         f"asserts a larger problem never measures faster than a smaller one along either swept "
         f"axis. CPU timings are wall-clock (perf_counter), run until at least 0.5 s of samples.\n\n"
         f"**Two timing granularities.**  "
-        f"**triton** (headline) is full-call wall time — what a caller pays every invocation, "
+        f"**triton** (headline) is full-call wall time -- what a caller pays every invocation, "
         f"including launch overhead and wrapper setup (HAS_TRUNCATIONS/HAS_BOOTSTRAP dispatch, "
         f"allocation, layout). All speedup ratios are computed from this number. **dev** is "
         f"device-only CUDA time (`torch.profiler` CUDA activity around steady-state calls, "
-        f"ncu/nsys being unavailable in typical containerized GPU environments) — a diagnostic "
+        f"ncu/nsys being unavailable in typical containerized GPU environments) -- a diagnostic "
         f"showing pure kernel execution time; where dev is much smaller than the full-call number, "
         f"the gap is launch + wrapper overhead the caller still pays. The production-regime table "
         f"additionally reports an **amortized** variant (N calls in one timed region) for its "
         f"short-seq_len rows, to separate harness per-call sync overhead from genuine per-call "
-        f"cost — the single-call full-call number remains the ratio basis throughout.\n\n"
+        f"cost -- the single-call full-call number remains the ratio basis throughout.\n\n"
         f"**Columns.**  "
         f"**triton**: full-call wall time, headline (CUDA events).  "
         f"**dev**: device-only kernel time, diagnostic (see above).  "
@@ -2128,7 +2128,7 @@ BENCHMARKS_MD = REPO_ROOT / "benchmarks.md"
 # lingers. Shared by promote() and (as a fallback, when benchmarks.md doesn't
 # exist yet) its own "nothing to archive" branch.
 _BENCHMARKS_MD_PREAMBLE = (
-    "# Benchmarks\n\nLatest release only — see docs/benchmark-history/ for prior releases.\n\n"
+    "# Benchmarks\n\nLatest release only -- see docs/benchmark-history/ for prior releases.\n\n"
 )
 
 BENCHMARK_HISTORY_DIR = REPO_ROOT / "docs" / "benchmark-history"
@@ -2196,7 +2196,7 @@ _UNRELEASED_STUB = (
     "`benchmarks/README.md`), this file holds only the most recent not-yet-promoted release\n"
     "candidate; it resets to this empty state immediately after that candidate is promoted to\n"
     "`benchmarks.md` + a version-tagged archive file on release. It is overwritten wholesale by\n"
-    "each new candidate, not appended to — do not treat it as a running log.\n"
+    "each new candidate, not appended to -- do not treat it as a running log.\n"
 )
 
 # A real release tag, e.g. v0.1.1 -- deliberately stricter than "any non-whitespace
@@ -2499,13 +2499,13 @@ def _bench_truncation_headline(num_envs=4096, seq_len=128):
 def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
                                truncation_headline: dict | None = None) -> str:
     """Render the README's production-relevant summary table WITHOUT touching
-    README.md — README prose edits are a STOP-and-report item under the
+    README.md -- README prose edits are a STOP-and-report item under the
     autonomy boundary, and this script has no code path that writes README.md at
     all. Caller should write this to a draft file for human review and manual
     inclusion in README.md.
 
     All rows use the SAME (num_envs, seq_len) so the table is a genuine
-    apples-to-apples comparison across algorithms — mixing different sizes per
+    apples-to-apples comparison across algorithms -- mixing different sizes per
     row (an earlier version of this function did) makes speedups incomparable
     and risks reading as cherry-picked even when it isn't.
 
@@ -2859,7 +2859,7 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
     regardless of how full_tables/production_rows_all were assembled.
     """
     production_table = _table_production(
-        "Production regime — seq_len [80,128] × num_envs [4096..38400], all algorithms "
+        "Production regime -- seq_len [80,128] × num_envs [4096..38400], all algorithms "
         "(plus one boundary-marker row, num_envs=16384/seq_len=16)",
         production_rows_all,
     )
@@ -2872,7 +2872,7 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
 
     print(f"\n{'=' * 88}\nGATE SUMMARY\n{'=' * 88}")
     if all_violations:
-        print(f"MONOTONICITY GATE: FAILED — {len(all_violations)} violation(s) across the run:")
+        print(f"MONOTONICITY GATE: FAILED -- {len(all_violations)} violation(s) across the run:")
         for v in all_violations:
             print(f"  - {v}")
     else:
@@ -2896,7 +2896,7 @@ def _finalize(full_tables, headline_tables, production_rows_all, all_violations,
         # never writes it. Review the draft above and paste manually. Promote
         # the staged candidate to benchmarks.md separately with
         # --promote --version <tag> when actually cutting a release.
-        print("README.md left untouched — it is never written by this script; review the "
+        print("README.md left untouched -- it is never written by this script; review the "
               "draft above and paste manually.")
 
     if all_violations:
@@ -2978,10 +2978,10 @@ def _run_parent_sweep(selected_algos, args):
                 "--output-json", str(out_path),
             ]
             print(f"\n{'=' * 88}\nSubprocess for group '{label}' ({','.join(wanted)}, "
-                  f"variant={variant}) — fresh CUDA/Dynamo process\n{'=' * 88}", flush=True)
+                  f"variant={variant}) -- fresh CUDA/Dynamo process\n{'=' * 88}", flush=True)
             result = subprocess.run(cmd)
             if result.returncode != 0:
-                print(f"\nSubprocess for group '{label}' FAILED (exit {result.returncode}) — "
+                print(f"\nSubprocess for group '{label}' FAILED (exit {result.returncode}) -- "
                       f"aborting the parent sweep. Nothing partial gets written to "
                       f"benchmarks.md; see the subprocess's own output above for the traceback.",
                       flush=True)

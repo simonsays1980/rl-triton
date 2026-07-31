@@ -7,12 +7,12 @@ from rl_triton.kernels.lambda_returns_fused import lambda_returns_fused_kernel
 from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) on
-# both tables below — see src/rl_triton/ops/gae.py's _WARPS for the H200
+# both tables below -- see src/rl_triton/ops/gae.py's _WARPS for the H200
 # measurement basis (flat device time for num_warps in {1,2,4} at BLOCK_SIZE
 # 8-128, driven by the 32-blocks/SM hard cap on Hopper, register-count-
 # independent at this scale since none of these kernels spill at low warps).
 
-# Lambda returns carries more registers (next_values, u computation) — same budget as GAE.
+# Lambda returns carries more registers (next_values, u computation) -- same budget as GAE.
 _WARPS_LAMBDA = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
@@ -74,7 +74,7 @@ def compute_lambda_returns(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     for name, t in [("rewards", rewards), ("next_values", next_values), ("terminateds", terminateds)]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
@@ -90,7 +90,7 @@ def compute_lambda_returns(
         assert bootstrap_values.shape == rewards.shape, \
             f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scans — correctness-warning path only.
+    # Expensive tensor scans -- correctness-warning path only.
     if _CORRECTNESS_WARNINGS():
         if has_truncations:
             assert not (terminateds.bool() & truncateds.bool()).any(), \
@@ -187,7 +187,7 @@ def compute_discounted_returns(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     for name, t in [("rewards", rewards), ("terminateds", terminateds)]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
@@ -203,7 +203,7 @@ def compute_discounted_returns(
         assert bootstrap_values.shape == rewards.shape, \
             f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scans — correctness-warning path only.
+    # Expensive tensor scans -- correctness-warning path only.
     if _CORRECTNESS_WARNINGS():
         if has_truncations:
             assert not (terminateds.bool() & truncateds.bool()).any(), \
@@ -279,7 +279,7 @@ def compute_eligibility_traces(
     Limited to seq_len <= 131072.
 
     Args:
-        gradients:   g[t] — value-function gradients or feature vectors,
+        gradients:   g[t] -- value-function gradients or feature vectors,
                      [num_envs, seq_len], float32, CUDA.
         dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
         gamma:       Discount factor.
@@ -292,7 +292,7 @@ def compute_eligibility_traces(
     """
     num_envs, seq_len = gradients.shape
 
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     assert gradients.is_cuda and dones.is_cuda, "gradients and dones must be on CUDA"
     assert gradients.dtype == torch.float32, f"gradients: expected float32, got {gradients.dtype}"
     assert dones.dtype == torch.float32,     f"dones: expected float32, got {dones.dtype}"

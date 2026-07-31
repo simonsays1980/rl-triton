@@ -139,7 +139,7 @@ def compute_vtrace(
 
     # Fused kernel for seq_len <= 131072.
     # Pass truncateds=None for the no-truncation path so compute_vtrace_fused
-    # dispatches HAS_TRUNCATIONS=False — no zero-tensor allocations for truncateds
+    # dispatches HAS_TRUNCATIONS=False -- no zero-tensor allocations for truncateds
     # or 2D bootstrap_values in that path.
     if seq_len <= _FLAT_MAX_SEQ_LEN:
         return compute_vtrace_fused(

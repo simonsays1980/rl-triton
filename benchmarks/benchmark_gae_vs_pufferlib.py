@@ -7,7 +7,7 @@ passes. Two independent, genuinely-fast kernels are compared:
     `compute_gae()` (src/rl_triton/ops/gae.py). One Triton program per
     environment; single HBM pass; O(log T) in-SRAM tree reduction via
     `tl.associative_scan`.
-  - PufferLib:  `puff_advantage_row_cuda()` (a real, hand-written CUDA kernel —
+  - PufferLib:  `puff_advantage_row_cuda()` (a real, hand-written CUDA kernel --
     NOT a Python loop), one CUDA thread per environment row, sequential O(T)
     scan within the thread. See benchmarks/pufferlib_ext/build.py for exactly
     where this lives in the real PufferLib source and why it is compiled from
@@ -22,7 +22,7 @@ passes. Two independent, genuinely-fast kernels are compared:
     kernel under its real name.
 
 ================================================================================
-STEP 0 — SEMANTIC EQUIVALENCE (read this before trusting any number below)
+STEP 0 -- SEMANTIC EQUIVALENCE (read this before trusting any number below)
 ================================================================================
 
 Recurrences (both are backward scans of the standard GAE form
@@ -34,7 +34,7 @@ A[t] = delta[t] + decay[t]*A[t+1]):
     A[t] = delta[t] + decay[t]*A[t+1],  A[T] := 0
 
   PufferLib (puff_advantage_row_cuda, importance ratio fixed at 1.0 so the
-  V-trace rho/c clipping is a no-op — the on-policy regime, the only one
+  V-trace rho/c clipping is a no-op -- the on-policy regime, the only one
   rl-triton's plain GAE path can be compared against):
     for t = T-2 downto 0:
       delta[t] = PR[t+1] + gamma*(1 - PD[t+1])*V[t+1] - V[t]
@@ -42,37 +42,37 @@ A[t] = delta[t] + decay[t]*A[t+1]):
       A[t] = delta[t] + decay[t]*A[t+1]
     A[T-1] is NEVER WRITTEN (row loop starts at horizon-2). The caller's
     output buffer is `torch.zeros(...)` in real PufferLib usage, so in
-    practice A[T-1] silently reads back as 0 — this is not a bootstrap, it is
+    practice A[T-1] silently reads back as 0 -- this is not a bootstrap, it is
     an unwritten cell.
 
 Capability differences (found by reading both sources, not assumed):
 
   1. Buffer convention. PufferLib's `rewards`/`dones` arrays are indexed one
-     slot ahead of `values` (`PR[t+1]`/`PD[t+1]` pair with `V[t]`/`V[t+1]`) —
+     slot ahead of `values` (`PR[t+1]`/`PD[t+1]` pair with `V[t]`/`V[t+1]`) --
      PufferLib's own source contains a TODO ("t_next works and t doesn't.
      Check original formula") suggesting even its authors are not fully
      confident in this convention. We derived the exact index mapping
      (PR[1:] = R[:-1], PD[1:] = D[:-1], PR[0]/PD[0] unused) and verified it
      reproduces rl-triton's per-step delta/decay bit-for-bit (see
-     `_verify_index_shift` below) — so this is a real, working convention,
+     `_verify_index_shift` below) -- so this is a real, working convention,
      just an unusual one, and it costs nothing at benchmark time: a real
      PufferLib caller's rollout buffer is already laid out this way.
   2. Row-length capability gap. A length-T buffer gives PufferLib only T-1
-     usable advantage estimates (row T-1 is structurally uncomputable — its
+     usable advantage estimates (row T-1 is structurally uncomputable -- its
      delta would need PR[T]/PD[T], one slot past the buffer). rl-triton
      produces a genuine T-th estimate using an explicit (default: zero)
      boundary bootstrap. This is a real capability difference, not a bug on
      either side, and it is the reason a literal `max|full_T_output_A -
-     full_T_output_B|` is the WRONG equivalence check — the true last column
+     full_T_output_B|` is the WRONG equivalence check -- the true last column
      means different things on the two sides by construction. The correct
      check compares the T-1 columns both sides can actually produce, using
      the identical recurrence with the identical carry (see below).
   3. terminated vs. truncated. PufferLib has exactly one `dones` flag per
-     step — no distinction between "true episode end, zero bootstrap" and
+     step -- no distinction between "true episode end, zero bootstrap" and
      "time-limit cutoff, inject true continuation value". rl-triton's
      `terminateds`/`truncateds`/`bootstrap_values` machinery for interior
      truncations (its `HAS_TRUNCATIONS=True` path) has **no PufferLib
-     equivalent whatsoever** — there is nothing to benchmark it against. This
+     equivalent whatsoever** -- there is nothing to benchmark it against. This
      script therefore benchmarks ONLY rl-triton's plain path
      (`terminateds` only, no truncations, default zero bootstrap), the one
      regime where the two are actually computing the same quantity.
@@ -84,15 +84,15 @@ Capability differences (found by reading both sources, not assumed):
      returns/targets; both return a raw `[num_envs, seq_len]` advantage
      tensor only.
   6. Layout: both are natively `[num_envs, seq_len]` (row-major over
-     seq_len) — no transpose needed either direction.
+     seq_len) -- no transpose needed either direction.
 
 Numerical agreement check: computed below via `_ref_gae_matched_window`, a
 reference implementation independent of both kernels (plain PyTorch,
-standard delta/decay formula, carry seeded at exactly 0 at T-1 — i.e. exactly
+standard delta/decay formula, carry seeded at exactly 0 at T-1 -- i.e. exactly
 what PufferLib is structurally capable of producing from a length-T buffer).
 Both real kernels are checked against it. This is a strict equality check
 (same float32 op order as the CUDA kernel's sequential accumulation), not a
-tolerance-band coincidence — see the printed report for max|diff| (measured:
+tolerance-band coincidence -- see the printed report for max|diff| (measured:
 0.0, exact, across multiple seeds/shapes).
 
 ================================================================================
@@ -100,14 +100,14 @@ TWO REGIMES
 ================================================================================
 
   1. "Production" regime (the original sweep): seq_len in [128..4096],
-     num_envs in [128..8192] — moderate-to-long on-policy rollouts.
+     num_envs in [128..8192] -- moderate-to-long on-policy rollouts.
   2. "Massively-parallel-sim" regime: seq_len in [8..128], num_envs in
-     [4096..32768] — the opposite aspect ratio, matching Isaac Gym/Isaac
+     [4096..32768] -- the opposite aspect ratio, matching Isaac Gym/Isaac
      Lab-style GPU simulation (thousands of envs, horizon in the tens of
      steps). Prior work in this repo (see BOUNDARY_CONFIG in tests/bench_release.py)
      found rl-triton's device-only time INVERTS below 1x
      against torch.compile's vectorized baseline at num_envs=16384,
-     seq_len>=64 — one program per env means more grid waves per SM as
+     seq_len>=64 -- one program per env means more grid waves per SM as
      num_envs grows, while a competing kernel with a flatter per-launch
      floor doesn't pay that cost. That prior finding was against
      torch.compile, not PufferLib; this regime re-tests the same question
@@ -131,7 +131,7 @@ import torch
 import triton
 from torch.profiler import ProfilerActivity, profile
 
-sys.path.insert(0, str(Path(__file__).parent))  # this dir — for pufferlib_ext
+sys.path.insert(0, str(Path(__file__).parent))  # this dir -- for pufferlib_ext
 from pufferlib_ext.build import load_puff_advantage
 sys.path.insert(0, str(Path(__file__).parent.parent / "tests"))  # for bench_utils
 from bench_utils import _bench_gpu, _warmup_gpu
@@ -159,10 +159,10 @@ N_PROFILE_ITER = 20
 
 H100_PEAK_GBPS = 3350.0  # HBM3 datasheet peak, H100 SXM5 80GB
 
-# Categorical palette (fixed hue order), light-mode — from the dataviz skill's
+# Categorical palette (fixed hue order), light-mode -- from the dataviz skill's
 # validated default palette. Color = num_envs (identity); linestyle = impl.
 COLORS = {128: "#2a78d6", 512: "#eb6834", 2048: "#1baf7a", 8192: "#eda100"}
-# Short-horizon regime plots vs. num_envs, so color keys by seq_len instead —
+# Short-horizon regime plots vs. num_envs, so color keys by seq_len instead --
 # a separate slot range from COLORS above (COLORS reuses 8192 as a key with a
 # different meaning here; the two are never plotted on the same figure).
 COLORS_SHORT = {8: "#2a78d6", 16: "#eb6834", 32: "#1baf7a", 64: "#eda100", 128: "#e87ba4"}
@@ -182,7 +182,7 @@ def _make_rl_triton_inputs(num_envs, seq_len, device, seed=SEED):
 
 def _to_puffer_inputs(rewards, values, terminateds):
     """Shift rewards/dones +1 relative to rl-triton's convention (see module
-    docstring, capability #1). Built once outside any timed region — a real
+    docstring, capability #1). Built once outside any timed region -- a real
     PufferLib caller's buffer is native in this layout, so this shift is a
     property of test-data generation, not a cost PufferLib actually pays."""
     num_envs, seq_len = rewards.shape
@@ -203,7 +203,7 @@ def _to_puffer_inputs(rewards, values, terminateds):
 def _ref_gae_matched_window(rewards, values, terminateds, gamma, lambda_):
     """Independent (non-Triton, non-PufferLib) reference: standard GAE delta/
     decay over t=0..T-2 using real V[t+1], backward-scanned with the carry
-    seeded at exactly 0 beyond t=T-2 — precisely what a length-T buffer lets
+    seeded at exactly 0 beyond t=T-2 -- precisely what a length-T buffer lets
     PufferLib's convention compute (see capability #2). Used only for the
     correctness gate; not part of the timed path."""
     num_envs, seq_len = rewards.shape
@@ -236,7 +236,7 @@ def run_equivalence_gate(op, device="cuda"):
         (64, 256, 1), (32, 4096, 2), (37, 129, 3),
         # Massively-parallel-sim regime: short T, high num_envs. Equivalence
         # math doesn't depend on T beyond T>=3, but this is checked, not
-        # assumed — includes T=8, the smallest swept value, and num_envs up
+        # assumed -- includes T=8, the smallest swept value, and num_envs up
         # to the largest swept value.
         (4096, 8, 4), (8192, 16, 5), (16384, 64, 6), (2048, 128, 7),
     ]
@@ -252,7 +252,7 @@ def run_equivalence_gate(op, device="cuda"):
 
         # Context only: rl-triton's own full-window (zero-bootstrap) output
         # necessarily diverges from this same reference near the boundary,
-        # by construction (capability #2 in the module docstring) — not a bug,
+        # by construction (capability #2 in the module docstring) -- not a bug,
         # just not a valid target for this comparison.
         full = compute_gae(rewards, values, terminateds, gamma=GAMMA, lambda_=LAMBDA)
         rl_vs_ref = (full[:, :seq_len - 1] - ref).abs()
@@ -262,7 +262,7 @@ def run_equivalence_gate(op, device="cuda"):
             all_ok = False
         print(f"  num_envs={num_envs:>5} seq_len={seq_len:>5}  "
               f"max|PufferLib - matched_ref| = {max_diff:.3e}   [{status}]")
-        print(f"    (rl-triton full-window vs. same ref, for context — "
+        print(f"    (rl-triton full-window vs. same ref, for context -- "
               f"differs near the boundary by construction: "
               f"max|diff|={rl_vs_ref.max().item():.4f}, "
               f"mean|diff|={rl_vs_ref.mean().item():.2e})")
@@ -287,7 +287,7 @@ def run_equivalence_gate(op, device="cuda"):
               f"max|diff|={direct_diff.max().item():.2e}, "
               f"mean|diff|={direct_diff.mean().item():.2e}  "
               f"(expected: small but nonzero, float32 summation-order noise, "
-              f"NOT bit-identical — see comment above)")
+              f"NOT bit-identical -- see comment above)")
 
     print()
     if all_ok:
@@ -297,7 +297,7 @@ def run_equivalence_gate(op, device="cuda"):
               "computes the identical recurrence via a log-depth PARALLEL scan, so "
               "it is NOT bit-identical to PufferLib or to the reference (measured "
               "max abs diff ~1e-5, float32 rounding from a different summation "
-              "order — confirmed deterministic run-to-run, so this is rounding, not "
+              "order -- confirmed deterministic run-to-run, so this is rounding, not "
               "kernel nondeterminism). Both are numerically correct implementations "
               "of the SAME quantity in the overlapping regime (on-policy, no "
               "interior truncations, columns 0..T-2), agreeing well within any "
@@ -473,7 +473,7 @@ def find_crossovers(results, num_envs_list, seq_lens, label):
             print(f"  num_envs={num_envs:>5}: NO wall-clock crossover in "
                   f"[{seq_lens[0]}, {seq_lens[-1]}] (best speedup observed: {best:.2f}x)")
     print()
-    # Device-only crossover, separately — prior work found this can invert
+    # Device-only crossover, separately -- prior work found this can invert
     # even where wall-clock never does (dispatch overhead masks it).
     any_dev_crossover = False
     for num_envs in num_envs_list:
@@ -510,7 +510,7 @@ def plot_results(results, out_path, x_axis="seq_len", num_envs_list=None, seq_le
             ax.plot(seq_lens, puffer_y, color=color, linestyle="--", marker="s",
                     markersize=5, linewidth=2, label=f"PufferLib, num_envs={num_envs}")
         ax.set_xlabel("Sequence length T")
-    else:  # x_axis == "num_envs" — short-horizon regime, color by seq_len
+    else:  # x_axis == "num_envs" -- short-horizon regime, color by seq_len
         for seq_len in seq_lens:
             color = colors[seq_len]
             triton_y = [results[(n, seq_len)]["triton_ms"] for n in num_envs_list]
@@ -592,7 +592,7 @@ def report_monotonicity(results, num_envs_list, seq_lens, label):
     print("=" * 88)
     violations = _check_monotonicity(results, num_envs_list, seq_lens)
     if not violations:
-        print("  PASSED — time is non-decreasing (within 2% tolerance) along both "
+        print("  PASSED -- time is non-decreasing (within 2% tolerance) along both "
               "the seq_len axis and the num_envs axis, for both implementations.")
         print()
         return violations
@@ -607,7 +607,7 @@ def report_monotonicity(results, num_envs_list, seq_lens, label):
                 for a, b in triton_warps_boundaries)
     )
     triton_seq_len_violations = [v for v in seq_len_violations if v.startswith("triton_ms")]
-    print(f"  FAILED — {len(violations)} violation(s) beyond 2% tolerance "
+    print(f"  FAILED -- {len(violations)} violation(s) beyond 2% tolerance "
           f"(n_iter={N_ITER}, n_trials={N_TRIALS}, min-of-medians):")
     for v in violations:
         print(f"    - {v}")
@@ -621,7 +621,7 @@ def report_monotonicity(results, num_envs_list, seq_lens, label):
                 f"{triton_at_warps_boundary}/{len(triton_seq_len_violations)} of the "
                 f"Triton seq_len-axis violations land on a `_WARPS` tuning-table "
                 f"boundary in src/rl_triton/ops/gae.py ({_WARPS_TABLE}) where "
-                "num_warps jumps discretely with BLOCK_SIZE — a discrete occupancy "
+                "num_warps jumps discretely with BLOCK_SIZE -- a discrete occupancy "
                 "change can make the nominally-bigger config faster in absolute "
                 "terms, a property of the existing tuning table, out of scope for "
                 "this benchmark to retune. "
@@ -629,18 +629,18 @@ def report_monotonicity(results, num_envs_list, seq_lens, label):
         else:
             diagnosis += (
                 "None of the Triton seq_len-axis violations land on a `_WARPS` "
-                f"tuning-table boundary ({_WARPS_TABLE}) — at these seq_lens "
+                f"tuning-table boundary ({_WARPS_TABLE}) -- at these seq_lens "
                 "(all below the table's smallest key, 512), num_warps is flat at "
                 "the default 16 regardless of BLOCK_SIZE, so this is NOT the same "
                 "mechanism as the production-regime sweep. At these problem sizes "
                 "device time is a handful of microseconds (see the dev-time column "
-                "below) — sub-2% swings here are within the profiler/CUDA-event "
+                "below) -- sub-2% swings here are within the profiler/CUDA-event "
                 "measurement floor, not a structural effect. "
             )
     num_envs_violation_count = len(violations) - len(seq_len_violations)
     if num_envs_violation_count:
         diagnosis += (
-            f"{num_envs_violation_count} violation(s) are on the num_envs axis — "
+            f"{num_envs_violation_count} violation(s) are on the num_envs axis -- "
             "consistent with NOTES.md's small-grid-occupancy-ramp finding: small "
             "grids don't yet saturate the GPU's SMs, so growing num_envs in that "
             "regime can be absorbed by idle SMs at near-zero extra wall-clock cost. "
@@ -684,7 +684,7 @@ def main():
     fig_path = Path(__file__).parent.parent / "gae_performance_crossover.png"
     plot_results(results, fig_path, x_axis="seq_len", num_envs_list=NUM_ENVS_LIST,
                  seq_lens=SEQ_LENS, colors=COLORS,
-                 title="rl-triton GAE vs. PufferLib advantage kernel — H100 SXM5 80GB "
+                 title="rl-triton GAE vs. PufferLib advantage kernel -- H100 SXM5 80GB "
                        "(production regime)")
 
     print("=" * 88)
@@ -712,7 +712,7 @@ def main():
     plot_results(results_short, fig_path_short, x_axis="num_envs",
                  num_envs_list=NUM_ENVS_LIST_LARGE, seq_lens=SEQ_LENS_SHORT,
                  colors=COLORS_SHORT,
-                 title="rl-triton GAE vs. PufferLib advantage kernel — H100 SXM5 80GB "
+                 title="rl-triton GAE vs. PufferLib advantage kernel -- H100 SXM5 80GB "
                        "(massively-parallel-sim regime)")
 
     analyze_short_horizon_questions(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT)

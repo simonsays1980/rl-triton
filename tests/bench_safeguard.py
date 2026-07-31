@@ -17,7 +17,7 @@ or select in CI:
 import os
 
 # Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
-# var_ranges, defaulting to unknown range") — see tests/bench_release.py's
+# var_ranges, defaulting to unknown range") -- see tests/bench_release.py's
 # same setdefault for the full rationale. Only effective if this module's
 # `import torch` below is the first import to touch torch in the process
 # (pytest collection order can beat us to it if another test module already
@@ -286,7 +286,7 @@ def _returns_inputs():
 
 
 # ---------------------------------------------------------------------------
-# Safeguard tests — one per algorithm
+# Safeguard tests -- one per algorithm
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -326,7 +326,7 @@ def test_perf_gae():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _GAE_FLOOR, (
-        f"GAE Triton {speedup:.2f}x vs torch.compile(vec) — below {_GAE_FLOOR}x floor"
+        f"GAE Triton {speedup:.2f}x vs torch.compile(vec) -- below {_GAE_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -361,7 +361,7 @@ def test_perf_vtrace():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _VTRACE_FLOOR, (
-        f"V-Trace Triton {speedup:.2f}x vs torch.compile(vec) — below {_VTRACE_FLOOR}x floor"
+        f"V-Trace Triton {speedup:.2f}x vs torch.compile(vec) -- below {_VTRACE_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -400,7 +400,7 @@ def test_perf_retrace():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _RETRACE_FLOOR, (
-        f"Retrace Triton {speedup:.2f}x vs torch.compile(vec) — below {_RETRACE_FLOOR}x floor"
+        f"Retrace Triton {speedup:.2f}x vs torch.compile(vec) -- below {_RETRACE_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -440,7 +440,7 @@ def test_perf_lambda_returns():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _LAMBDA_FLOOR, (
-        f"λ-returns Triton {speedup:.2f}x vs torch.compile(vec) — below {_LAMBDA_FLOOR}x floor"
+        f"λ-returns Triton {speedup:.2f}x vs torch.compile(vec) -- below {_LAMBDA_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -487,7 +487,7 @@ def test_perf_discounted_returns():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _DISC_FLOOR, (
-        f"Discounted-returns Triton {speedup:.2f}x vs torch.compile(vec) — below {_DISC_FLOOR}x floor"
+        f"Discounted-returns Triton {speedup:.2f}x vs torch.compile(vec) -- below {_DISC_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -527,7 +527,7 @@ def test_perf_eligibility_traces():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _ELIG_FLOOR, (
-        f"Eligibility-traces Triton {speedup:.2f}x vs torch.compile(vec) — below {_ELIG_FLOOR}x floor"
+        f"Eligibility-traces Triton {speedup:.2f}x vs torch.compile(vec) -- below {_ELIG_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
@@ -548,7 +548,7 @@ def test_perf_prefix_sum():
     # PyTorch equivalent (cumsum + episodic reset), not bare cumsum.  Removing
     # the torch.zeros(num_envs) seed-default allocation from the no-seed kernel
     # path (HAS_SEED constexpr) flipped this from a launch-overhead-bound loss
-    # to a genuine win — median speedup is ~1.24x across 30+ independent runs.
+    # to a genuine win -- median speedup is ~1.24x across 30+ independent runs.
     #
     # This is also the shortest-duration kernel in the library, so unlike every
     # other test here, it gates on the MEDIAN rather than the min. Its min is
@@ -573,7 +573,7 @@ def test_perf_prefix_sum():
         {}, {},
         n_iter=ni, n_trials=5,
     )
-    speedup = sorted(speedups)[2]  # median — see comment above on why this kernel alone gates on median
+    speedup = sorted(speedups)[2]  # median -- see comment above on why this kernel alone gates on median
 
     print(
         f"\nPrefix-sum  {_NUM_ENVS}x{_SEQ_LEN}  (5-trial spread):"
@@ -583,13 +583,13 @@ def test_perf_prefix_sum():
         f"\n  min={min(speedups):.2f}x  median={sorted(speedups)[2]:.2f}x  max={max(speedups):.2f}x"
     )
     assert speedup >= _PREFIX_FLOOR, (
-        f"Prefix-sum Triton median {speedup:.2f}x vs torch.compile(episodic) — below {_PREFIX_FLOOR}x floor"
+        f"Prefix-sum Triton median {speedup:.2f}x vs torch.compile(episodic) -- below {_PREFIX_FLOOR}x floor"
         f" (5-run spread: min={min(speedups):.2f}x max={max(speedups):.2f}x)"
     )
 
 
 # ---------------------------------------------------------------------------
-# Monotonicity gate — a larger problem must never measure faster than a
+# Monotonicity gate -- a larger problem must never measure faster than a
 # smaller one (2% band). This was missing entirely from the previous gate
 # set; added here as a new CI-failing check without touching any existing
 # _FLOOR constant. One small and one large config per algorithm;
@@ -749,5 +749,5 @@ def test_monotonicity_gate():
     print(f"\nMonotonicity gate ({small_ne}x{small_sl} -> {large_ne}x{large_sl}, 2% band):")
     for algo, violations in all_violations.items():
         status = "FAILED" if violations else "PASSED"
-        print(f"  {algo}: {status}" + (f" — {violations}" if violations else ""))
+        print(f"  {algo}: {status}" + (f" -- {violations}" if violations else ""))
     assert not failed, f"Monotonicity gate failed for: {failed}"

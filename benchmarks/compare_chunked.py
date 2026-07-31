@@ -4,11 +4,11 @@ Every backward-scan op in this library (GAE, V-Trace, lambda-returns, discounted
 and Retrace via its own reroute) shares `_run_scan`'s auto-dispatch: the flat single-block
 kernel for seq_len <= _FLAT_MAX_SEQ_LEN (131072), a separate chunked kernel above that. That
 threshold has never been exercised by bench_release.py's sweep (which tops out at seq_len=4096)
-or by benchmarks/compare_pufferlib.py — this script fills that gap. Not part of bench_release.py,
+or by benchmarks/compare_pufferlib.py -- this script fills that gap. Not part of bench_release.py,
 CI, or the test suite; run on demand.
 
 (There IS a pre-existing internal-only test, tests/test_scan_chunked.py::test_scan_performance,
-`@pytest.mark.slow`, that times the flat/chunked dispatch at these sizes — but it explicitly
+`@pytest.mark.slow`, that times the flat/chunked dispatch at these sizes -- but it explicitly
 excludes any torch.compile comparison, since a per-timestep Python-loop reference would take
 minutes at this scale. This script instead compares against the same "vec" compiled baselines
 (log-space cumsum / suffix-product, no Python loop) already used throughout bench_release.py,
@@ -19,14 +19,14 @@ chunked kernel at all (`_run_scan_forward` asserts and rejects above _FLAT_MAX_S
 its own docstring: "chunked forward scan kernel has not been implemented yet").
 
 Correctness is checked against the exact sequential `_ref_*` reference from bench_release.py
-(one call per shape, NOT per benchmark iteration — ~15-90s at these lengths, verified
+(one call per shape, NOT per benchmark iteration -- ~15-90s at these lengths, verified
 empirically, not the "minutes" a repeatedly-timed Python loop would cost). An earlier version
 of this script used the uncompiled "vec" baseline (log-space cumsum / suffix-product) as the
-correctness ground truth instead, assuming it would scale safely since it has no Python loop —
+correctness ground truth instead, assuming it would scale safely since it has no Python loop --
 that assumption was wrong: it produces inf/nan from float32 underflow at seq_len=65536, the
 same failure mode documented in NOTES.md's log-space-underflow note (there it hits every size
 this project benchmarks, not only the extreme lengths this script probes). Because of this, the "vec" baseline's own
-validity at each length is checked (not assumed) before it is trusted as a timed comparison —
+validity at each length is checked (not assumed) before it is trusted as a timed comparison --
 see `_check_vec_validity` below. Where it diverges, that is reported plainly as a baseline
 limitation, not silently worked around, and no speedup ratio is computed against a
 numerically-broken comparison.
@@ -43,7 +43,7 @@ import sys
 from pathlib import Path
 
 # Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
-# var_ranges, defaulting to unknown range") — see tests/bench_release.py's
+# var_ranges, defaulting to unknown range") -- see tests/bench_release.py's
 # same setdefault for the full rationale. Must precede `import torch`.
 os.environ.setdefault("TORCH_LOGS", "-dynamic")
 
@@ -131,13 +131,13 @@ ALGOS = {
 
 
 def _check_vec_validity(vec_fn, args, kwargs, ref_out, label):
-    """Check — do not assume — that the uncompiled "vec" baseline is still
+    """Check -- do not assume -- that the uncompiled "vec" baseline is still
     numerically valid at this shape (finite, and close to the true reference)
     before trusting it as a timed comparison. Returns (is_valid, vec_out)."""
     vec_out = vec_fn(*args, **kwargs)
     tensors = vec_out if isinstance(vec_out, tuple) else (vec_out,)
     if not all(torch.isfinite(t).all() for t in tensors):
-        print(f"  [{label}] vec baseline produced inf/nan at this scale — not a valid comparison here.")
+        print(f"  [{label}] vec baseline produced inf/nan at this scale -- not a valid comparison here.")
         return False, vec_out
     try:
         assert_correctness(vec_out, ref_out, f"{label} (vec vs exact reference)")
@@ -241,8 +241,8 @@ def render_markdown(gpu_label, all_results):
         "",
         "**Scope note: this study is OUTSIDE the project's target regime.** rl-triton's target "
         "regime is production RL rollouts, seq_len ~80-128 (see the production-regime table in "
-        "`benchmarks.md`). Everything below runs at seq_len 65,536-524,288 — 500-4000x longer "
-        "than that target — specifically to probe the flat/chunked dispatch boundary. Treat this "
+        "`benchmarks.md`). Everything below runs at seq_len 65,536-524,288 -- 500-4000x longer "
+        "than that target -- specifically to probe the flat/chunked dispatch boundary. Treat this "
         "as a robustness/correctness demonstration at an extreme scale, not a headline "
         "performance result for the project's actual target regime.",
         "",
@@ -253,7 +253,7 @@ def render_markdown(gpu_label, all_results):
         "the test suite. `_FLAT_MAX_SEQ_LEN = 131072` is the shared flat/chunked dispatch "
         "threshold for every backward-scan op (GAE, V-Trace, lambda-returns, discounted-returns, "
         "and Retrace via its own reroute). Rows at seq_len <= 131072 use the flat kernel; rows "
-        "above it use the chunked kernel — this is the first time that boundary has been "
+        "above it use the chunked kernel -- this is the first time that boundary has been "
         "benchmarked against a compiled baseline in this repository (a pre-existing internal-only "
         "test, `test_scan_chunked.py::test_scan_performance`, times the same dispatch but "
         "excludes any torch.compile comparison entirely).",
@@ -317,7 +317,7 @@ def main():
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
-        print("CUDA not available — skipping.")
+        print("CUDA not available -- skipping.")
         return
 
     gpu_label = args.gpu or torch.cuda.get_device_name(0)

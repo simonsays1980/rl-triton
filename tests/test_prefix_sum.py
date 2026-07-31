@@ -20,7 +20,7 @@ def reference_episodic_prefix_sum(
     dones: torch.Tensor,
     seed_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch forward scan — ground truth for correctness tests only."""
+    """Pure-PyTorch forward scan -- ground truth for correctness tests only."""
     num_envs, seq_len = inputs.shape
     out  = torch.zeros_like(inputs)
     carry = torch.zeros(num_envs, device=inputs.device, dtype=inputs.dtype)
@@ -38,7 +38,7 @@ def reference_episodic_prefix_sum(
 
 @cuda_only
 def test_prefix_sum_known_values_no_reset():
-    # No episode boundaries — plain cumulative sum.
+    # No episode boundaries -- plain cumulative sum.
     # inputs=[1,2,3], dones=[0,0,0]
     # C[0]=1, C[1]=1+2=3, C[2]=3+3=6
     inputs = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
@@ -77,7 +77,7 @@ def test_prefix_sum_known_values_mid_reset():
 
 @cuda_only
 def test_prefix_sum_known_values_all_resets():
-    # Every step is a terminal — each output equals its own input.
+    # Every step is a terminal -- each output equals its own input.
     inputs = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones  = torch.ones(1, 3, device="cuda")
     torch.testing.assert_close(
@@ -180,7 +180,7 @@ def test_prefix_sum_no_dones():
 
 @cuda_only
 def test_prefix_sum_all_dones():
-    """All terminals — output equals input elementwise."""
+    """All terminals -- output equals input elementwise."""
     torch.manual_seed(2)
     inputs = torch.randn(16, 256, device="cuda")
     dones  = torch.ones(16, 256, device="cuda")
@@ -220,7 +220,7 @@ def test_prefix_sum_non_contiguous_input():
 # Prefix sum: no truncation/bootstrap path.
 # compute_prefix_sum is a forward-scan cumulative sum with optional episode-boundary
 # resets via the `dones` mask.  There is no concept of a "continuation value from
-# the next episode" — the scan simply restarts from 0 (or seed_values) at each
+# the next episode" -- the scan simply restarts from 0 (or seed_values) at each
 # done step.  Truncation vs termination makes no semantic difference to a cumsum.
 # No truncation correctness test or truncation benchmark is added.
 
@@ -242,7 +242,7 @@ def vectorized_episodic_prefix_sum(
     dones: torch.Tensor,
 ) -> torch.Tensor:
     """
-    Episodic prefix sum via parallel_prefix_scan — a strong compiled baseline
+    Episodic prefix sum via parallel_prefix_scan -- a strong compiled baseline
     a competent PyTorch user would write to avoid a Python timestep loop.
 
     reference_episodic_prefix_sum's (and the kernel's, per its own ground-
@@ -267,16 +267,16 @@ def test_prefix_sum_performance():
     """
     Benchmark compute_episodic_prefix_sum against three baselines:
 
-      triton             — Triton kernel  (CUDA events)
-      pt.compile(cumsum) — torch.compile on the vectorized cumsum trick  (CUDA events)
-      pt.compile(loop)   — torch.compile on the reference timestep loop  (wall-clock)
-      numpy(cpu)         — pure NumPy loop on CPU  (wall-clock)
+      triton             -- Triton kernel  (CUDA events)
+      pt.compile(cumsum) -- torch.compile on the vectorized cumsum trick  (CUDA events)
+      pt.compile(loop)   -- torch.compile on the reference timestep loop  (wall-clock)
+      numpy(cpu)         -- pure NumPy loop on CPU  (wall-clock)
 
     Both Triton and pt.compile(cumsum) are fully vectorized (no Python timestep
     loop), so CUDA events are appropriate for both.  pt.compile(loop) dispatches
     one op per timestep from Python; wall-clock captures that stall.
 
-    Assertion: Triton must be >=1.5x faster than pt.compile(cumsum) — the
+    Assertion: Triton must be >=1.5x faster than pt.compile(cumsum) -- the
     strongest fully-vectorized PyTorch baseline.
     """
     compiled_vec  = torch.compile(vectorized_episodic_prefix_sum)
@@ -329,11 +329,11 @@ def test_prefix_sum_performance():
         )
 
     print(
-        "\ntriton        : CUDA events — pure kernel time, no CPU overhead."
-        "\ncompile(vec)  : CUDA events — vectorized cumsum correction, no Python loop."
-        "\ncompile(loop) : wall-clock  — one CUDA op per timestep from Python;"
+        "\ntriton        : CUDA events -- pure kernel time, no CPU overhead."
+        "\ncompile(vec)  : CUDA events -- vectorized cumsum correction, no Python loop."
+        "\ncompile(loop) : wall-clock  -- one CUDA op per timestep from Python;"
         "\n                CUDA events would miss the CPU stall."
-        "\nnumpy(cpu)    : wall-clock  — pure NumPy loop on CPU."
+        "\nnumpy(cpu)    : wall-clock  -- pure NumPy loop on CPU."
     )
 
     assert min(all_speedups_vec) >= 1.5, (
@@ -347,7 +347,7 @@ def test_prefix_sum_performance():
 
 @cuda_only
 def test_prefix_sum_seq_len_too_long():
-    """seq_len > 131072 must raise — forward chunked kernel not implemented."""
+    """seq_len > 131072 must raise -- forward chunked kernel not implemented."""
     inputs = torch.zeros(1, 131073, device="cuda")
     dones  = torch.zeros(1, 131073, device="cuda")
     with pytest.raises(AssertionError, match="131072"):

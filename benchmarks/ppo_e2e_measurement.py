@@ -1,16 +1,16 @@
 """ONE-OFF measurement: GAE's share of a real PPO update step.
 
 Purpose: pre-empt "does this speed up training?" by honestly measuring what
-fraction of a full PPO update step GAE actually is. NOT a recurring benchmark —
+fraction of a full PPO update step GAE actually is. NOT a recurring benchmark --
 run once, report the resulting number as a single sentence for the paper's
 evaluation section. Do NOT wire this into bench_release.py, benchmarks.md, or
-README.md, and do not draw a "we win/lose" conclusion here — that is a
+README.md, and do not draw a "we win/lose" conclusion here -- that is a
 STOP-and-report item for a human to sign off on.
 
 Fixes a methodology bug in an earlier version of this measurement: running
 the Triton-GAE arm and the torch.compile-GAE arm as separate timed blocks
 made the "optimizer" stage come out 43% different between arms (0.294ms vs
-0.518ms) — impossible
+0.518ms) -- impossible
 from a GAE-only change, since GAE finishes well before the optimizer step and
 has no way to affect Adam's cost. That is the signature of the two arms not
 being measured identically (GPU clock state / allocator warmth drifting
@@ -18,7 +18,7 @@ between the two blocks). Fix here: interleave both arms in ONE process, same
 seeds, alternating which arm runs first every iteration, so any slow drift
 affects both arms equally instead of contaminating whichever arm ran second.
 
-Setup: synthetic rollout buffer (no real env — this measures update-step cost,
+Setup: synthetic rollout buffer (no real env -- this measures update-step cost,
 not env-interaction cost), num_envs=4096, seq_len=128, Isaac-Gym-Ant-like MLP
 policy+value net (obs_dim=60, action_dim=8, continuous Gaussian policy).
 Full PPO update per measured iteration: GAE once per rollout, then 4 epochs x
@@ -163,7 +163,7 @@ def measure(hidden, compiled, device="cuda"):
     torch.manual_seed(SEED)
     net_a = ActorCritic(hidden).to(device)
     net_b = ActorCritic(hidden).to(device)
-    net_b.load_state_dict(net_a.state_dict())  # identical init — isolates the GAE-arm difference
+    net_b.load_state_dict(net_a.state_dict())  # identical init -- isolates the GAE-arm difference
 
     if compiled:
         net_a_fwd = torch.compile(net_a)
@@ -207,7 +207,7 @@ def main():
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     if not torch.cuda.is_available():
-        print("CUDA not available — skipping.")
+        print("CUDA not available -- skipping.")
         return
 
     print(f"GPU: {torch.cuda.get_device_name(0)}  torch: {torch.__version__}")
@@ -215,7 +215,7 @@ def main():
     print(f"Interleaved A/B, {N_ITERS} timed iterations ({N_WARMUP} warmup), same seeds per iteration.\n")
 
     report_lines = [
-        f"# PPO end-to-end measurement — {datetime.date.today().isoformat()}",
+        f"# PPO end-to-end measurement -- {datetime.date.today().isoformat()}",
         "",
         "ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.",
         f"GPU: {torch.cuda.get_device_name(0)} · torch {torch.__version__}",
@@ -265,7 +265,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"ppo-e2e-measurement-{datetime.date.today().isoformat()}.md"
     out_path.write_text("\n".join(report_lines))
-    print(f"Wrote {out_path} (reference only — not part of benchmarks.md/README's recurring tables).")
+    print(f"Wrote {out_path} (reference only -- not part of benchmarks.md/README's recurring tables).")
 
 
 if __name__ == "__main__":

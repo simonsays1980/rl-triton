@@ -24,7 +24,7 @@ Needed for both cloning and minting runner registration tokens at boot.
    | `GITHUB_REPO` | `simonsays1980/rl-triton` |
    | `RUNNER_NAME` | `runpod-gpu-1` (optional) |
 
-5. Container Start Command — paste this one-liner (bootstraps then runs start.sh):
+5. Container Start Command -- paste this one-liner (bootstraps then runs start.sh):
 
    ```
    bash -c "git clone https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git /root/rl-triton && bash /root/rl-triton/.runpod/start.sh"
@@ -41,6 +41,6 @@ tmux attach -t runner   # Detach: Ctrl-B D
 
 ## Notes
 
-- The runner re-registers itself on every boot via `--replace` — no manual
+- The runner re-registers itself on every boot via `--replace` -- no manual
   token rotation needed as long as the PAT is valid.
 - Stop/start the pod from the RunPod UI; the runner re-registers automatically.

@@ -74,7 +74,7 @@ Factoring out $\gamma c_t$ from the second term onward reveals the first-order b
 
 $$\Delta_t = \delta_t^V + \gamma c_t \cdot \Delta_{t+1}$$
 
-This is the mathematically exact recurrence within a single episode. No done flags appear — the sum in the original V-Trace definition naturally terminates at the episode boundary.
+This is the mathematically exact recurrence within a single episode. No done flags appear -- the sum in the original V-Trace definition naturally terminates at the episode boundary.
 
 In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent accumulation from crossing episode boundaries, the kernel introduces masked versions of $\alpha_t$ and $\beta_t$ that depend on two mutually exclusive flags, $d_t^{\text{term}}$ and $d_t^{\text{trunc}}$:
 
@@ -94,7 +94,7 @@ Because the mathematical structure is mapped to the same recurrence, the GPU thr
 
 $$(\alpha_B,\beta_B)\oplus(\alpha_A,\beta_A)=(\alpha_B+\beta_B \alpha_A,\beta_A \beta_B)$$
 
-The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly — only the definition of $\alpha_t$ and $\beta_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
+The following trace mirrors the [GAE reduction tree](gae.md#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree) exactly -- only the definition of $\alpha_t$ and $\beta_t$ differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.
 
 ### Setup (Step 0)
 
@@ -163,7 +163,7 @@ Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` s
 
 ### The unifying rule
 
-`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`.
+`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid -- truncated steps and the final column -- and zero everywhere else. Its shape is `[num_envs, seq_len]`.
 
 For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
 
@@ -171,9 +171,9 @@ For the common case where no interior truncations occur, the `last_value` argume
 
 | Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\alpha_t$ | Decay $\beta_t$ |
 |---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ — scan stops |
-| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ — scan stops |
-| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $\Delta_T$ | $0$ — carry absorbed |
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $\Delta_T$ | $0$ -- carry absorbed |
 
 ---
 
@@ -206,4 +206,4 @@ V-Trace was originally introduced as the core mathematical component of the IMPA
 
 ## Further Reading
 
-* [Off-Policy Correction](https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/) — A visual explanation of off-policy correction methods, covering the importance sampling rationale behind V-Trace and related algorithms.
+* [Off-Policy Correction](https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/) -- A visual explanation of off-policy correction methods, covering the importance sampling rationale behind V-Trace and related algorithms.

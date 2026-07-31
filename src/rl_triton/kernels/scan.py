@@ -64,7 +64,7 @@ def backward_scan_kernel(
         seq_len:       Number of timesteps (runtime value).
         stride_env:    Row stride in elements.
         BLOCK_SIZE:    Must be >= seq_len and a power of 2.
-        HAS_BOOTSTRAP: Compile-time flag — False skips the bootstrap_ptr read and
+        HAS_BOOTSTRAP: Compile-time flag -- False skips the bootstrap_ptr read and
                        uses literal 0.0 (the default A[T]=0 when no bootstrap is given).
     """
     env_idx = tl.program_id(0)
@@ -115,7 +115,7 @@ def forward_scan_kernel(
         seq_len:    Number of timesteps (runtime value).
         stride_env: Row stride in elements.
         BLOCK_SIZE: Must be >= seq_len and a power of 2.
-        HAS_SEED:   Compile-time flag — False skips the seed_ptr read and uses
+        HAS_SEED:   Compile-time flag -- False skips the seed_ptr read and uses
                     literal 0.0 (the default e[-1]=0 when no seed is given).
     """
     env_idx = tl.program_id(0)

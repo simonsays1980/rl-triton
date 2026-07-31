@@ -23,9 +23,9 @@ def vtrace_fused_kernel(
     """
     Fully-fused V-Trace kernel: computes targets and advantages in a single program.
 
-    HAS_TRUNCATIONS=False (common case — benchmark path):
+    HAS_TRUNCATIONS=False (common case -- benchmark path):
       truncateds_ptr is constexpr None: the argument is completely compiled out,
-      no register allocated, no HBM read.  bootstrap_ptr is [num_envs] — one
+      no register allocated, no HBM read.  bootstrap_ptr is [num_envs] -- one
       scalar per env for the window boundary.
       Full-width HBM reads: log_pi_target, log_pi_behavior, values,
                             rewards, terminateds  (5)
@@ -40,8 +40,8 @@ def vtrace_fused_kernel(
     offs = 0, 1, …, BLOCK_SIZE-1   (block position, loaded in reversed order)
     rev  = seq_len - 1 - offs       (real-time array index: offs=0 → t=T-1)
 
-    terminated[t]: 1 for true episode ends — zeros the bootstrap inside delta.
-    done[t]:       1 for any boundary — zeros trace decay.
+    terminated[t]: 1 for true episode ends -- zeros the bootstrap inside delta.
+    done[t]:       1 for any boundary -- zeros trace decay.
                    False path: done = terminated.
                    True  path: done = terminated | truncated.
 
@@ -54,14 +54,14 @@ def vtrace_fused_kernel(
 
     Why steps 3-4 round-trip through global memory:
       Advantages need targets[t+1], which belongs to the neighboring thread.
-      Triton has no direct SRAM API — the standard pattern is store → debug_barrier
+      Triton has no direct SRAM API -- the standard pattern is store → debug_barrier
       → load.  The targets data was just written by the same SM, so the read
       typically hits L1/L2 cache, but this is structural latency that is not
       measured here.
       TODO(perf): profile whether this store→reload is the primary reason V-Trace
       trails GAE on the same hardware.  If so, a two-kernel approach (targets,
       then advantages) would trade one kernel launch for eliminating the round-trip
-      — worth benchmarking when widening the gap matters.
+      -- worth benchmarking when widening the gap matters.
 
     Args:
         log_pi_target_ptr:   Log probs under target policy, [num_envs, seq_len].
@@ -70,10 +70,10 @@ def vtrace_fused_kernel(
         rewards_ptr:         Per-step rewards, same shape.
         terminateds_ptr:     True termination flags (1.0=terminated), same shape.
         truncateds_ptr:      Time-limit truncation flags, same shape.
-                             Constexpr None when HAS_TRUNCATIONS=False — compiled out.
+                             Constexpr None when HAS_TRUNCATIONS=False -- compiled out.
         targets_ptr:         Output V-Trace targets, same shape.
         advantages_ptr:      Output V-Trace advantages, same shape.
-        bootstrap_ptr:       [num_envs, seq_len] when HAS_TRUNCATIONS=True —
+        bootstrap_ptr:       [num_envs, seq_len] when HAS_TRUNCATIONS=True --
                              nonzero only at truncated steps and window boundary.
                              [num_envs] scalar per env when HAS_TRUNCATIONS=False.
         seq_len:             Number of timesteps (runtime value).
@@ -82,9 +82,9 @@ def vtrace_fused_kernel(
         rho_bar:             IS ratio clip for delta (runtime value).
         c_bar:               IS ratio clip for decay (runtime value).
         BLOCK_SIZE:          Must be >= seq_len and a power of 2 (constexpr).
-        HAS_TRUNCATIONS:     Compile-time flag — False eliminates truncateds_ptr and
+        HAS_TRUNCATIONS:     Compile-time flag -- False eliminates truncateds_ptr and
                              2D bootstrap_ptr reads entirely.
-        HAS_BOOTSTRAP:       Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+        HAS_BOOTSTRAP:       Compile-time flag, only meaningful when HAS_TRUNCATIONS=False --
                              False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)
@@ -152,10 +152,10 @@ def vtrace_fused_kernel(
         advantage = rho * (r + gamma * next_target * not_terminated - v)
         tl.store(advantages_ptr + base + rev, advantage, mask=mask)
     else:
-        # 5 full-width reads.  truncateds_ptr is constexpr None — compiled out.
+        # 5 full-width reads.  truncateds_ptr is constexpr None -- compiled out.
         # bootstrap_ptr is [num_envs]: one scalar per env for the window boundary.
         # HAS_BOOTSTRAP=False (no last_value/bootstrap_values given): skip the
-        # scalar load entirely and use literal 0.0 — saves the wrapper a
+        # scalar load entirely and use literal 0.0 -- saves the wrapper a
         # torch.zeros(num_envs) allocation + launch (same pattern as GAE).
         not_done  = not_terminated          # done[t] = terminated[t]
         if HAS_BOOTSTRAP:

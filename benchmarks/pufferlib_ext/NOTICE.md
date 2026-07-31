@@ -10,16 +10,16 @@ official `pufferlib==3.0.0` sdist on PyPI:
 - sha256(`pufferlib.cpp`) = `3efbfd62a5b2875451cc77bbb5cdb70a48001400e43cb3a4bbb724a926ee9a53`
 - sha256(`pufferlib.cu`)  = `8154ba37ea6a722a13aa115734680d90c350699c7e6a7b7d8b811611f7f0fdc3`
 
-This code is **not** authored by, or licensed to third parties by, this repository — it is
+This code is **not** authored by, or licensed to third parties by, this repository -- it is
 PufferLib's own source, included here unmodified solely so that
 `benchmarks/benchmark_gae_vs_pufferlib.py` can JIT-compile PufferLib's real advantage-kernel
 CUDA implementation for a one-time, standalone hardware comparison, without requiring the
 full `pip install pufferlib` dependency set (see `build.py`'s docstring for why). It is
-governed by PufferLib's own license terms — see the upstream repository for the authoritative
+governed by PufferLib's own license terms -- see the upstream repository for the authoritative
 license text. This repository makes no license claim over these two files beyond what is
 necessary to compile and benchmark them locally.
 
 This directory, `benchmarks/benchmark_gae_vs_pufferlib.py`, and
-`benchmarks/compare_pufferlib.py` are standalone, run-on-demand comparison scripts — none of
+`benchmarks/compare_pufferlib.py` are standalone, run-on-demand comparison scripts -- none of
 them are part of the test suite, `bench_release.py`, or CI, and none are installed or built
 by `.runpod/start.sh`.

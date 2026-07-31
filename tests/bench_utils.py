@@ -15,7 +15,7 @@ def parallel_suffix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
     After log2(T) doubling passes, a[t] = suffix scan result G[t] for the
     recurrence G[t] = a[t] + b[t]*G[t+1].  b[t]=0 at boundary steps severs
-    the carry naturally (b1=0 → a1+b1*a2 = a1) — no special handling needed.
+    the carry naturally (b1=0 → a1+b1*a2 = a1) -- no special handling needed.
 
     This is the same associative operator used by tl.associative_scan in the
     Triton kernels.  Fully vectorized (no Python loop), compiles cleanly with
@@ -54,7 +54,7 @@ def parallel_prefix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     (e.g. eligibility traces): z[t] = a[t] + b[t]*z[t-1], z[-1] implicitly 0
     (inject a seed via a[:, 0] += b[:, 0] * seed before calling).
 
-    Native forward (left-to-right) Hillis-Steele doubling scan — the direct
+    Native forward (left-to-right) Hillis-Steele doubling scan -- the direct
     mirror of parallel_suffix_scan's own doubling loop, written directly
     against the forward recurrence rather than via flip -> suffix -> flip.
     The prior flip-based construction was mathematically correct but its
@@ -104,7 +104,7 @@ def parallel_prefix_scan(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def _warmup_gpu(fn, *args, n_warmup: int = 20, **kwargs) -> None:
     """Run n_warmup untimed iterations and synchronize.
 
-    Must be called once per (fn, config) pair before _bench_gpu — absorbs
+    Must be called once per (fn, config) pair before _bench_gpu -- absorbs
     Triton JIT compilation, autotuning, cuBLAS init, and first-touch
     allocation so none of these land in the timed region.
     """
@@ -119,7 +119,7 @@ def _bench_gpu(fn, *args, n_iter: int = 50, n_trials: int = 5, **kwargs) -> floa
     Caller must call _warmup_gpu(fn, *args, **kwargs) before this so that
     Triton compilation and autotuning are already done.  Each trial measures
     n_iter iterations individually with a pair of CUDA events (explicit sync
-    immediately before start AND stop) and takes that trial's MEDIAN — robust
+    immediately before start AND stop) and takes that trial's MEDIAN -- robust
     against occasional scheduler jitter within a trial.
 
     Repeating across n_trials and taking the MIN guards against a rarer but
@@ -131,7 +131,7 @@ def _bench_gpu(fn, *args, n_iter: int = 50, n_trials: int = 5, **kwargs) -> floa
     state, so the min across independently-warmed trials is a sound estimator
     of the kernel's real cost and is what eliminates the "smaller config
     measures slower than a larger one" artifacts this harness was built to
-    catch — set n_trials=1 to fall back to a single plain median.
+    catch -- set n_trials=1 to fall back to a single plain median.
     """
     trial_medians = []
     for _ in range(n_trials):
@@ -164,10 +164,10 @@ def _bench_gpu_spread(
     (repeated bench_safeguard.py runs) that without that inner robustness, a
     single outer trial can land entirely inside one of this GPU's intermittent
     multi-ms interference episodes and report a wildly low one-off speedup
-    (observed down to ~0.6x on kernels that are reliably >1.5x otherwise) —
+    (observed down to ~0.6x on kernels that are reliably >1.5x otherwise) --
     exactly the artifact this harness exists to filter out. Costs 5x more
     measurement work per outer trial; worth it so every value in the returned
-    list — including min(speedups) — is trustworthy enough to gate a floor on.
+    list -- including min(speedups) -- is trustworthy enough to gate a floor on.
     """
     _warmup_gpu(fn_a, *args_a, n_warmup=n_warmup, **kwargs_a)
     _warmup_gpu(fn_b, *args_b, n_warmup=n_warmup, **kwargs_b)
@@ -198,7 +198,7 @@ def _bench_cpu(fn, *args, n_warmup: int = 3, target_s: float = 0.5, **kwargs) ->
 def _n_iter_gpu(seq_len: int, num_envs: int) -> int:
     """Scale iter count so we don't over-benchmark small configs.
 
-    Warmup is always handled by explicit _warmup_gpu calls — this only
+    Warmup is always handled by explicit _warmup_gpu calls -- this only
     controls the number of timed iterations passed to _bench_gpu.
     """
     elements = seq_len * num_envs
@@ -214,7 +214,7 @@ def _n_iter_gpu(seq_len: int, num_envs: int) -> int:
 def _bench_gpu_amortized(fn, *args, n_calls: int = 100, n_trials: int = 5, **kwargs) -> float:
     """N calls inside ONE timed region (one sync before, one after); ms/call.
 
-    Separates harness per-call sync overhead from genuine per-call cost —
+    Separates harness per-call sync overhead from genuine per-call cost --
     the full-call single-shot number in _bench_gpu pays one cudaDeviceSynchronize
     per iteration, which at very short seq_len can be a large fraction of the
     measured time. This does not replace _bench_gpu as the speedup basis
@@ -241,9 +241,9 @@ def _device_profile(fn, *args, n_iter: int = 20, n_warmup: int = 5, **kwargs) ->
     """Device-only CUDA time (ms/call) and kernel-launch count (launches/call).
 
     Uses torch.profiler CUDA activity around steady-state calls (ncu/nsys are
-    unusable in typical containerized GPU environments — RmProfilingAdminOnly
+    unusable in typical containerized GPU environments -- RmProfilingAdminOnly
     restrictions). This captures ONLY time the GPU spends executing kernels,
-    excluding Python dispatch / wrapper setup / launch overhead — the gap
+    excluding Python dispatch / wrapper setup / launch overhead -- the gap
     between this and _bench_gpu's full-call wall time IS that overhead, which
     callers still pay every invocation and which this function deliberately
     does not hide.
@@ -319,13 +319,13 @@ def assert_deterministic(fn, *args, label: str, n_repeats: int = 3, **kwargs) ->
                 if not torch.equal(a, b):
                     raise AssertionError(
                         f"[{label}] run {i} output[{j}] not bit-identical to run 0 "
-                        f"at the same shape/config — kernel is non-deterministic."
+                        f"at the same shape/config -- kernel is non-deterministic."
                     )
         else:
             if not torch.equal(first, again):
                 raise AssertionError(
                     f"[{label}] run {i} not bit-identical to run 0 at the same "
-                    f"shape/config — kernel is non-deterministic."
+                    f"shape/config -- kernel is non-deterministic."
                 )
 
 
@@ -381,7 +381,7 @@ def check_monotonic_grid(rows: list[dict], ms_key: str = "triton_ms", tol: float
 
 def print_environment_header(script_name: str) -> None:
     """Print GPU name, torch/triton versions, and TRITON_CACHE_DIR, flushed
-    immediately, and warn if the cache dir looks cold/ephemeral — a cold
+    immediately, and warn if the cache dir looks cold/ephemeral -- a cold
     cache silently spends minutes recompiling every kernel variant, which
     looks like a hang to anyone watching a long unattended sweep."""
     print(f"=== {script_name} ===", flush=True)
@@ -403,10 +403,10 @@ def print_environment_header(script_name: str) -> None:
         n_entries = len(os.listdir(cache_dir))
         print(f"cache state:      exists, {n_entries} entries", flush=True)
         if n_entries == 0:
-            print("WARNING: cache dir exists but is EMPTY — first kernel launches "
+            print("WARNING: cache dir exists but is EMPTY -- first kernel launches "
                   "will trigger LLVM compilation (can take minutes, looks like a hang).",
                   flush=True)
     else:
-        print(f"WARNING: cache dir does not exist yet ({cache_dir}) — cold cache, "
+        print(f"WARNING: cache dir does not exist yet ({cache_dir}) -- cold cache, "
               f"first run will compile every kernel variant from scratch.", flush=True)
     print(flush=True)

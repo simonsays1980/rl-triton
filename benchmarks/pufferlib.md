@@ -10,9 +10,9 @@ sha256-pinned JIT build. Re-running `compare_pufferlib.py` as committed will not
 this file unless pip `pufferlib` is installed with a working prebuilt extension. See the
 method note at the bottom of this file for the full detail.
 
-Capability + design comparison, not a scoreboard. PufferLib's kernels are real, hand-written CUDA: one thread per environment row, sequential O(T) scan within the thread. rl-triton's kernels are Triton: one program per environment row, O(log T) in-SRAM tree reduction via `tl.associative_scan`. Different mechanisms, different tradeoffs — PufferLib's flat per-thread cost tends to win at very short horizons; rl-triton's parallel scan tends to win as horizon grows.
+Capability + design comparison, not a scoreboard. PufferLib's kernels are real, hand-written CUDA: one thread per environment row, sequential O(T) scan within the thread. rl-triton's kernels are Triton: one program per environment row, O(log T) in-SRAM tree reduction via `tl.associative_scan`. Different mechanisms, different tradeoffs -- PufferLib's flat per-thread cost tends to win at very short horizons; rl-triton's parallel scan tends to win as horizon grows.
 
-Both full-call wall time (headline — includes launch/wrapper overhead, what a caller pays every invocation) and device-only kernel time (diagnostic) are reported throughout, since per-call overhead is central to the short-horizon comparison.
+Both full-call wall time (headline -- includes launch/wrapper overhead, what a caller pays every invocation) and device-only kernel time (diagnostic) are reported throughout, since per-call overhead is central to the short-horizon comparison.
 
 ## GAE comparison
 
@@ -33,7 +33,7 @@ Both full-call wall time (headline — includes launch/wrapper overhead, what a 
 | 38400 | 80 | 0.0678 | 0.0248 | 0.1653 | 0.1458 | 2.44x | 5.87x |
 | 38400 | 128 | 0.0681 | 0.0267 | 0.2867 | 0.2690 | 4.21x | 10.08x |
 
-#### Boundary marker (seq_len [8,16,32]) — PufferLib's best-case regime
+#### Boundary marker (seq_len [8,16,32]) -- PufferLib's best-case regime
 
 | num_envs | seq_len | triton full-call (ms) | triton device (ms) | puffer full-call (ms) | puffer device (ms) | speedup (full-call) | speedup (device) |
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -55,9 +55,9 @@ Both full-call wall time (headline — includes launch/wrapper overhead, what a 
 
 ## V-Trace comparison
 
-PufferLib's `puff_advantage_row_cuda` is genuinely V-trace-capable (real `rho_clip`/`c_clip` and an importance-ratio input), not just a GAE kernel — unlike the GAE section above, importance ratios here are real and vary (independently-sampled `log_pi_target`/`log_pi_behavior`), not pinned to 1.0.
+PufferLib's `puff_advantage_row_cuda` is genuinely V-trace-capable (real `rho_clip`/`c_clip` and an importance-ratio input), not just a GAE kernel -- unlike the GAE section above, importance ratios here are real and vary (independently-sampled `log_pi_target`/`log_pi_behavior`), not pinned to 1.0.
 
-**Not the same output quantity — verified, not assumed.** Re-deriving PufferLib's exact recurrence shows its `advantages` output is algebraically identical to rl-triton's `targets - values` (the raw V-trace correction sum), confirmed exactly against an independent reference. It is NOT the same as rl-triton's own `advantages` return value, which does one further step (uses the recursively-corrected next target, per the full IMPALA formula) — confirmed to diverge from the same reference, as expected. PufferLib has no equivalent of that final step. The timing comparison below is rl-triton's full `compute_vtrace_fused` call (both `targets` and `advantages` computed) against PufferLib's single-output kernel — rl-triton does strictly more work per call here, which the reader should weigh alongside the speedup number, not as a hidden asterisk.
+**Not the same output quantity -- verified, not assumed.** Re-deriving PufferLib's exact recurrence shows its `advantages` output is algebraically identical to rl-triton's `targets - values` (the raw V-trace correction sum), confirmed exactly against an independent reference. It is NOT the same as rl-triton's own `advantages` return value, which does one further step (uses the recursively-corrected next target, per the full IMPALA formula) -- confirmed to diverge from the same reference, as expected. PufferLib has no equivalent of that final step. The timing comparison below is rl-triton's full `compute_vtrace_fused` call (both `targets` and `advantages` computed) against PufferLib's single-output kernel -- rl-triton does strictly more work per call here, which the reader should weigh alongside the speedup number, not as a hidden asterisk.
 
 #### Production regime (seq_len [80,128] x num_envs [4096..38400])
 
@@ -100,4 +100,4 @@ Reference: [PufferLib](https://github.com/PufferAI/PufferLib).
 
 ---
 
-**Method note (one-time study):** produced on 2026-07-25 via the vendored, sha256-pinned JIT build at benchmarks/pufferlib_ext/ (vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled) — pip `pufferlib` was not installed in this environment. `benchmarks/compare_pufferlib.py` itself only imports the real pip package and has no vendored fallback (skips cleanly without it); this file's numbers were produced by a separate, uncommitted scratch runner that reuses compare_pufferlib.py's equivalence-gate/sweep functions with the vendored kernel substituted in directly, matching how the GAE section above was originally produced. Re-running `compare_pufferlib.py` as committed will not reproduce this path unless pip `pufferlib` is actually installed with a working prebuilt extension.
+**Method note (one-time study):** produced on 2026-07-25 via the vendored, sha256-pinned JIT build at benchmarks/pufferlib_ext/ (vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled) -- pip `pufferlib` was not installed in this environment. `benchmarks/compare_pufferlib.py` itself only imports the real pip package and has no vendored fallback (skips cleanly without it); this file's numbers were produced by a separate, uncommitted scratch runner that reuses compare_pufferlib.py's equivalence-gate/sweep functions with the vendored kernel substituted in directly, matching how the GAE section above was originally produced. Re-running `compare_pufferlib.py` as committed will not reproduce this path unless pip `pufferlib` is actually installed with a working prebuilt extension.

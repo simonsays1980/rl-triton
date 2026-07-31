@@ -11,9 +11,9 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 # cuts spills to 100/thread, but ptxas still saturates the SM register file at
 # num_warps=16 (128*512=65536=full register file), so occupancy stays pinned
 # at 25% and the kernel remains SLOWER than torch.compile from seq_len=4096
-# onward (measured 0.63-0.73x at 4096, 0.16-0.24x at 8192 — worse, not
+# onward (measured 0.63-0.73x at 4096, 0.16-0.24x at 8192 -- worse, not
 # better, as seq_len grows further). num_warps of 4/8/16/32 were all swept
-# empirically before settling on 16 — 32 warps cuts spills further (to 90/
+# empirically before settling on 16 -- 32 warps cuts spills further (to 90/
 # thread) but is slower anyway, from added cross-warp communication cost in
 # the reduction tree; there is no untried num_warps value that fixes this.
 # Below this ceiling the fused kernel is a confirmed, measured win
@@ -23,11 +23,11 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 # already used (and already correct/tested) for seq_len > _FLAT_MAX_SEQ_LEN:
 # _run_scan dispatches internally to the generic flat associative-scan kernel
 # for seq_len <= 131072 and the chunked kernel above that. The generic scan
-# kernel only ever sees precomputed 2D u/v tensors — it never reads the 3D
-# action-prob tensors in-kernel — so it does not hit retrace_fused_kernel's
+# kernel only ever sees precomputed 2D u/v tensors -- it never reads the 3D
+# action-prob tensors in-kernel -- so it does not hit retrace_fused_kernel's
 # register-pressure ceiling. (An earlier version of this fix used a
 # log-space-cumsum PyTorch fallback instead; that produced inf/nan over long
-# horizons from float32 underflow in the suffix log-sum and was discarded —
+# horizons from float32 underflow in the suffix log-sum and was discarded --
 # reusing already-proven scan infrastructure avoids inventing new failure
 # modes.)
 #
@@ -35,7 +35,7 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 # torch.compile's vectorized baseline (0.38-0.47x), just a smaller and more
 # predictable loss than the fused kernel's worst case above the ceiling
 # (0.16x at seq_len=8192) rather than a win. It is not even uniformly better
-# than staying on the fused kernel — at seq_len=4096 the (already-losing)
+# than staying on the fused kernel -- at seq_len=4096 the (already-losing)
 # fused kernel measures faster than this reroute (0.73x vs 0.47x); the
 # reroute only pulls ahead once seq_len reaches 8192. Both sides of
 # _TRITON_SEQ_LEN_CEILING are a loss above seq_len=4096; nothing here should
@@ -62,7 +62,7 @@ def compute_retrace(
 
     Retrace(λ) (Munos et al. 2016) corrects off-policy Q-value estimates using
     truncated IS traces applied only to the decay factor, not the TD error.
-    Discrete actions only — use compute_vtrace for continuous action spaces.
+    Discrete actions only -- use compute_vtrace for continuous action spaces.
 
     Recurrence:
 
@@ -107,7 +107,7 @@ def compute_retrace(
         retrace_targets: Q_ret[t], shape [num_envs, seq_len], float32.
         advantages:      A[t],     shape [num_envs, seq_len], float32.
     """
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     for name, t in [
         ("action_probs_behavior", action_probs_behavior),
         ("q_values",              q_values),
@@ -134,7 +134,7 @@ def compute_retrace(
     assert actions.shape == rewards.shape, \
         f"actions shape {actions.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scan — correctness-warning path only.
+    # Expensive tensor scan -- correctness-warning path only.
     if _CORRECTNESS_WARNINGS():
         assert not (terminateds.bool() & truncateds.bool()).any(), \
             "terminated and truncated are mutually exclusive: a step cannot be both"
@@ -152,10 +152,10 @@ def compute_retrace(
 
     # Fused Triton kernel for seq_len <= _TRITON_SEQ_LEN_CEILING (confirmed win);
     # generic materialize-u/v + _run_scan path above that (fused kernel is a
-    # confirmed loss there — see _TRITON_SEQ_LEN_CEILING comment; this reroute
-    # is a smaller loss too, not a win — see the same comment).
+    # confirmed loss there -- see _TRITON_SEQ_LEN_CEILING comment; this reroute
+    # is a smaller loss too, not a win -- see the same comment).
     # done[t] = terminated[t] | truncated[t] is computed in-kernel from the two
-    # raw flags for the fused path — no separate PyTorch combine here.
+    # raw flags for the fused path -- no separate PyTorch combine here.
     if seq_len <= _TRITON_SEQ_LEN_CEILING:
         return compute_retrace_fused(
             action_probs_target, action_probs_behavior,

@@ -14,7 +14,7 @@ from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNI
 # higher num_envs (fewer resident blocks per SM -> more grid waves to cover
 # the same total env count). 128 specifically must NOT use 4 warps: it wins
 # by ~2% at num_envs=4096 but REGRESSES ~11% at num_envs=32768 versus 2 warps
-# — 2 is the robust choice, tied with 1 at both scales. 256 is the opposite:
+# -- 2 is the robust choice, tied with 1 at both scales. 256 is the opposite:
 # 4 warps wins outright at large num_envs (44.6us vs 45.4-45.9us at 1-2).
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
@@ -90,7 +90,7 @@ def compute_gae(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
@@ -115,7 +115,7 @@ def compute_gae(
         assert bootstrap_values.shape == rewards.shape, \
             f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scans — correctness-warning path only (not in benchmark hot loop).
+    # Expensive tensor scans -- correctness-warning path only (not in benchmark hot loop).
     if _CORRECTNESS_WARNINGS():
         if has_truncations:
             assert not (terminateds.bool() & truncateds.bool()).any(), \

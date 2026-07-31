@@ -5,7 +5,7 @@ from rl_triton.kernels.vtrace_fused import vtrace_fused_kernel
 from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
 # Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps),
-# grossly over-provisioned for small single-block reductions — see
+# grossly over-provisioned for small single-block reductions -- see
 # src/rl_triton/ops/gae.py's _WARPS for the H200 measurement basis (device
 # time flat for num_warps in {1,2,4} at BLOCK_SIZE 8-128, 2-3x worse at the
 # old default). Spot-checked directly on this kernel (more registers than
@@ -68,7 +68,7 @@ def compute_vtrace_fused(
         rewards:          Per-step rewards, same shape.
         terminateds:      True termination flags (1.0=terminated), same shape, float32.
         truncateds:       Time-limit truncation flags (1.0=truncated), same shape.
-                          If None, no interior truncations — uses HAS_TRUNCATIONS=False fast path.
+                          If None, no interior truncations -- uses HAS_TRUNCATIONS=False fast path.
         gamma:            Discount factor (default 0.99).
         rho_bar:          IS ratio clip for delta (default 1.0).
         c_bar:            IS ratio clip for decay (default 1.0).
@@ -90,7 +90,7 @@ def compute_vtrace_fused(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
-    # Cheap structural checks — always-on: catch shape/dtype/device bugs at call time.
+    # Cheap structural checks -- always-on: catch shape/dtype/device bugs at call time.
     for name, t in [
         ("log_pi_target",   log_pi_target),
         ("log_pi_behavior", log_pi_behavior),
@@ -121,7 +121,7 @@ def compute_vtrace_fused(
         assert bootstrap_values.shape == rewards.shape, \
             f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scans — correctness-warning path only (not in benchmark hot loop).
+    # Expensive tensor scans -- correctness-warning path only (not in benchmark hot loop).
     if _CORRECTNESS_WARNINGS():
         if has_truncations:
             assert not (terminateds.bool() & truncateds.bool()).any(), \
@@ -185,7 +185,7 @@ def compute_vtrace_fused(
         )
     else:
         # Fast path: no truncateds tensor, scalar bootstrap per env.
-        # No zero-tensor allocations — truncateds_ptr is constexpr None in the kernel,
+        # No zero-tensor allocations -- truncateds_ptr is constexpr None in the kernel,
         # and when there's no last_value/bootstrap_values either, bootstrap_ptr is
         # also skipped (HAS_BOOTSTRAP=False) instead of materializing zeros.
         if last_value is not None:

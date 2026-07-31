@@ -64,7 +64,7 @@ def retrace_fused_kernel(
     re-reading action_probs_target[t+1, :] (the full 3D tensor) a second time.
     pi_at_t is stored to a small [num_envs, seq_len] scratch buffer and
     reloaded at the shifted real index t+1 (same store->debug_barrier->reload
-    idiom used below for next_q_ret) — this is exactly pi(a_{t+1}|s_{t+1})
+    idiom used below for next_q_ret) -- this is exactly pi(a_{t+1}|s_{t+1})
     since the scratch buffer is indexed by real timestep, not block position.
     Previously this loaded the full [BLOCK_SIZE, ACTION_BLOCK] 3D tensor a
     second time (overlapping the window already loaded for pi_all), which
@@ -84,7 +84,7 @@ def retrace_fused_kernel(
     A[t] = ρ_t · (r_t + γ · Q_ret[t+1] · (1 - terminated[t]) - Q(s_t, a_t))
 
     For t=T-1, Q_ret[T] is out-of-bounds; we use 0.0 (no continuation target
-    beyond the window — the one-step bootstrap is already inside δ[t] via
+    beyond the window -- the one-step bootstrap is already inside δ[t] via
     next_q_values_all, so the advantage correctly reflects only the immediate
     TD correction).
 
@@ -125,7 +125,7 @@ def retrace_fused_kernel(
     truncated = tl.load(truncated_ptr             + base_2d + rev, mask=mask, other=0.0)
     term      = tl.load(terminated_ptr            + base_2d + rev, mask=mask, other=1.0)
     # done[t] = terminated[t] | truncated[t]. Computed in-register from the two
-    # raw flags instead of taking a precomputed `dones` tensor — the caller no
+    # raw flags instead of taking a precomputed `dones` tensor -- the caller no
     # longer needs a separate (terminateds+truncateds).clamp(max=1.0) kernel
     # launch before this one (measured at ~23% of this op's total time).
     done = tl.minimum(term + truncated, 1.0)

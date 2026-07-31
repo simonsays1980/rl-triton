@@ -31,7 +31,7 @@ def lambda_returns_fused_kernel(
     When HAS_TRUNCATIONS=False, truncateds_ptr is unused and bootstrap_ptr is
     [num_envs] (scalar per env), saving two full HBM reads.
 
-    When HAS_TRUNCATIONS=True, bootstrap_ptr is [num_envs, seq_len] — nonzero
+    When HAS_TRUNCATIONS=True, bootstrap_ptr is [num_envs, seq_len] -- nonzero
     only at truncated steps and the window boundary.
 
     Args:
@@ -47,8 +47,8 @@ def lambda_returns_fused_kernel(
         gamma:           Discount factor.
         lambda_:         Trace parameter.
         BLOCK_SIZE:      Power-of-2 >= seq_len (constexpr).
-        HAS_TRUNCATIONS: Compile-time flag — False skips truncateds and 2D bootstrap reads.
-        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False —
+        HAS_TRUNCATIONS: Compile-time flag -- False skips truncateds and 2D bootstrap reads.
+        HAS_BOOTSTRAP:   Compile-time flag, only meaningful when HAS_TRUNCATIONS=False --
                          False skips the scalar bootstrap_ptr read and uses literal 0.0.
     """
     env_idx = tl.program_id(0)

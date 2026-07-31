@@ -170,7 +170,7 @@ Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` s
 
 #### The unifying rule
 
-`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid — truncated steps and the final column — and zero everywhere else. Its shape is `[num_envs, seq_len]`. Setting `RL_TRITON_CORRECTNESS_WARNINGS=1` activates a debug assertion that catches stray nonzero entries.
+`bootstrap_values` holds the true continuation value $V(s_{t+1})$ at exactly those positions where `values[t+1]` is invalid -- truncated steps and the final column -- and zero everywhere else. Its shape is `[num_envs, seq_len]`. Setting `RL_TRITON_CORRECTNESS_WARNINGS=1` activates a debug assertion that catches stray nonzero entries.
 
 For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
 
@@ -180,9 +180,9 @@ For the common case where no interior truncations occur, the `last_value` argume
 
 | Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\delta_t$ | Decay $\beta_t$ |
 |---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ — scan stops |
-| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ — scan stops |
-| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $A_T$ | $0$ — carry absorbed |
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $A_T$ | $0$ -- carry absorbed |
 
 ---
 
@@ -218,4 +218,4 @@ GAE was introduced as the advantage estimator for Proximal Policy Optimization (
 
 ## Further Reading
 
-* [Visualising GAE](https://pseudo-rnd-thoughts.github.io/blog/visualising-gae/) — A visual walkthrough of GAE's recurrence structure and how advantages accumulate across timesteps.
+* [Visualising GAE](https://pseudo-rnd-thoughts.github.io/blog/visualising-gae/) -- A visual walkthrough of GAE's recurrence structure and how advantages accumulate across timesteps.

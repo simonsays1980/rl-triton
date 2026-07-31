@@ -48,11 +48,11 @@ from rl_triton.kernels.scan_chunked import chunked_backward_scan_kernel
 _FLAT_MAX_SEQ_LEN = 131072
 _CHUNK_SIZE = triton.next_power_of_2(1024)
 
-# Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) —
+# Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps) --
 # see src/rl_triton/ops/gae.py's _WARPS for the H200 measurement basis. In
 # current callers _run_scan/_run_scan_forward are only reached above
 # _FLAT_MAX_SEQ_LEN (or similarly large chunked-path thresholds), so
-# BLOCK_SIZE < 512 is unreachable dead code today via any public op — fixed
+# BLOCK_SIZE < 512 is unreachable dead code today via any public op -- fixed
 # here anyway for consistency with the other 7 affected tables and defensive
 # correctness if a future caller invokes this directly with a short sequence.
 _WARPS = {
@@ -70,7 +70,7 @@ def _run_scan(
     Backward linear scan: A[t] = u[t] + v[t] * A[t+1], A[T] = bootstrap.
 
     Shared implementation for GAE, V-Trace, Retrace, discounted returns, and
-    lambda returns — callers compute u and v from their own inputs and delegate
+    lambda returns -- callers compute u and v from their own inputs and delegate
     here.  Dispatches to the flat single-block kernel for seq_len <= 131072 and
     the chunked kernel for longer sequences.
 

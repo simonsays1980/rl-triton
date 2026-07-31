@@ -12,6 +12,11 @@ _FLAT_MAX_SEQ_LEN = 131072
 # Spot-checked on this kernel directly (vtrace_fused, structurally similar,
 # higher register count) before applying here -- same flat-then-degrade shape,
 # bit-identical output at every num_warps tested.
+#
+# No entry above 16384, same gap as gae.py's _WARPS -- less relevant here
+# than elsewhere, since compute_retrace's _TRITON_SEQ_LEN_CEILING (2048)
+# reroutes away from this fused kernel long before BLOCK_SIZE reaches this
+# unmeasured range via the public API.
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,

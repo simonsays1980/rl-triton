@@ -11,6 +11,9 @@ from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 # device time for num_warps in {1,2,4} at BLOCK_SIZE 8-128, driven by the
 # 32-blocks/SM hard cap on Hopper, register-count-independent at this scale
 # since none of these kernels spill at low warps counts).
+#
+# No entry above 16384, same gap as gae.py's _WARPS -- unverified, out of the
+# project's target seq_len regime (see its comment for detail).
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 8, 1024: 16, 2048: 16, 4096: 16, 8192: 32, 16384: 32,

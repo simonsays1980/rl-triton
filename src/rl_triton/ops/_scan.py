@@ -55,6 +55,11 @@ _CHUNK_SIZE = triton.next_power_of_2(1024)
 # BLOCK_SIZE < 512 is unreachable dead code today via any public op -- fixed
 # here anyway for consistency with the other 7 affected tables and defensive
 # correctness if a future caller invokes this directly with a short sequence.
+#
+# No entry above 16384, same gap as gae.py's _WARPS (see its comment) --
+# unlike gae.py, BLOCK_SIZE >= 32768 IS reachable here in practice (this is
+# the long-seq_len fallback path), so this is the more likely of the two to
+# actually matter if someone benchmarks that range. Still unverified.
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,

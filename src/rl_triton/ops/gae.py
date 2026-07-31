@@ -16,6 +16,15 @@ from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNI
 # by ~2% at num_envs=4096 but REGRESSES ~11% at num_envs=32768 versus 2 warps
 # -- 2 is the robust choice, tied with 1 at both scales. 256 is the opposite:
 # 4 warps wins outright at large num_envs (44.6us vs 45.4-45.9us at 1-2).
+#
+# No entry above 16384: the investigation above never swept BLOCK_SIZE of
+# 32768/65536/131072 (all reachable via seq_len <= _FLAT_MAX_SEQ_LEN), so
+# those sizes silently fall through .get()'s default of 16 warps, unverified
+# -- the same over-provisioning this table exists to fix at smaller sizes
+# likely still applies there. Not fixed here: seq_len this long is well
+# outside the project's target regime (NOTES.md: production rollouts are
+# 2k-8k steps), so it wasn't prioritized. Flag for follow-up if a user
+# reports this range as a bottleneck.
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,

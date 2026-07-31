@@ -11,6 +11,9 @@ from rl_triton.ops._scan import _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 # old default). Spot-checked directly on this kernel (more registers than
 # GAE's) before applying: same flat-then-degrade shape, bit-identical output
 # at every num_warps tested.
+#
+# No entry above 16384, same gap as gae.py's _WARPS -- unverified, out of the
+# project's target seq_len regime (see its comment for detail).
 _WARPS = {
     8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
     512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,

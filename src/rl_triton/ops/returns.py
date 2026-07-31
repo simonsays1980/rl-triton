@@ -11,6 +11,10 @@ from rl_triton.ops._scan import _run_scan, _run_scan_forward, _FLAT_MAX_SEQ_LEN,
 # measurement basis (flat device time for num_warps in {1,2,4} at BLOCK_SIZE
 # 8-128, driven by the 32-blocks/SM hard cap on Hopper, register-count-
 # independent at this scale since none of these kernels spill at low warps).
+#
+# No entry above 16384 in either table, same gap as gae.py's _WARPS --
+# unverified, out of the project's target seq_len regime (see its comment
+# for detail).
 
 # Lambda returns carries more registers (next_values, u computation) -- same budget as GAE.
 _WARPS_LAMBDA = {

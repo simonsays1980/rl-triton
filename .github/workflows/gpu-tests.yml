@@ -10,7 +10,7 @@ on:
       allowed_gpus:
         description: "Comma-separated substrings of acceptable GPU names for release-bench (safety check against another provenance mislabel)"
         required: false
-        default: "H100,H200"
+        default: "H100,H200,RTX 2000 Ada"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ jobs:
           echo "GPU_NAME=$GPU_NAME" >> "$GITHUB_ENV"
           echo "Detected GPU: $GPU_NAME" >> "$GITHUB_STEP_SUMMARY"
           ALLOWED="${{ github.event.inputs.allowed_gpus }}"
-          ALLOWED="${ALLOWED:-H100,H200}"
+          ALLOWED="${ALLOWED:-H100,H200,RTX 2000 Ada}"
           echo "Allowed substrings: $ALLOWED" >> "$GITHUB_STEP_SUMMARY"
           MATCHED=0
           IFS=',' read -ra SUBSTRINGS <<< "$ALLOWED"

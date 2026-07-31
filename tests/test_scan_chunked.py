@@ -17,7 +17,7 @@ def _reference_scan(
     decays: torch.Tensor,
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch backward scan — ground truth."""
+    """Pure-PyTorch backward scan -- ground truth."""
     T = deltas.shape[1]
     out   = torch.zeros_like(deltas)
     carry = torch.zeros(deltas.shape[0], device=deltas.device, dtype=deltas.dtype)
@@ -37,7 +37,7 @@ def _make_scan_inputs(num_envs, seq_len, device="cuda", seed=0):
 
 
 # ---------------------------------------------------------------------------
-# Correctness — _run_scan (chunked path exercised above _FLAT_MAX_SEQ_LEN)
+# Correctness -- _run_scan (chunked path exercised above _FLAT_MAX_SEQ_LEN)
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -93,7 +93,7 @@ def test_scan_flat_matches_chunked():
 
 
 # ---------------------------------------------------------------------------
-# Auto-dispatch — public APIs route correctly at the threshold
+# Auto-dispatch -- public APIs route correctly at the threshold
 # ---------------------------------------------------------------------------
 
 @cuda_only
@@ -119,7 +119,7 @@ def test_scan_autodispatch_above_threshold():
 
 @cuda_only
 def test_vtrace_autodispatch_below_threshold():
-    # Use a small seq_len — the point is that the fused path is taken and produces
+    # Use a small seq_len -- the point is that the fused path is taken and produces
     # correct output. Running reference_vtrace with seq_len=131072 would dispatch
     # 131k sequential Python→GPU ops and take minutes; correctness at that scale
     # is covered by test_vtrace_autodispatch_above_threshold.
@@ -145,7 +145,7 @@ def test_vtrace_autodispatch_above_threshold():
 
 
 # ---------------------------------------------------------------------------
-# Performance benchmark — long sequences
+# Performance benchmark -- long sequences
 # ---------------------------------------------------------------------------
 
 LONG_SEQ_CONFIGS = [

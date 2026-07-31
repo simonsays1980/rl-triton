@@ -22,9 +22,9 @@ def chunked_backward_scan_kernel(
     boundaries.
 
     Two-pass algorithm per chunk (standard chunked associative scan):
-      1. Local scan  — tl.associative_scan within the chunk produces within-chunk
+      1. Local scan  -- tl.associative_scan within the chunk produces within-chunk
                        outputs as if A[chunk_end+1] = 0.
-      2. Carry fixup — add β_prod * carry to every element, where carry is
+      2. Carry fixup -- add β_prod * carry to every element, where carry is
                        A[chunk_end+1] from the previous (right) chunk and β_prod
                        is the cumulative product of β from each position to the
                        chunk boundary.
@@ -43,7 +43,7 @@ def chunked_backward_scan_kernel(
         seq_len:       Number of timesteps (runtime value).
         stride_env:    Row stride in elements (== seq_len for contiguous tensors).
         BLOCK_SIZE:    Chunk size, must be a power of 2.  Need not be >= seq_len.
-        HAS_BOOTSTRAP: Compile-time flag — False skips the bootstrap_ptr read and
+        HAS_BOOTSTRAP: Compile-time flag -- False skips the bootstrap_ptr read and
                        seeds carry with literal 0.0 (the default A[T]=0).
     """
     env_idx = tl.program_id(0)
@@ -67,7 +67,7 @@ def chunked_backward_scan_kernel(
         u = tl.load(u_ptr + base + rev_offsets, mask=mask, other=0.0)
         v = tl.load(v_ptr + base + rev_offsets, mask=mask, other=1.0)
 
-        # Pass 1: local scan — outputs assuming A[chunk_end+1] = 0.
+        # Pass 1: local scan -- outputs assuming A[chunk_end+1] = 0.
         out_local, v_prod = tl.associative_scan(
             (u, v), axis=0, combine_fn=_combine
         )

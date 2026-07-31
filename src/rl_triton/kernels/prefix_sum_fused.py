@@ -38,7 +38,7 @@ def prefix_sum_fused_kernel(
         seq_len:    Number of timesteps.
         stride_env: Row stride in elements.
         BLOCK_SIZE: Power-of-2 >= seq_len (constexpr).
-        HAS_SEED:   Compile-time flag — False skips the seed_ptr read and uses
+        HAS_SEED:   Compile-time flag -- False skips the seed_ptr read and uses
                     literal 0.0 (the default C[-1]=0 when no seed_values is given).
     """
     env_idx = tl.program_id(0)

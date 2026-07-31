@@ -5,29 +5,45 @@ on:
     branches-ignore: [main]   # correctness on every branch push; main only via merge
   pull_request:
     branches: [main]          # safeguard benchmarks gate the merge
-  release:
-    types: [published]        # full benchmark sweep on release tags
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release tag to record in benchmarks.md (e.g. v0.1.0)"
+      allowed_gpus:
+        description: "Comma-separated substrings of acceptable GPU names for release-bench (safety check against another provenance mislabel)"
         required: false
-        default: "unreleased"
+        default: "H100,H200,RTX 2000 Ada"
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Correctness — runs on every branch push and on PRs
+  # Correctness -- runs on every branch push and on PRs
   # ---------------------------------------------------------------------------
   correctness:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: [self-hosted, linux, gpu]
+    # A branch with an open PR fires BOTH the push and pull_request triggers
+    # for the same commit -- without this, two correctness runs land on the
+    # same single self-hosted GPU runner at once, contending for the GPU and
+    # perturbing each other's torch.compile/Dynamo state (a likely contributor
+    # to the cross-object miscompile test's context-dependent XPASS -- see its
+    # xfail reason in tests/test_returns.py). Cancel the older run so only one
+    # ever executes per ref.
+    concurrency:
+      group: correctness-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
       # Package already installed by start.sh; pull latest changes for this ref.
-      - run: pip install --quiet --no-deps -e .
+      # No --quiet: a silent failure here previously showed as a job failure
+      # with zero log output, since the next step (which prints via tee)
+      # never ran. Verbose install output is cheap and this step failing
+      # invisibly has cost real debugging time -- always show what happened.
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
       - name: Run correctness tests
+        env:
+          PYTHONUNBUFFERED: "1"
+          TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           set -o pipefail
           pytest tests/ \
@@ -43,20 +59,30 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # Safeguard benchmarks — PR gate only, never on plain branch pushes
+  # Safeguard benchmarks -- PR gate only, never on plain branch pushes
   # ---------------------------------------------------------------------------
   safeguard:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, linux, gpu]
     permissions:
       pull-requests: write
+    # Same GPU-contention concern as correctness: a rapid double-push to an
+    # open PR can otherwise queue two safeguard runs on the same runner at
+    # once.
+    concurrency:
+      group: safeguard-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-      - run: pip install --quiet --no-deps -e .
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
       - name: Run safeguard benchmarks
         id: bench
+        env:
+          PYTHONUNBUFFERED: "1"
+          TRITON_CACHE_DIR: /root/.triton/cache
         run: |
           set -o pipefail
           pytest tests/bench_safeguard.py \
@@ -72,40 +98,90 @@ jobs:
         run: |
           STATUS="${{ steps.bench.outcome }}"
           ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
-          BODY=$(printf '%s Safeguard benchmarks — %s\n\n```\n%s\n```' \
+          BODY=$(printf '%s Safeguard benchmarks -- %s\n\n```\n%s\n```' \
             "$ICON" "$STATUS" "$(grep -E 'PASSED|FAILED|speedup|triton=' /tmp/pytest-safeguard.txt || cat /tmp/pytest-safeguard.txt)")
           gh pr comment "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" \
             --body "$BODY"
 
   # ---------------------------------------------------------------------------
-  # Release benchmarks — full sweep, updates README.md and benchmarks.md
+  # Release-CANDIDATE benchmarks -- manual dispatch only. Stages a full sweep
+  # into docs/benchmark-history/unreleased.md via a PR for human review; never
+  # pushes to main and never touches benchmarks.md. Promoting a staged
+  # candidate to benchmarks.md + a version-tagged archive file is a separate,
+  # manual step performed when an actual release is cut -- see
+  # benchmarks/README.md for the full placement policy.
   # ---------------------------------------------------------------------------
   release-bench:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, linux, gpu]
     permissions:
-      contents: write   # needed to push the updated docs back to the repo
+      contents: write        # needed to push the candidate branch
+      pull-requests: write   # needed to open the PR
+    # Guards against an accidental double-dispatch queuing two full sweeps on
+    # the same runner at once.
+    concurrency:
+      group: release-bench-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
-      - run: pip install --quiet --no-deps -e .
-      - name: Run full benchmark sweep
+      - name: Install package (editable, no deps)
+        run: pip install --no-deps -e .
+      - name: Assert GPU identity
+        run: |
+          GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
+          echo "GPU_NAME=$GPU_NAME" >> "$GITHUB_ENV"
+          echo "Detected GPU: $GPU_NAME" >> "$GITHUB_STEP_SUMMARY"
+          ALLOWED="${{ github.event.inputs.allowed_gpus }}"
+          ALLOWED="${ALLOWED:-H100,H200,RTX 2000 Ada}"
+          echo "Allowed substrings: $ALLOWED" >> "$GITHUB_STEP_SUMMARY"
+          MATCHED=0
+          IFS=',' read -ra SUBSTRINGS <<< "$ALLOWED"
+          for s in "${SUBSTRINGS[@]}"; do
+            if [[ "$GPU_NAME" == *"$s"* ]]; then
+              MATCHED=1
+              break
+            fi
+          done
+          if [[ "$MATCHED" -eq 0 ]]; then
+            echo "**FAILED: '$GPU_NAME' does not match any allowed substring ($ALLOWED).**" >> "$GITHUB_STEP_SUMMARY"
+            echo "GPU identity check failed: '$GPU_NAME' not in allowlist ($ALLOWED)." \
+                 "This check exists because this repo's benchmark work has previously" \
+                 "been published under the wrong GPU name -- see NOTES.md/bench_safeguard.py." \
+                 "If this card is legitimately new, pass allowed_gpus explicitly on dispatch." >&2
+            exit 1
+          fi
+      - name: Run full benchmark sweep (stages a candidate; never touches benchmarks.md)
         env:
           PYTHONUNBUFFERED: "1"
           TRITON_CACHE_DIR: /root/.triton/cache
         run: |
-          GPU_NAME=$(python -c "import torch; print(torch.cuda.get_device_name(0))")
-          VERSION="${{ github.event.release.tag_name || github.event.inputs.version }}"
+          # bench_release.py has no direct-to-benchmarks.md path at all (see
+          # its own module docstring) -- a plain run always stages to
+          # docs/benchmark-history/unreleased.md via stage_unreleased_md(),
+          # plus benchmarks/readme_table_draft.md. benchmarks.md is never
+          # read or written by this invocation -- nothing to restore or
+          # discard if the sweep fails partway.
           python -u tests/bench_release.py \
             --gpu  "$GPU_NAME" \
-            --version "$VERSION"
-      - name: Commit updated README.md and benchmarks.md
+            --parent-sweep
+      - name: Open a PR with the staged candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md benchmarks.md
-          git diff --cached --quiet || \
-            git commit -m "bench: update results for ${{ github.event.release.tag_name }}"
-          git push origin HEAD:main
+          # NOT README.md: staging mode never touches it (see bench_release.py).
+          # NOT benchmarks.md: this job stages a candidate, never a release.
+          git add docs/benchmark-history/unreleased.md benchmarks/readme_table_draft.md
+          git diff --cached --quiet && { echo "No changes to stage -- nothing to PR."; exit 0; }
+          BRANCH="bench/unreleased-candidate-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          git commit -m "bench: stage unreleased candidate ($GPU_NAME)"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "bench: unreleased candidate ($GPU_NAME, $(date -I))" \
+            --body "Staged benchmark candidate from a manual release-bench dispatch run. Not a release -- promotion to benchmarks.md + docs/benchmark-history/<version>.md happens separately, by hand, when a version is actually tagged. See benchmarks/README.md for the full placement policy." \
+            --base main --head "$BRANCH"

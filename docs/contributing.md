@@ -193,7 +193,7 @@ range (`seq_len = 131072`), and episode boundaries (non-zero `dones`).
 Add one entry to `bench_safeguard.py` for the PR perf gate. It runs a single
 representative config (`128 envs × 1024 steps`) and asserts the Triton kernel
 beats `torch.compile` on the vectorized baseline by at least a per-kernel
-floor. Each kernel gets its own `_MY_KERNEL_FLOOR` constant — do not reuse
+floor. Each kernel gets its own `_MY_KERNEL_FLOOR` constant -- do not reuse
 another kernel's floor or a generic placeholder. Calibrate it with
 `bench_utils._bench_gpu_spread` over several trials (5+) across at least 3
 independent process runs, then set the floor below the observed minimum with

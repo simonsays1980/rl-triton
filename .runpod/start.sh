@@ -25,7 +25,7 @@ unset TORCH_CPP_LOG_LEVEL
 # Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
 # var_ranges, defaulting to unknown range"), which are noisy but harmless
 # during benchmark/test runs.
-export TORCH_LOGS="-dynamic"
+export TORCH_LOGS="-dynamo"
 
 # ---------------------------------------------------------------------------
 # 1. System packages

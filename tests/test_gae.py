@@ -1,5 +1,5 @@
 # numpy is used intentionally: the CPU baseline (numpy_gae) mirrors how RL frameworks
-# compute GAE on CPU — a plain backward loop over NumPy arrays. The end-to-end
+# compute GAE on CPU -- a plain backward loop over NumPy arrays. The end-to-end
 # adoption path (numpy->GPU->numpy) is benchmarked in test_gae_performance.
 import numpy as np
 import pytest
@@ -39,7 +39,7 @@ def reference_gae(
     lambda_: float,
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch backward scan — ground truth for correctness tests.
+    """Pure-PyTorch backward scan -- ground truth for correctness tests.
 
     Derives next_values as values[:, t+1] with bootstrap_values at the boundary,
     matching exactly what the Triton kernel computes internally.
@@ -79,7 +79,7 @@ def numpy_gae(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """CPU GAE backward loop — moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU GAE backward loop -- moves GPU tensors to CPU and runs a plain Python loop."""
     rewards, values, terminateds = rewards.cpu(), values.cpu(), terminateds.cpu()
     next_values = _make_next_values(values, None)
     T     = rewards.shape[1]
@@ -141,7 +141,7 @@ def test_gae_known_values_single_env():
 def test_gae_known_values_delta():
     # gamma=1, lambda=1, no terminateds, bootstrap=0.
     # values=[1,1,1] -> next_values=[1,1,0(bootstrap)] -> delta[t]=r[t]+1-1=r[t]
-    # Same result as above — verifies V shifts cancel correctly.
+    # Same result as above -- verifies V shifts cancel correctly.
     rewards  = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values   = torch.ones(1, 3, device="cuda")
     terminateds    = torch.zeros(1, 3, device="cuda")
@@ -327,7 +327,7 @@ def _ref_gae_sequential(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """Pure step-by-step Python loop — ground truth for per-step bootstrap_values.
+    """Pure step-by-step Python loop -- ground truth for per-step bootstrap_values.
 
     Handles interior truncated steps (bootstrap_values[n, t] used as v_next when
     truncateds[n, t]=1) in addition to the window boundary (t=T-1).
@@ -395,7 +395,7 @@ def test_gae_two_interior_truncations():
 def test_gae_bootstrap_values_full_tensor():
     """Passing a full [num_envs, seq_len] bootstrap_values tensor (no last_value).
 
-    Exercises the public bootstrap_values API directly — values at truncated steps
+    Exercises the public bootstrap_values API directly -- values at truncated steps
     plus a non-zero boundary column for a continuing episode.
     """
     torch.manual_seed(42)
@@ -490,13 +490,13 @@ def test_gae_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
 
-      triton              — Triton kernel  (CUDA events)
-      compile(cumsum)     — torch.compile on vectorized_gae (log-space cumsum)  (CUDA events)
-      compile(assoc_scan) — torch.compile on vectorized_gae_with_truncations
+      triton              -- Triton kernel  (CUDA events)
+      compile(cumsum)     -- torch.compile on vectorized_gae (log-space cumsum)  (CUDA events)
+      compile(assoc_scan) -- torch.compile on vectorized_gae_with_truncations
                             called with zero truncateds  (CUDA events)
-      compile(loop)       — torch.compile on reference_gae loop  (wall-clock)
-      np->triton->np      — NumPy→GPU→NumPy adoption path  (wall-clock)
-      numpy(cpu)          — CPU Python loop  (wall-clock)
+      compile(loop)       -- torch.compile on reference_gae loop  (wall-clock)
+      np->triton->np      -- NumPy→GPU→NumPy adoption path  (wall-clock)
+      numpy(cpu)          -- CPU Python loop  (wall-clock)
 
     Scope: NO-TRUNCATION PATH ONLY.  _make_inputs produces no truncateds, so
     the kernel dispatches to HAS_TRUNCATIONS=False.
@@ -504,7 +504,7 @@ def test_gae_performance():
     Two baselines are reported for the no-truncation path:
       (a) compile(cumsum):     the specialized fast baseline that only works
           when there are no truncations (log(0)=-inf breaks it otherwise).
-      (b) compile(assoc_scan): the general-purpose baseline — the same
+      (b) compile(assoc_scan): the general-purpose baseline -- the same
           vectorized_gae_with_truncations function used in the truncation
           benchmark, called with zero truncateds and bootstrap_values nonzero
           only at the boundary column.  A real engineer supporting both
@@ -556,7 +556,7 @@ def test_gae_performance():
         bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
         bsv0[:, -1] = torch.rand(num_envs, device="cuda")
 
-        # Per-config warmup at the exact shape being timed — each distinct
+        # Per-config warmup at the exact shape being timed -- each distinct
         # seq_len triggers a fresh Triton compile (new BLOCK_SIZE power-of-2).
         _warmup_gpu(compute_gae, *args_gpu, gamma=0.99, lambda_=0.95)
         _warmup_gpu(compiled_cumsum, *args_gpu, gamma=0.99, lambda_=0.95)
@@ -589,15 +589,15 @@ def test_gae_performance():
         )
 
     print(
-        "\ntriton          : CUDA events — pure kernel time."
-        "\ncompile(cumsum) : CUDA events — log-space suffix cumsum; specialized for"
+        "\ntriton          : CUDA events -- pure kernel time."
+        "\ncompile(cumsum) : CUDA events -- log-space suffix cumsum; specialized for"
         "\n                  no-truncation only (log(0)=-inf breaks it with truncateds)."
-        "\ncompile(assoc)  : CUDA events — vectorized_gae_with_truncations, zero truncateds;"
-        "\n                  same function as the truncation benchmark — consistent baseline."
-        "\ncompile(loop)   : wall-clock — one CUDA op per timestep from Python;"
+        "\ncompile(assoc)  : CUDA events -- vectorized_gae_with_truncations, zero truncateds;"
+        "\n                  same function as the truncation benchmark -- consistent baseline."
+        "\ncompile(loop)   : wall-clock -- one CUDA op per timestep from Python;"
         "\n                  CUDA events would miss the CPU stall."
-        "\nnp->tri->np     : wall-clock — NumPy→GPU→NumPy, realistic adoption path."
-        "\nnumpy(cpu)      : wall-clock — plain Python loop on CPU tensors."
+        "\nnp->tri->np     : wall-clock -- NumPy→GPU→NumPy, realistic adoption path."
+        "\nnumpy(cpu)      : wall-clock -- plain Python loop on CPU tensors."
         "\nspeedups are baseline_ms / triton_ms (higher = triton is faster)."
     )
 
@@ -624,29 +624,37 @@ def vectorized_gae(
     bootstrap_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Fully vectorized GAE via log-space suffix cumsum — strong compiled baseline.
+    Fully vectorized GAE -- strong compiled baseline. Thin wrapper around
+    vectorized_gae_with_truncations (truncateds=0), which uses parallel_suffix_scan
+    (linear-space, log2(T)-doubling, no log/exp) instead of a log-space suffix
+    cumsum.
 
-    Replaces the Python backward loop with a vectorized equivalent using the same
-    log-space suffix-product trick as vectorized_vtrace. Not production-hardened;
-    only used for benchmarking.
+    This function used to compute a log-space suffix product directly
+    (log(decay) suffix-summed, then exp()'d) and was BROKEN: at this project's
+    real termination rate (~5%/step), any window with 2+ termination events --
+    which is nearly guaranteed at every seq_len actually benchmarked, not just
+    long ones -- pushes the suffix log-sum past float32's underflow floor
+    (each termination contributes log(1e-38)~=-87.5 via the done-boundary
+    clamp; two of them already exceed the ~-103 underflow threshold). Measured
+    directly: 90-99% of output elements were inf/nan at every size in
+    benchmarks.md (64x512 through 16384x512), silently, because this baseline's
+    own output was never correctness/finiteness-checked anywhere -- only timed.
+    vectorized_gae_with_truncations doesn't have this failure mode (verified
+    finite up to seq_len=524288) and, called with truncateds=0, matches the
+    sequential reference to float32 precision (~2e-6 max abs diff) -- it is the
+    correct baseline for both regimes, so there is no reason to maintain two
+    implementations. bootstrap_values here accepts the old [num_envs]-shaped
+    "final column only" convenience form (unused by any caller in this repo,
+    kept for signature compatibility) and is expanded into the [num_envs,
+    seq_len] boundary-column form vectorized_gae_with_truncations expects.
     """
-    not_done    = 1.0 - terminateds
-    next_values = _make_next_values(values, bootstrap_values)
-    deltas      = rewards + gamma * not_done * next_values - values
-    decays      = gamma * lambda_ * not_done
-
-    log_suffix = torch.flip(
-        torch.cumsum(torch.flip(torch.log(decays.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights = torch.exp(log_suffix)
-    adv     = torch.flip(
-        torch.cumsum(torch.flip(deltas * weights, [1]), dim=1), [1]
-    ) / weights
-
+    truncateds = torch.zeros_like(terminateds)
+    full_bootstrap = torch.zeros_like(rewards)
     if bootstrap_values is not None:
-        adv = adv + weights * bootstrap_values.unsqueeze(1)
-
-    return adv
+        full_bootstrap[:, -1] = bootstrap_values
+    return vectorized_gae_with_truncations(
+        rewards, values, terminateds, truncateds, full_bootstrap, gamma, lambda_
+    )
 
 
 
@@ -660,7 +668,7 @@ def vectorized_gae_with_truncations(
     lambda_: float,
 ) -> torch.Tensor:
     """
-    Vectorized GAE with truncation support — log-depth parallel scan baseline.
+    Vectorized GAE with truncation support -- log-depth parallel scan baseline.
 
     Uses the linear-space associative scan combine operator
       (a1, b1) ∘ (a2, b2) = (a2 + b2*a1, b2*b1)
@@ -757,7 +765,7 @@ def test_gae_truncation_performance():
     full per-step bootstrap support.  This path reads 7 full-width tensors
     vs 5 for the no-truncation path, so expect a lower speedup number.
 
-    No assertion floor is imposed here — the truncation path is a correctness
+    No assertion floor is imposed here -- the truncation path is a correctness
     feature, not a performance regression from the no-truncation baseline.
     This test exists to make the truncation-path speedup visible and tracked.
     """

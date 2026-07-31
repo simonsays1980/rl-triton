@@ -4,7 +4,31 @@ import triton
 from rl_triton.kernels.gae import gae_kernel, gae_fused_kernel
 from rl_triton.ops._scan import _run_scan, _FLAT_MAX_SEQ_LEN, _CORRECTNESS_WARNINGS
 
-_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+# Below 512, next_power_of_2(seq_len) used to fall through .get()'s default
+# (16 warps = 512 threads) regardless of BLOCK_SIZE, e.g. scanning 8 elements
+# with 512 threads resident (~98% masked-off lanes). Measured on H200 SXM
+# (tests/benchmark_gae_vs_pufferlib.py massively-parallel-sim regime, Step 1
+# of the warps-floor investigation): device time is FLAT for num_warps in
+# {1, 2, 4} at BLOCK_SIZE 8-128 (they all hit the same 32-blocks/SM hard cap
+# on Hopper) and degrades 2.1x-2.7x at the old default of 16 warps, worse at
+# higher num_envs (fewer resident blocks per SM -> more grid waves to cover
+# the same total env count). 128 specifically must NOT use 4 warps: it wins
+# by ~2% at num_envs=4096 but REGRESSES ~11% at num_envs=32768 versus 2 warps
+# -- 2 is the robust choice, tied with 1 at both scales. 256 is the opposite:
+# 4 warps wins outright at large num_envs (44.6us vs 45.4-45.9us at 1-2).
+#
+# No entry above 16384: the investigation above never swept BLOCK_SIZE of
+# 32768/65536/131072 (all reachable via seq_len <= _FLAT_MAX_SEQ_LEN), so
+# those sizes silently fall through .get()'s default of 16 warps, unverified
+# -- the same over-provisioning this table exists to fix at smaller sizes
+# likely still applies there. Not fixed here: seq_len this long is well
+# outside the project's target regime (NOTES.md: production rollouts are
+# 2k-8k steps), so it wasn't prioritized. Flag for follow-up if a user
+# reports this range as a bottleneck.
+_WARPS = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 
 def compute_gae(
@@ -75,7 +99,7 @@ def compute_gae(
     num_envs, seq_len = rewards.shape
     has_truncations   = truncateds is not None
 
-    # Cheap structural checks — always-on.
+    # Cheap structural checks -- always-on.
     for name, t in [("rewards", rewards), ("values", values), ("terminateds", terminateds)]:
         assert t.is_cuda,                f"{name} must be on CUDA"
         assert t.dtype == torch.float32, f"{name}: expected float32, got {t.dtype}"
@@ -100,7 +124,7 @@ def compute_gae(
         assert bootstrap_values.shape == rewards.shape, \
             f"bootstrap_values shape {bootstrap_values.shape} != rewards shape {rewards.shape}"
 
-    # Expensive tensor scans — correctness-warning path only (not in benchmark hot loop).
+    # Expensive tensor scans -- correctness-warning path only (not in benchmark hot loop).
     if _CORRECTNESS_WARNINGS():
         if has_truncations:
             assert not (terminateds.bool() & truncateds.bool()).any(), \

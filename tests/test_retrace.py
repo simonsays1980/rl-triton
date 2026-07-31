@@ -4,7 +4,7 @@ import numpy as np
 
 triton = pytest.importorskip("triton")
 
-from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu
+from bench_utils import _bench_cpu, _bench_gpu, _n_iter_gpu, _warmup_gpu, parallel_suffix_scan
 from rl_triton.ops.retrace import compute_retrace
 
 cuda_only = pytest.mark.skipif(
@@ -30,7 +30,7 @@ def reference_retrace(
     c_bar: float = 1.0,
     rho_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch Retrace(λ) backward scan — ground truth for correctness tests only."""
+    """Pure-PyTorch Retrace(λ) backward scan -- ground truth for correctness tests only."""
     num_envs, T = rewards.shape
 
     dones = (terminateds + truncateds).clamp(max=1.0)
@@ -75,20 +75,26 @@ def vectorized_retrace(
     rho_bar: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Fully vectorized Retrace(λ) via log-space suffix cumsum — strong compiled baseline.
+    Fully vectorized Retrace(λ) -- strong compiled baseline via parallel_suffix_scan
+    (log2(T)-doubling, no log/exp -- the same associative operator tl.associative_scan
+    uses in the kernel).
 
     Replaces the Python backward loop in reference_retrace with a vectorized
-    equivalent.  The backward scan Δ[t] = u[t] + v[t]*Δ[t+1] is a weighted sum
-    where each weight is the suffix product of decays v from t+1 to T-1.  These
-    suffix products are computed in log-space to avoid underflow over long sequences.
+    equivalent: Δ[t] = u[t] + v[t]*Δ[t+1], where v[t] = γ·c[t+1]·(1-d[t])
+    exactly matches the recurrence derived in docs/kernels/retrace.md.
+    v[T-1]=0 because c[T] is out-of-bounds, which already gives Δ[T]=0
+    correctly without needing a separate sentinel/carry-seed column (unlike
+    GAE/V-Trace's with-truncations baselines) -- Retrace has no bootstrap_values
+    concept (see docs/kernels/retrace.md section 4: all boundary information
+    is already encoded in α_{T-1} via next_q_values_all).
 
-    Note: Retrace uses c[t+1] as the decay coefficient, so the suffix product for
-    Δ[t] starts at v[t] = γ·c[t+1]·(1-d[t]), exactly matching the recurrence
-    derived in docs/retrace.md.  v[T-1]=0 because c[T] is out-of-bounds; Δ[T]=0.
-
-    Not production-hardened (log of zero decay requires clamping); used only
-    for benchmarking as the strongest fully-vectorized PyTorch baseline.
-    Timed with CUDA events (no Python loop, so wall-clock is not needed).
+    This used to compute the same recurrence via a log-space suffix cumsum
+    (log(v) suffix-summed, then exp()'d) and was BROKEN the same way
+    vectorized_gae was (see its docstring in test_gae.py): 90%+ non-finite
+    output at every size actually benchmarked (even seq_len=8), never
+    checked -- bench_safeguard.py's test_perf_retrace has been silently timing
+    against ~98% garbage this whole time. parallel_suffix_scan doesn't have
+    that failure mode. Not production-hardened; used only for benchmarking.
     """
     dones = (terminateds + truncateds).clamp(max=1.0)
 
@@ -104,13 +110,7 @@ def vectorized_retrace(
     c_next[:, -1]   = 0.0
     v = gamma * c_next * (1.0 - dones)
 
-    log_suffix   = torch.flip(
-        torch.cumsum(torch.flip(torch.log(v.clamp(min=1e-38)), [1]), dim=1), [1]
-    )
-    weights      = torch.exp(log_suffix)
-    q_deltas     = torch.flip(
-        torch.cumsum(torch.flip(u * weights, [1]), dim=1), [1]
-    ) / weights
+    q_deltas = parallel_suffix_scan(u, v)
 
     retrace_targets = q_deltas + q_values
 
@@ -149,7 +149,7 @@ def test_retrace_known_values_single_env():
     # pi=mu=1.0, c=1.0, E_pi[Q_next]=Q_next (single action).
     # delta[0] = 1 + 1*2 - 0 = 3,  delta[1] = 1 + 1*3 - 0 = 4
     # decay[0] = 1*c[1]*(1-0) = 1
-    # decay[1] = 1*c[2]*(1-0) = 0  — c[T] is out-of-bounds, forced to 0.
+    # decay[1] = 1*c[2]*(1-0) = 0  -- c[T] is out-of-bounds, forced to 0.
     # Delta[1] = 4,  Delta[0] = 3 + 1*4 = 7
     # Q_ret = [7, 4]
     probs_t     = torch.ones(1, 2, 1, device="cuda")
@@ -389,7 +389,7 @@ def test_retrace_non_contiguous_input():
 # Truncation classification note
 # ---------------------------------------------------------------------------
 #
-# Retrace(λ) takes `truncateds` as a required positional argument — it is always
+# Retrace(λ) takes `truncateds` as a required positional argument -- it is always
 # present.  There is NO separate bootstrap_values parameter because the Q-bootstrap
 # γ·E_π[Q(s_{t+1},·)] is folded into `next_q_values_all` (the caller supplies the
 # full Q-table for the next state).  The truncated flag stops trace decay exactly
@@ -401,7 +401,7 @@ def test_retrace_non_contiguous_input():
 # The existing test_retrace_performance already exercises `truncateds=zeros`, which
 # is the realistic production case (most steps are not truncated).  A separate
 # truncation-path benchmark would compare the same kernel to itself with a ~5%
-# density difference — not a meaningful coverage gap.  No additional truncation
+# density difference -- not a meaningful coverage gap.  No additional truncation
 # benchmark or correctness test is added here.
 #
 # ---------------------------------------------------------------------------
@@ -439,11 +439,11 @@ def test_retrace_performance():
     """
     Sweep over (num_envs, seq_len) configs comparing:
 
-      triton            — Triton scan kernel  (CUDA events)
-      pt.compile(vec)   — torch.compile on vectorized_retrace  (CUDA events)
-      pt.compile(loop)  — torch.compile on reference_retrace  (wall-clock)
-      np→triton→np      — NumPy → GPU → NumPy adoption path  (wall-clock)
-      numpy(cpu)        — reference_retrace on CPU tensors  (wall-clock)
+      triton            -- Triton scan kernel  (CUDA events)
+      pt.compile(vec)   -- torch.compile on vectorized_retrace  (CUDA events)
+      pt.compile(loop)  -- torch.compile on reference_retrace  (wall-clock)
+      np→triton→np      -- NumPy → GPU → NumPy adoption path  (wall-clock)
+      numpy(cpu)        -- reference_retrace on CPU tensors  (wall-clock)
 
     Assertions:
       - Triton must be >=1.5x faster than pt.compile(vec).
@@ -472,7 +472,7 @@ def test_retrace_performance():
         args_cpu = _make_inputs(num_envs, seq_len, device="cpu")
         n_iter   = _n_iter_gpu(seq_len, num_envs)
 
-        # Per-config warmup at the exact shape being timed — each distinct
+        # Per-config warmup at the exact shape being timed -- each distinct
         # seq_len triggers a fresh Triton compile (new BLOCK_SIZE power-of-2).
         _warmup_gpu(compute_retrace, *args_gpu, gamma=0.99)
         _warmup_gpu(compiled_vec,   *args_gpu, gamma=0.99)
@@ -497,11 +497,11 @@ def test_retrace_performance():
         )
 
     print(
-        "\ntriton          : CUDA events — pure kernel time, no CPU overhead."
-        "\ncompile(vec)    : CUDA events — vectorized log-space cumsum, no Python loop."
-        "\ncompile(loop)   : wall-clock  — one CUDA op per timestep from Python."
-        "\nnp→triton→np    : wall-clock  — NumPy → GPU → NumPy adoption path."
-        "\nnumpy(cpu)      : wall-clock  — reference loop on CPU tensors."
+        "\ntriton          : CUDA events -- pure kernel time, no CPU overhead."
+        "\ncompile(vec)    : CUDA events -- vectorized log-space cumsum, no Python loop."
+        "\ncompile(loop)   : wall-clock  -- one CUDA op per timestep from Python."
+        "\nnp→triton→np    : wall-clock  -- NumPy → GPU → NumPy adoption path."
+        "\nnumpy(cpu)      : wall-clock  -- reference loop on CPU tensors."
         "\nspeedups vs triton kernel; e2e vs np = numpy_cpu / np→triton→np."
     )
 

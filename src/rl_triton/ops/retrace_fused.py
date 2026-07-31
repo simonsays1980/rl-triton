@@ -4,7 +4,23 @@ import triton
 from rl_triton.kernels.retrace_fused import retrace_fused_kernel
 
 _FLAT_MAX_SEQ_LEN = 131072
-_WARPS = {512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32}
+# Below 512, BLOCK_SIZE used to fall through .get()'s default (16 warps),
+# grossly over-provisioned for small single-block reductions -- see
+# src/rl_triton/ops/gae.py's _WARPS for the H200 measurement (device time
+# flat for num_warps in {1,2,4} at BLOCK_SIZE 8-128, 2-3x worse at the old
+# default) and tests/benchmark_gae_vs_pufferlib.py's warps-floor investigation.
+# Spot-checked on this kernel directly (vtrace_fused, structurally similar,
+# higher register count) before applying here -- same flat-then-degrade shape,
+# bit-identical output at every num_warps tested.
+#
+# No entry above 16384, same gap as gae.py's _WARPS -- less relevant here
+# than elsewhere, since compute_retrace's _TRITON_SEQ_LEN_CEILING (2048)
+# reroutes away from this fused kernel long before BLOCK_SIZE reaches this
+# unmeasured range via the public API.
+_WARPS = {
+    8: 2, 16: 2, 32: 2, 64: 2, 128: 2, 256: 4,
+    512: 4, 1024: 8, 2048: 16, 4096: 16, 8192: 32, 16384: 32,
+}
 
 
 def compute_retrace_fused(
@@ -25,7 +41,7 @@ def compute_retrace_fused(
     Fully-fused Retrace(λ) via a single Triton kernel.
 
     Computes E_π[Q(s_{t+1},a)], IS ratios, u[t], v[t], the backward
-    associative scan, Q-value targets, and advantages all in one kernel —
+    associative scan, Q-value targets, and advantages all in one kernel --
     no intermediate tensor allocations.  done[t] = terminated[t] | truncated[t]
     is also computed in-kernel from the two raw flags, so the caller does not
     need to materialize a combined `dones` tensor via a separate PyTorch op
@@ -65,8 +81,9 @@ def compute_retrace_fused(
         f"seq_len={seq_len} exceeds flat kernel limit {_FLAT_MAX_SEQ_LEN}."
     )
 
-    out        = torch.empty_like(rewards)
-    advantages = torch.empty_like(rewards)
+    out            = torch.empty_like(rewards)
+    advantages     = torch.empty_like(rewards)
+    pi_at_scratch  = torch.empty_like(rewards)
 
     BLOCK_SIZE   = triton.next_power_of_2(seq_len)
     ACTION_BLOCK = triton.next_power_of_2(num_actions)
@@ -84,6 +101,7 @@ def compute_retrace_fused(
         terminated,
         out,
         advantages,
+        pi_at_scratch,
         seq_len,
         num_actions,
         rewards.stride(0),

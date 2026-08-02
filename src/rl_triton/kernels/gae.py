@@ -22,8 +22,18 @@ def gae_kernel(
     scalar bootstrap per env.  No truncateds or 2D bootstrap tensor.
 
       delta[t] = r[t] + gamma*(1-d[t])*V(s_{t+1}) - V(s_t)
-      decay[t] = gamma*lambda*(1-d[t])
-      A[t] = delta[t] + decay[t]*A[t+1],  A[T] = bootstrap
+      beta[t]  = gamma*lambda*(1-d[t])          (scan decay coefficient)
+      A[t] = delta[t] + beta[t]*A[t+1],  A[T] = 0
+
+    bootstrap supplies V(s_T) as the next-state value inside delta[T-1] only.
+    The scan's additive boundary carry A[T] is always 0 -- an advantage
+    carry represents residual trace mass past the buffer, and there is none:
+    delta[T-1] already prices in the full bootstrap value at weight 1.
+    Seeding A[T] with V(s_T) as well would double-count it (see CleanRL's
+    compute_gae, which also seeds this carry with 0 -- verified against its
+    current source; cited for this boundary convention only, not for
+    truncation handling, which CleanRL doesn't support). beta[t] itself is
+    unaffected by this fix.
     """
     env_idx = tl.program_id(0)
     base    = env_idx * stride_env
@@ -45,8 +55,8 @@ def gae_kernel(
     delta    = r + gamma * v_next * not_done - v
     decay    = gamma * lambda_ * not_done
 
-    out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-    tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)
+    out_local, _ = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+    tl.store(out_ptr + base + rev, out_local, mask=mask)
 
 
 @triton.jit
@@ -81,7 +91,15 @@ def gae_fused_kernel(
       done[t]:       1 if episode ended for any reason (trace decay zeroed).
       α[t] = delta[t] = r[t] + gamma*(1-terminated[t])*(values[t+1] + bootstrap[t]) - V(s_t)
       β[t] = decay[t] = gamma * lambda * (1 - done[t])
-      A[t] = α[t] + β[t] * A[t+1],  A[T] = bootstrap[T-1]
+      A[t] = α[t] + β[t] * A[t+1],  A[T] = 0
+
+    A[T] is always 0, never bootstrap[T-1]: bootstrap[T-1] already enters the
+    recurrence once, inside α[T-1] as the next-state value. An advantage
+    carry represents trace mass from steps past the buffer, and there are
+    none -- seeding A[T] with a value double-counts it. (This is distinct
+    from lambda-returns, where the analogous carry legitimately carries
+    gamma*lambda*V(s_T): there alpha only carries gamma*(1-lambda)*V(s_T), so
+    the two weights sum to 1 instead of overlapping.)
 
     Args:
         rewards_ptr:     Per-step rewards [num_envs, seq_len], float32.
@@ -119,8 +137,9 @@ def gae_fused_kernel(
         # v_next[t] = values[t+1] at non-truncated interior steps.
         # At truncated interior steps or at the boundary (offs==0, t=T-1):
         # bootstrap provides the true continuation value.
-        # bootstrap[T-1] is also the scan boundary A[T]; it appears in both
-        # delta[T-1] and via decay_prod*carry below (correct for GAE recurrence).
+        # bootstrap[T-1] feeds delta[T-1] as the next-state value ONLY -- the
+        # scan carry A[T] is always 0 (see module docstring). Seeding the
+        # carry with bootstrap[T-1] as well would double-count it.
         #
         # The load's mask only needs offs>0 to avoid reading past the buffer at
         # the boundary lane. truncated==0 is NOT needed in the predicate: the
@@ -136,12 +155,10 @@ def gae_fused_kernel(
         not_terminated = 1.0 - terminated
         not_done       = 1.0 - done
         delta = r + gamma * v_next * not_terminated - v
-        decay = gamma * lambda_ * not_done
+        decay = gamma * lambda_ * not_done   # beta[t], the scan decay coefficient
 
-        out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-
-        carry = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
-        tl.store(out_ptr + base + rev, out_local + decay_prod * carry, mask=mask)
+        out_local, _ = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+        tl.store(out_ptr + base + rev, out_local, mask=mask)
     else:
         not_terminated = 1.0 - terminated
         if HAS_BOOTSTRAP:
@@ -150,14 +167,14 @@ def gae_fused_kernel(
             bootstrap = 0.0
         # Load values[t+1] for interior steps; boundary step (offs==0) gets bootstrap
         # injected as the next-state value so delta[T-1] = r + gamma*(1-term)*bootstrap - v.
-        # The scan boundary A[T]=bootstrap is then applied via decay_prod*bootstrap below,
-        # giving the full GAE recurrence at the window edge.
+        # The scan carry A[T] is always 0 -- bootstrap enters the recurrence
+        # exactly once, here, not again at the scan boundary (see module docstring).
         v_next_raw = tl.load(values_ptr + base + rev + 1,
                              mask=mask & (offs > 0), other=0.0)
         v_next = tl.where(offs == 0, bootstrap, v_next_raw)
 
         delta = r + gamma * v_next * not_terminated - v
-        decay = gamma * lambda_ * not_terminated
+        decay = gamma * lambda_ * not_terminated   # beta[t], the scan decay coefficient
 
-        out_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-        tl.store(out_ptr + base + rev, out_local + decay_prod * bootstrap, mask=mask)
+        out_local, _ = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
+        tl.store(out_ptr + base + rev, out_local, mask=mask)

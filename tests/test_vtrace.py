@@ -68,6 +68,11 @@ def reference_vtrace(
 
     Derives next_values as values[:, t+1] with bootstrap_values at the boundary,
     matching exactly what the Triton kernel computes internally.
+
+    The scan carry Delta[T] is always 0: bootstrap_values already enters the
+    recurrence once, inside delta[T-1] via next_values (weight 1). Seeding
+    the carry with it too would double-count it -- same class of bug as GAE's
+    window-boundary carry (see kernels/gae.py's module docstring).
     """
     next_values = _make_next_values(values, bootstrap_values)
     num_envs, T = rewards.shape
@@ -81,8 +86,6 @@ def reference_vtrace(
 
     value_deltas = torch.zeros_like(rewards)
     carry = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
-    if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
     for t in reversed(range(T)):
         carry = deltas[:, t] + decays[:, t] * carry
         value_deltas[:, t] = carry
@@ -201,11 +204,12 @@ def test_vtrace_known_values_truncated():
     # next_values = [values[1], bootstrap] = [0, 0.5]
     # delta[0] = 1*(1 + 0 - 0) = 1
     # delta[1] = 1*(1 + 1*0.5 - 0) = 1.5
-    # Δ[1] = 1.5 + 1*0.5 = 2.0
-    # Δ[0] = 1.0 + 1*2.0 = 3.0
-    # targets = [3.0, 2.0]
-    # next_target = [targets[1], bootstrap] = [2.0, 0.5]
-    # adv[0] = 1*(1 + 1*2.0 - 0) = 3.0
+    # Additive boundary carry Delta[T] = 0 (see kernels/gae.py's module docstring):
+    # Δ[1] = 1.5 + 1*0 = 1.5
+    # Δ[0] = 1.0 + 1*1.5 = 2.5
+    # targets = [2.5, 1.5]
+    # next_target = [targets[1], bootstrap] = [1.5, 0.5]  (direct use, unaffected by the fix)
+    # adv[0] = 1*(1 + 1*1.5 - 0) = 2.5
     # adv[1] = 1*(1 + 1*0.5 - 0) = 1.5
     log_pi    = torch.zeros(1, 2, device="cuda")
     values    = torch.zeros(1, 2, device="cuda")
@@ -218,8 +222,8 @@ def test_vtrace_known_values_truncated():
         gamma=1.0, rho_bar=100.0, c_bar=100.0,
         last_value=bootstrap,
     )
-    torch.testing.assert_close(targets,    torch.tensor([[3.0, 2.0]], device="cuda"), atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(advantages, torch.tensor([[3.0, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(targets,    torch.tensor([[2.5, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(advantages, torch.tensor([[2.5, 1.5]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 @cuda_only
@@ -333,6 +337,57 @@ def test_vtrace_non_contiguous_input():
 
 
 # ---------------------------------------------------------------------------
+# On-policy Monte-Carlo identity -- regression test for the window-boundary
+# bootstrap double-counting bug (same class as GAE's, see test_gae.py).
+#
+# On-policy (target == behavior policy, so rho=c=1 everywhere), V-Trace's
+# recurrence is structurally identical to GAE at lambda=1: vs[t] must equal
+# the Monte-Carlo return G_t exactly. This is an implementation-independent
+# identity, not a property of reference_vtrace -- so this test computes G_t
+# by hand and never calls reference_vtrace or _ref_vtrace_sequential (both
+# encoded this same bug until fixed alongside the kernel; validating against
+# them would be circular).  A nonzero window bootstrap on a continuing
+# episode (no terminated/truncated flags) makes the error visible: it
+# vanishes when V(s_T)=0, which is why most of the suite didn't catch it.
+# ---------------------------------------------------------------------------
+
+@cuda_only
+def test_vtrace_on_policy_monte_carlo_identity():
+    """On-policy V-Trace targets equal G_t; advantages equal G_t - V(s_t).
+
+    On-policy: log_pi_target == log_pi_behavior, so rho=c=1 everywhere and
+    V-Trace's recurrence reduces exactly to GAE's at lambda=1. G_t is
+    computed here by a direct hand-rolled backward recurrence over
+    rewards/gamma/bootstrap -- not via reference_vtrace/_ref_vtrace_sequential.
+    """
+    torch.manual_seed(321)
+    num_envs, seq_len = 16, 41
+    gamma = 0.98
+
+    log_pi      = torch.randn(num_envs, seq_len, device="cuda")  # same tensor for target and behavior -> rho=c=1
+    values      = torch.randn(num_envs, seq_len, device="cuda")
+    rewards     = torch.randn(num_envs, seq_len, device="cuda")
+    terminateds = torch.zeros(num_envs, seq_len, device="cuda")  # continuing episode
+    last_value  = torch.randn(num_envs, device="cuda")           # V(s_T), nonzero
+
+    # G_t = r_t + gamma*G_{t+1},  G_T = last_value  (independent hand-rolled MC return)
+    returns = torch.zeros(num_envs, seq_len, device="cuda")
+    carry = last_value.clone()
+    for t in reversed(range(seq_len)):
+        carry = rewards[:, t] + gamma * carry
+        returns[:, t] = carry
+    expected_advantages = returns - values
+
+    targets, advantages = compute_vtrace(
+        log_pi, log_pi, values, rewards, terminateds,
+        gamma=gamma, rho_bar=100.0, c_bar=100.0,   # generous clip bounds -- effectively unclipped since rho=c=1
+        last_value=last_value,
+    )
+    torch.testing.assert_close(targets, returns, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(advantages, expected_advantages, atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # Fused kernel correctness
 # ---------------------------------------------------------------------------
 
@@ -382,6 +437,10 @@ def _ref_vtrace_sequential(
 
     Handles interior truncated steps (bootstrap_values[n, t] used as v_next when
     truncateds[n, t]=1) in addition to the window boundary (t=T-1).
+
+    Delta[T] = 0: bootstrap_values[:, T-1] already enters the recurrence once,
+    inside delta[T-1] via v_next (weight 1). Seeding the carry with it too
+    would double-count it.
     """
     N, T = rewards.shape
     is_ratios = torch.exp(log_pi_target - log_pi_behavior)
@@ -389,7 +448,7 @@ def _ref_vtrace_sequential(
     c   = torch.clamp(is_ratios, max=c_bar)
 
     value_deltas = torch.zeros_like(rewards)
-    carry = bootstrap_values[:, T - 1].clone()   # Δ[T] = boundary bootstrap
+    carry = torch.zeros(N, device=rewards.device, dtype=rewards.dtype)   # Delta[T] = 0
 
     for t in reversed(range(T)):
         v_next = torch.where(
@@ -763,8 +822,12 @@ def vectorized_vtrace_with_truncations(
       - v_next[t] = values[t+1] at interior non-truncated steps,
         bootstrap_values[t] at truncated steps and the boundary.
       - not_terminated[t] gates the one-step TD: gamma * v_next * (1 - terminated)
-      - not_done[t] = 1 - clamp(terminated + truncated, max=1) gates trace decay
-      - carry seeded from bootstrap_values[:, -1] (boundary value).
+      - not_done[t] = 1 - clamp(terminated + truncated, max=1) gates the scan
+        decay coefficient beta[t] (decays below)
+      - additive boundary carry Delta[T] = 0 (bootstrap_values[:, -1] already
+        entered deltas[:, -1] above via v_next, at weight 1; seeding the
+        scan's boundary carry with it too would double-count it -- see
+        kernels/gae.py's module docstring). beta[t] itself is unaffected.
     """
     is_ratios      = torch.exp(log_pi_target - log_pi_behavior)
     rho            = torch.clamp(is_ratios, max=rho_bar)
@@ -779,15 +842,11 @@ def vectorized_vtrace_with_truncations(
     v_next             = v_next_raw + bootstrap_values
 
     deltas = rho * (rewards + gamma * not_terminated * v_next - values)
-    decays = gamma * c * not_done
+    decays = gamma * c * not_done   # beta[t], the scan decay coefficient
 
-    # Append sentinel at T: a=bootstrap_values[:,-1], b=0 to seed the boundary carry.
-    N        = rewards.shape[0]
-    sentinel_a = bootstrap_values[:, -1].unsqueeze(1)
-    sentinel_b = torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)
-    a = torch.cat([deltas, sentinel_a], dim=1)
-    b = torch.cat([decays, sentinel_b], dim=1)
-    value_deltas = parallel_suffix_scan(a, b)[:, :rewards.shape[1]]
+    # parallel_suffix_scan assumes Delta[T]=0 (additive boundary carry), which is exactly what we want --
+    # no sentinel/boundary injection needed.
+    value_deltas = parallel_suffix_scan(deltas, decays)
 
     vtrace_targets = value_deltas + values
 

@@ -25,11 +25,12 @@ def compute_vtrace(
 
     Recurrence:
 
-    - Δ[t] = δ[t] + decay[t] * Δ[t+1],   Δ[T] = bootstrap
-    - δ[t]     = ρ[t] * (r[t] + γ * V(s_{t+1}) * (1 - terminated[t]) - V(s_t))
-    - decay[t] = γ * c[t] * (1 - done[t]),  done[t] = terminated[t] | truncated[t]
-    - ρ[t]     = min(ρ_bar, π_target[t] / π_behavior[t])
-    - c[t]     = min(c_bar, π_target[t] / π_behavior[t])
+    - Δ[t] = δ[t] + β[t] * Δ[t+1],   Δ[T] = 0
+    - δ[t] = ρ[t] * (r[t] + γ * V(s_{t+1}) * (1 - terminated[t]) - V(s_t))
+    - β[t] = γ * c[t] * (1 - done[t]),  done[t] = terminated[t] | truncated[t]
+             (scan decay coefficient)
+    - ρ[t] = min(ρ_bar, π_target[t] / π_behavior[t])
+    - c[t] = min(c_bar, π_target[t] / π_behavior[t])
 
     Outputs:
 
@@ -43,10 +44,16 @@ def compute_vtrace(
     In both cases set bootstrap_values to the true continuation value; leave
     it zero everywhere else.
 
-    The final column has a dual role: it feeds delta[T-1] as the next-state
-    value AND seeds the scan carry Δ_T.  Both uses take the same number, so a
-    single entry in bootstrap_values[:, -1] is sufficient.  Set it to V(s_T)
-    if the episode continues past the window, or 0 if it terminated at T-1.
+    The final column feeds delta[T-1] as the next-state value ONLY.  The
+    scan's additive boundary carry Δ[T] is always 0: an advantage carry
+    represents trace mass from steps past the buffer, and there is none
+    there.  (β[T-1], the multiplicative decay coefficient above, is
+    unaffected by this -- only the additive Δ[T] term changes.)  A single
+    entry in bootstrap_values[:, -1] is sufficient -- set it to V(s_T) if the
+    episode continues past the window, or 0 if it terminated at T-1.  (The
+    same bootstrap_values[:, -1] is also used directly, not as a carry, when
+    computing next_vtrace_targets[:, -1] for the advantage formula -- that use
+    is single-counted and correct as-is.)
 
     Most users have no interior truncations and should use the `last_value`
     argument (shape [num_envs]) instead, which populates the boundary column
@@ -173,10 +180,14 @@ def compute_vtrace(
     rho            = torch.clamp(is_ratios, max=rho_bar)
     c              = torch.clamp(is_ratios, max=c_bar)
     u = rho * (rewards + gamma * next_values * not_terminated - values)
-    v = gamma * c * not_done
+    v = gamma * c * not_done   # beta[t], the scan decay coefficient
 
-    carry          = bootstrap_values[:, -1]
-    value_deltas   = _run_scan(u, v, carry)
+    # Additive boundary carry Delta[T] = 0: bootstrap_values[:, -1] already
+    # entered u[:, -1] via next_values above (weight 1). Seeding the scan's
+    # boundary carry with it too would double-count it -- see kernels/gae.py's
+    # module docstring for the same bug class in GAE. beta (v) itself is
+    # unaffected by this fix.
+    value_deltas   = _run_scan(u, v)
     vtrace_targets = value_deltas + values
 
     next_vtrace_targets = torch.empty_like(vtrace_targets)

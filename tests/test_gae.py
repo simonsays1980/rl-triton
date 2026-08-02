@@ -43,13 +43,15 @@ def reference_gae(
 
     Derives next_values as values[:, t+1] with bootstrap_values at the boundary,
     matching exactly what the Triton kernel computes internally.
+
+    The scan carry A[T] is always 0: bootstrap_values[:, -1] already enters
+    the recurrence once, inside delta[T-1] via next_values (weight 1).
+    Seeding the carry with it too would double-count it.
     """
     next_values = _make_next_values(values, bootstrap_values)
     T       = rewards.shape[1]
     adv     = torch.zeros_like(rewards)
     carry   = torch.zeros(rewards.shape[0], device=rewards.device, dtype=rewards.dtype)
-    if bootstrap_values is not None:
-        carry = bootstrap_values.clone()
     for t in reversed(range(T)):
         not_done  = 1.0 - terminateds[:, t]
         delta     = rewards[:, t] + gamma * not_done * next_values[:, t] - values[:, t]
@@ -187,17 +189,18 @@ def test_gae_known_values_lambda():
 @cuda_only
 def test_gae_known_values_truncated():
     # gamma=1, lambda=1, no terminateds, bootstrap=2.0, V=0.
-    # bootstrap serves as both A[T] and V(s_T) (standard GAE semantics).
+    # bootstrap feeds delta[T-1] as V(s_T) only; the additive boundary carry
+    # A[T] is always 0 (see kernels/gae.py's module docstring).
     # v_next = [values[1], values[2], bootstrap] = [0, 0, 2]
     # delta  = [1+0-0, 2+0-0, 3+2-0] = [1, 2, 5]
-    # A[2] = delta[2] + 1*A[T] = 5 + 2 = 7
-    # A[1] = delta[1] + 1*A[2] = 2 + 7 = 9
-    # A[0] = delta[0] + 1*A[1] = 1 + 9 = 10
+    # A[2] = delta[2] + 1*A[T] = 5 + 1*0 = 5
+    # A[1] = delta[1] + 1*A[2] = 2 + 5 = 7
+    # A[0] = delta[0] + 1*A[1] = 1 + 7 = 8
     rewards    = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     values     = torch.zeros(1, 3, device="cuda")
     terminateds      = torch.zeros(1, 3, device="cuda")
     bootstrap  = torch.tensor([2.0], device="cuda")
-    expected   = torch.tensor([[10.0, 9.0, 7.0]], device="cuda")
+    expected   = torch.tensor([[8.0, 7.0, 5.0]], device="cuda")
     torch.testing.assert_close(
         compute_gae(rewards, values, terminateds,
                            gamma=1.0, lambda_=1.0, last_value=bootstrap),
@@ -210,13 +213,11 @@ def test_gae_known_values_mixed_termination():
     # Two envs: env 0 terminated (bootstrap=0), env 1 truncated (bootstrap=5).
     # gamma=1, lambda=1, no mid-sequence terminateds, V=0.
     # Env 0: next_values=[0,0], delta=r, A[1]=2, A[0]=3
-    # Env 1: next_values=[0,5], delta=[1,2+5]=[1,7]... wait:
-    #   delta[1] = r[1] + gamma*next_v[1] - v[1] = 2 + 1*5 - 0 = 7
-    #   delta[0] = r[0] + gamma*next_v[0] - v[0] = 1 + 1*0 - 0 = 1
-    #   A[1] = delta[1] + decay*bootstrap = 7 + 1*5 = 12... no wait
-    #   A[T] = bootstrap = 5 (carry)
-    #   A[1] = delta[1] + gamma*lambda*(1-done)*A[T] = 7 + 1*5 = 12
-    #   Hmm, that changes the hand calc. Let me use reference_gae as oracle.
+    # Env 1: next_values=[0,5], delta=[1, 2+5]=[1,7].
+    #   Additive boundary carry A[T]=0 (see kernels/gae.py's module docstring):
+    #   A[1] = delta[1] + gamma*lambda*(1-done)*A[T] = 7 + 1*0 = 7
+    #   A[0] = delta[0] + gamma*lambda*(1-done)*A[1] = 1 + 1*7 = 8
+    # Checked against reference_gae as oracle (also fixed to seed A[T]=0).
     rewards   = torch.tensor([[1.0, 2.0], [1.0, 2.0]], device="cuda")
     values    = torch.zeros(2, 2, device="cuda")
     terminateds     = torch.zeros(2, 2, device="cuda")
@@ -315,6 +316,102 @@ def test_gae_lambda0():
 
 
 # ---------------------------------------------------------------------------
+# lambda=1 Monte-Carlo identity -- regression test for the window-boundary
+# bootstrap double-counting bug.
+#
+# At lambda=1, GAE must telescope exactly to the Monte-Carlo advantage
+#   A_t = G_t - V(s_t),   G_t = discounted return with bootstrap tail.
+# This is an implementation-independent identity, not a property of any
+# particular oracle -- it holds regardless of how reference_gae or
+# _ref_gae_sequential happen to be written, which is why this test computes
+# G_t by hand from rewards/gamma/bootstrap directly and never calls either
+# of them.  A previous version of compute_gae seeded the scan's additive
+# boundary carry with the window bootstrap V(s_T) in addition to using it
+# inside delta[T-1], double-counting it by exactly
+# (gamma*lambda)^(T-t) * V(s_T).  That error is zero whenever V(s_T)=0 (the
+# vanishing case most fixtures exercise, e.g. an episode that terminates
+# exactly at the window edge), which is why the rest of the suite didn't
+# catch it -- this test uses a NONZERO bootstrap on a continuing episode
+# (no terminated/truncated flags at all) specifically to make the error
+# visible.
+# ---------------------------------------------------------------------------
+
+@cuda_only
+def test_gae_lambda1_monte_carlo_identity():
+    """lambda=1 => A_t = G_t - V(s_t), with a nonzero window bootstrap.
+
+    G_t is computed here by a direct hand-rolled backward recurrence over
+    rewards/gamma/bootstrap -- NOT via reference_gae or _ref_gae_sequential,
+    which is the point: those oracles encoded this exact bug until they were
+    fixed alongside the kernel, so validating against them would have been
+    circular. The window continues past the buffer (no terminated flags),
+    so V(s_T)=last_value is nonzero and the bug -- had it still been
+    present -- would show up as a large, non-vanishing error.
+    """
+    torch.manual_seed(123)
+    num_envs, seq_len = 16, 37
+    gamma = 0.97
+
+    rewards     = torch.randn(num_envs, seq_len, device="cuda")
+    values      = torch.randn(num_envs, seq_len, device="cuda")
+    terminateds = torch.zeros(num_envs, seq_len, device="cuda")  # continuing episode
+    last_value  = torch.randn(num_envs, device="cuda")           # V(s_T), nonzero
+
+    # G_t = r_t + gamma*G_{t+1},  G_T = last_value  (independent hand-rolled MC return)
+    returns = torch.zeros(num_envs, seq_len, device="cuda")
+    carry = last_value.clone()
+    for t in reversed(range(seq_len)):
+        carry = rewards[:, t] + gamma * carry
+        returns[:, t] = carry
+    expected_advantages = returns - values
+
+    actual = compute_gae(rewards, values, terminateds,
+                          gamma=gamma, lambda_=1.0, last_value=last_value)
+    torch.testing.assert_close(actual, expected_advantages, atol=1e-4, rtol=1e-4)
+
+
+@cuda_only
+def test_gae_lambda1_monte_carlo_identity_interior_truncation():
+    """Same identity, but with an interior truncation -- pins that path unchanged.
+
+    Interior truncations were already correct (bootstrap enters delta only,
+    never the scan carry) and must stay that way. The episode is split into
+    two independent segments by a truncation at t=2; the hand-rolled MC
+    return restarts from the truncation's bootstrap value there, and the
+    window still continues past the buffer with a second, different nonzero
+    bootstrap at t=T-1.
+    """
+    torch.manual_seed(124)
+    num_envs, seq_len = 8, 6
+    gamma = 0.95
+
+    rewards     = torch.randn(num_envs, seq_len, device="cuda")
+    values      = torch.randn(num_envs, seq_len, device="cuda")
+    terminateds = torch.zeros(num_envs, seq_len, device="cuda")
+    truncateds  = torch.zeros(num_envs, seq_len, device="cuda")
+    truncateds[:, 2] = 1.0
+
+    bootstrap_values = torch.zeros(num_envs, seq_len, device="cuda")
+    bootstrap_values[:, 2]  = torch.randn(num_envs, device="cuda")   # V(s_3^true) at the truncation
+    bootstrap_values[:, -1] = torch.randn(num_envs, device="cuda")   # V(s_T), window continues
+
+    # Hand-rolled MC return, restarting the carry at the truncation boundary.
+    returns = torch.zeros(num_envs, seq_len, device="cuda")
+    carry = bootstrap_values[:, -1].clone()
+    for t in reversed(range(seq_len)):
+        if t == 2:
+            carry = rewards[:, t] + gamma * bootstrap_values[:, t]
+        else:
+            carry = rewards[:, t] + gamma * carry
+        returns[:, t] = carry
+    expected_advantages = returns - values
+
+    actual = compute_gae(rewards, values, terminateds, truncateds,
+                          gamma=gamma, lambda_=1.0, bootstrap_values=bootstrap_values)
+    torch.testing.assert_close(actual, expected_advantages, atol=1e-4, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # Sequential reference for full [num_envs, seq_len] bootstrap_values
 # ---------------------------------------------------------------------------
 
@@ -331,11 +428,15 @@ def _ref_gae_sequential(
 
     Handles interior truncated steps (bootstrap_values[n, t] used as v_next when
     truncateds[n, t]=1) in addition to the window boundary (t=T-1).
+
+    A[T] = 0: bootstrap_values[n, T-1] already enters the recurrence once,
+    inside delta[T-1] as v_next (weight 1). Seeding the carry with it too
+    would double-count it.
     """
     N, T = rewards.shape
     out = torch.zeros_like(rewards)
     for n in range(N):
-        carry = bootstrap_values[n, T - 1].item()   # A[T] = boundary bootstrap
+        carry = 0.0   # A[T] = 0
         for t in reversed(range(T)):
             if t == T - 1 or truncateds[n, t].item() == 1.0:
                 v_next = bootstrap_values[n, t].item()
@@ -685,8 +786,12 @@ def vectorized_gae_with_truncations(
       - next_values[t] = values[t+1] at interior non-truncated steps,
         bootstrap_values[t] at truncated steps and the boundary.
       - delta[t] = r[t] + gamma*(1-terminated[t])*next_values[t] - V(s_t)
-      - decay[t] = gamma*lambda*(1 - clamp(terminated[t]+truncated[t], max=1))
-      - carry seeded from bootstrap_values[:, -1].
+      - beta[t] = gamma*lambda*(1 - clamp(terminated[t]+truncated[t], max=1))
+        (decay[t] below -- the scan's multiplicative decay coefficient)
+      - additive boundary carry A[T] = 0 (see kernels/gae.py's module
+        docstring: bootstrap_values[:, -1] already enters delta[T-1] above
+        at weight 1 via next_values; seeding the scan's boundary carry with
+        it too would double-count it). beta[t] itself is unaffected by this.
     """
     not_terminated = 1.0 - terminateds
     not_done       = 1.0 - (terminateds + truncateds).clamp(max=1.0)
@@ -700,18 +805,9 @@ def vectorized_gae_with_truncations(
     deltas = rewards + gamma * not_terminated * next_values - values
     decays = gamma * lambda_ * not_done
 
-    # Incorporate boundary bootstrap into the initial 'a' values:
-    # The suffix scan computes G[t] assuming G[T]=0.  We need G[T-1] to include
-    # the carry from bootstrap_values[:, -1].  Inject it by treating the boundary
-    # as delta[T-1] += decay[T-1] * bootstrap (which is 0 since T-1 may not be a
-    # boundary, but the last step always contributes bootstrap).
-    # Simpler: append a sentinel step at position T with a=bootstrap, b=0, then scan.
-    N = rewards.shape[0]
-    bootstrap = bootstrap_values[:, -1].unsqueeze(1)   # [N, 1]
-    a = torch.cat([deltas, bootstrap], dim=1)           # [N, T+1]
-    b = torch.cat([decays, torch.zeros(N, 1, device=decays.device, dtype=decays.dtype)], dim=1)
-    result = parallel_suffix_scan(a, b)                 # [N, T+1]
-    return result[:, :rewards.shape[1]]                 # [N, T]
+    # parallel_suffix_scan assumes A[T]=0, which is exactly what we want here --
+    # no sentinel/boundary injection needed.
+    return parallel_suffix_scan(deltas, decays)
 
 
 def test_vectorized_gae_with_truncations_correctness():

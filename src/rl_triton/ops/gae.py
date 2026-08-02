@@ -46,8 +46,9 @@ def compute_gae(
 
     Recurrence:
 
-    - A[t] = δ[t] + γ·λ·(1-done[t]) * A[t+1]
+    - A[t] = δ[t] + β[t] * A[t+1],  A[T] = 0
     - δ[t] = r[t] + γ·(1-terminated[t]) * v_next[t] - V(s_t)
+    - β[t] = γ·λ·(1-done[t])       (scan decay coefficient)
     - done[t] = terminated[t] | truncated[t]
 
     `terminated[t]` gates the one-step bootstrap inside δ[t]: set to 1 for true
@@ -62,10 +63,13 @@ def compute_gae(
     In both cases set bootstrap_values to the true continuation value; leave
     it zero everywhere else.
 
-    The final column has a dual role: it feeds delta[T-1] as the next-state
-    value AND seeds the scan carry A_T.  Both uses take the same number, so a
-    single entry in bootstrap_values[:, -1] is sufficient.  Set it to V(s_T)
-    if the episode continues past the window, or 0 if it terminated at T-1.
+    The final column feeds delta[T-1] as the next-state value ONLY.  The scan's
+    additive boundary carry A[T] is always 0: an advantage carry represents
+    trace mass from steps past the buffer, and there is none there.  (β[T-1],
+    the multiplicative decay coefficient, is unaffected by this -- only the
+    additive A[T] term changes.)  A single entry in bootstrap_values[:, -1] is
+    sufficient -- set it to V(s_T) if the episode continues past the window,
+    or 0 if it terminated at T-1.
 
     Most users have no interior truncations and should use the `last_value`
     argument (shape [num_envs]) instead, which populates the boundary column
@@ -203,6 +207,9 @@ def compute_gae(
     next_values = next_values + bootstrap_values
 
     deltas = rewards + gamma * not_terminated * next_values - values
-    decays = gamma * lambda_ * not_done
-    carry  = bootstrap_values[:, -1]
-    return _run_scan(deltas, decays, carry)
+    decays = gamma * lambda_ * not_done   # beta[t], the scan decay coefficient
+    # Additive boundary carry A[T] = 0: bootstrap_values[:, -1] already entered
+    # deltas[:, -1] via next_values above (weight 1). Seeding the scan's
+    # boundary carry with it too would double-count it -- see kernels/gae.py's
+    # module docstring. beta (decays) itself is unaffected by this fix.
+    return _run_scan(deltas, decays)

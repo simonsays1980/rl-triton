@@ -129,12 +129,20 @@ def _ref_gae_trunc(rewards, values, terminateds, truncateds, bootstrap_values, g
     """Vectorized-over-N (loop over T only) ground truth with interior
     truncations -- same recurrence as test_gae.py's O(N*T) _ref_gae_sequential,
     but fast enough to run at every swept config (production regime included).
+
+    carry seeds at 0, not bootstrap_values[:, T-1]: an advantage carry
+    represents trace mass past the buffer, of which there is none.
+    bootstrap_values[:, T-1] already enters once, at t=T-1, as v_next --
+    seeding the carry with it too double-counts it by
+    (gamma*lambda)^(T-t)*bootstrap_values[:, T-1] (see 9efadb1, which fixed
+    this same bug in the kernels and test_gae.py's references but missed
+    this copy in bench_release.py).
     """
     N, T = rewards.shape
     next_values = torch.empty_like(values)
     next_values[:, :-1] = values[:, 1:]
     out   = torch.zeros_like(rewards)
-    carry = bootstrap_values[:, T - 1].clone()
+    carry = torch.zeros(N, device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
         if t == T - 1:
             v_next = bootstrap_values[:, t]
@@ -159,8 +167,12 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, rewards, dones, gamma,
     deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
     decays = gamma * c * (1.0 - dones)
     out   = torch.zeros_like(rewards)
-    carry = (bootstrap_values.clone() if bootstrap_values is not None
-             else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype))
+    # carry seeds at 0, not bootstrap_values: a correction-term carry
+    # represents trace mass past the buffer, of which there is none --
+    # bootstrap_values already enters once, via next_values[:, -1] above.
+    # Seeding the carry with it too double-counts it (same bug class as
+    # _ref_gae_trunc above; see 9efadb1).
+    carry = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
         carry     = deltas[:, t] + decays[:, t] * carry
         out[:, t] = carry
@@ -383,6 +395,18 @@ def numpy_lambda_returns_cpu(rewards: torch.Tensor, next_values: torch.Tensor,
     return out
 
 
+def numpy_lambda_returns_np_to_triton(rewards_np: np.ndarray, next_values_np: np.ndarray,
+                                      dones_np: np.ndarray, gamma: float, lambda_: float) -> np.ndarray:
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for λ-returns."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    out = compute_lambda_returns(
+        to_gpu(rewards_np), to_gpu(next_values_np), to_gpu(dones_np),
+        gamma=gamma, lambda_=lambda_,
+    )
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
+
+
 def numpy_discounted_returns_cpu(rewards: torch.Tensor, dones: torch.Tensor,
                                   gamma: float) -> np.ndarray:
     """Pure NumPy backward scan for discounted returns on CPU."""
@@ -397,6 +421,15 @@ def numpy_discounted_returns_cpu(rewards: torch.Tensor, dones: torch.Tensor,
     return out
 
 
+def numpy_discounted_returns_np_to_triton(rewards_np: np.ndarray, dones_np: np.ndarray,
+                                          gamma: float) -> np.ndarray:
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for discounted returns."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    out = compute_discounted_returns(to_gpu(rewards_np), to_gpu(dones_np), gamma=gamma)
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
+
+
 def numpy_eligibility_traces_cpu(features: torch.Tensor, dones: torch.Tensor,
                                   gamma: float, lambda_: float) -> np.ndarray:
     """Pure NumPy forward scan for eligibility traces on CPU."""
@@ -409,6 +442,36 @@ def numpy_eligibility_traces_cpu(features: torch.Tensor, dones: torch.Tensor,
         carry    = x[:, t] + gamma * lambda_ * (1.0 - d[:, t]) * carry
         out[:, t] = carry
     return out
+
+
+def numpy_eligibility_traces_np_to_triton(features_np: np.ndarray, dones_np: np.ndarray,
+                                          gamma: float, lambda_: float) -> np.ndarray:
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for eligibility traces."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    out = compute_eligibility_traces(to_gpu(features_np), to_gpu(dones_np), gamma=gamma, lambda_=lambda_)
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
+
+
+def numpy_episodic_prefix_sum_cpu(inputs: torch.Tensor, dones: torch.Tensor) -> np.ndarray:
+    """Pure NumPy forward scan for episodic prefix sum on CPU."""
+    x = inputs.cpu().numpy()
+    d = dones.cpu().numpy()
+    T = x.shape[1]
+    out   = np.empty_like(x)
+    carry = np.zeros(x.shape[0], dtype=np.float32)
+    for t in range(T):
+        carry    = x[:, t] + (1.0 - d[:, t]) * carry
+        out[:, t] = carry
+    return out
+
+
+def numpy_episodic_prefix_sum_np_to_triton(inputs_np: np.ndarray, dones_np: np.ndarray) -> np.ndarray:
+    """NumPy → GPU Triton → NumPy end-to-end adoption path for episodic prefix sum."""
+    to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
+    out = compute_episodic_prefix_sum(to_gpu(inputs_np), to_gpu(dones_np))
+    torch.cuda.synchronize()
+    return out.cpu().numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -723,9 +786,9 @@ def bench_gae():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} {'numpy(cpu)':>12} {'vs numpy':>10} "
-        f"{'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -782,11 +845,11 @@ def bench_gae():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -931,9 +994,9 @@ def bench_vtrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} {'numpy(cpu)':>12} {'vs numpy':>10} "
-        f"{'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -989,11 +1052,11 @@ def bench_vtrace():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1141,9 +1204,9 @@ def bench_retrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} "
-        f"{'numpy(cpu)':>12} {'vs numpy':>10} {'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -1199,11 +1262,11 @@ def bench_retrace():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1425,21 +1488,23 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
 
     header = (
         f"\n{'algo':>20} {'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'loop(gpu)':>11} "
-        f"{'numpy(cpu)':>12} {'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
 
     def _print_sub_row(name, num_envs, seq_len, triton_ms, triton_dev_ms, vec_ms, vec_dev_ms,
-                        loop_ms, numpy_ms):
+                        loop_ms, numpy_ms, e2e_ms):
         print(
             f"{name:>20} {num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
             f"{f'{vec_ms:.3f}ms':>14} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
             f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10}",
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1461,6 +1526,8 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
         torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         rewards, next_values, dones = _make_returns(num_envs, seq_len)
+        rewards_np, next_values_np, dones_np = (
+            rewards.cpu().numpy(), next_values.cpu().numpy(), dones.cpu().numpy())
         ni = _n_iter_gpu(seq_len, num_envs)
         trunc0 = torch.zeros(num_envs, seq_len, device="cuda")
         bsv0   = torch.zeros(num_envs, seq_len, device="cuda")
@@ -1506,6 +1573,8 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
             lam_loop_ms = _bench_cpu(_ref_lambda, rewards, next_values, dones, gamma=0.99, lambda_=0.95)
             lam_np_ms = _bench_cpu(numpy_lambda_returns_cpu, rewards, next_values, dones,
                                     gamma=0.99, lambda_=0.95)
+            lam_e2e_ms = _bench_cpu(numpy_lambda_returns_np_to_triton, rewards_np, next_values_np, dones_np,
+                                     gamma=0.99, lambda_=0.95)
         if want_disc:
             disc_ms = _bench_gpu(compute_discounted_returns, rewards, dones, gamma=0.99, n_iter=ni)
             disc_vec_ms = _bench_gpu(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99, n_iter=ni)
@@ -1513,6 +1582,7 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
             disc_vec_dev_ms, _ = _device_profile(c_disc_vec, rewards, dones, trunc0, bsv0, gamma=0.99)
             disc_loop_ms = _bench_cpu(_ref_disc, rewards, dones, gamma=0.99)
             disc_np_ms = _bench_cpu(numpy_discounted_returns_cpu, rewards, dones, gamma=0.99)
+            disc_e2e_ms = _bench_cpu(numpy_discounted_returns_np_to_triton, rewards_np, dones_np, gamma=0.99)
         if want_traces:
             trc_ms = _bench_gpu(compute_eligibility_traces, rewards, dones,
                                  gamma=0.99, lambda_=0.9, n_iter=ni)
@@ -1522,38 +1592,43 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
             trc_vec_dev_ms, _ = _device_profile(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
             trc_loop_ms = _bench_cpu(_ref_traces, rewards, dones, gamma=0.99, lambda_=0.9)
             trc_np_ms = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones, gamma=0.99, lambda_=0.9)
+            trc_e2e_ms = _bench_cpu(numpy_eligibility_traces_np_to_triton, rewards_np, dones_np,
+                                     gamma=0.99, lambda_=0.9)
 
         base = {"num_envs": num_envs, "seq_len": seq_len}
         if want_lambda:
             rows_lambda.append({
                 **base, "triton_ms": lam_ms, "triton_dev_ms": lam_dev_ms,
                 "vec_ms": lam_vec_ms, "vec_dev_ms": lam_vec_dev_ms,
-                "loop_ms": lam_loop_ms, "numpy_ms": lam_np_ms,
+                "loop_ms": lam_loop_ms, "numpy_ms": lam_np_ms, "e2e_ms": lam_e2e_ms,
                 "su_vec": lam_vec_ms / lam_ms,
                 "su_vec_dev": lam_vec_dev_ms / lam_dev_ms if lam_dev_ms else float("nan"),
                 "su_loop": lam_loop_ms / lam_ms, "su_numpy": lam_np_ms / lam_ms,
+                "su_e2e": lam_np_ms / lam_e2e_ms,
             })
-            _print_sub_row("lambda-returns", num_envs, seq_len, lam_ms, lam_dev_ms, lam_vec_ms, lam_vec_dev_ms, lam_loop_ms, lam_np_ms)
+            _print_sub_row("lambda-returns", num_envs, seq_len, lam_ms, lam_dev_ms, lam_vec_ms, lam_vec_dev_ms, lam_loop_ms, lam_np_ms, lam_e2e_ms)
         if want_disc:
             rows_disc.append({
                 **base, "triton_ms": disc_ms, "triton_dev_ms": disc_dev_ms,
                 "vec_ms": disc_vec_ms, "vec_dev_ms": disc_vec_dev_ms,
-                "loop_ms": disc_loop_ms, "numpy_ms": disc_np_ms,
+                "loop_ms": disc_loop_ms, "numpy_ms": disc_np_ms, "e2e_ms": disc_e2e_ms,
                 "su_vec": disc_vec_ms / disc_ms,
                 "su_vec_dev": disc_vec_dev_ms / disc_dev_ms if disc_dev_ms else float("nan"),
                 "su_loop": disc_loop_ms / disc_ms, "su_numpy": disc_np_ms / disc_ms,
+                "su_e2e": disc_np_ms / disc_e2e_ms,
             })
-            _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_dev_ms, disc_vec_ms, disc_vec_dev_ms, disc_loop_ms, disc_np_ms)
+            _print_sub_row("discounted-returns", num_envs, seq_len, disc_ms, disc_dev_ms, disc_vec_ms, disc_vec_dev_ms, disc_loop_ms, disc_np_ms, disc_e2e_ms)
         if want_traces:
             rows_traces.append({
                 **base, "triton_ms": trc_ms, "triton_dev_ms": trc_dev_ms,
                 "vec_ms": trc_vec_ms, "vec_dev_ms": trc_vec_dev_ms,
-                "loop_ms": trc_loop_ms, "numpy_ms": trc_np_ms,
+                "loop_ms": trc_loop_ms, "numpy_ms": trc_np_ms, "e2e_ms": trc_e2e_ms,
                 "su_vec": trc_vec_ms / trc_ms,
                 "su_vec_dev": trc_vec_dev_ms / trc_dev_ms if trc_dev_ms else float("nan"),
                 "su_loop": trc_loop_ms / trc_ms, "su_numpy": trc_np_ms / trc_ms,
+                "su_e2e": trc_np_ms / trc_e2e_ms,
             })
-            _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms, trc_dev_ms, trc_vec_ms, trc_vec_dev_ms, trc_loop_ms, trc_np_ms)
+            _print_sub_row("eligibility-traces", num_envs, seq_len, trc_ms, trc_dev_ms, trc_vec_ms, trc_vec_dev_ms, trc_loop_ms, trc_np_ms, trc_e2e_ms)
 
     violations = []
     for label, rows, ms_key, want in [("lambda_returns", rows_lambda, "triton_ms", want_lambda),
@@ -1813,7 +1888,9 @@ def bench_prefix_sum():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12}"
+        f"{'triton':>10} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -1832,6 +1909,7 @@ def bench_prefix_sum():
         torch._dynamo.reset()
         print(f"  [{num_envs}×{seq_len}] …", end="", flush=True)
         inputs, dones = _make_prefix_sum(num_envs, seq_len)
+        inputs_np, dones_np = inputs.cpu().numpy(), dones.cpu().numpy()
         ni = _n_iter_gpu(seq_len, num_envs)
 
         triton_out = compute_episodic_prefix_sum(inputs, dones)
@@ -1854,19 +1932,33 @@ def bench_prefix_sum():
         compiled_ms = _bench_gpu(compiled, inputs, dones, n_iter=ni)
         triton_dev_ms, _   = _device_profile(compute_episodic_prefix_sum, inputs, dones)
         compiled_dev_ms, _ = _device_profile(compiled, inputs, dones)
+        # loop (gpu): reference_episodic_prefix_sum is an uncompiled,
+        # unvectorized Python loop over T dispatching individual GPU ops on
+        # the same CUDA tensors -- already used above as the correctness
+        # oracle, so no extra function needed here (same pattern as
+        # bench_returns()'s _ref_traces/_ref_disc doubling as both).
+        loop_ms  = _bench_cpu(reference_episodic_prefix_sum, inputs, dones)
+        numpy_ms = _bench_cpu(numpy_episodic_prefix_sum_cpu, inputs, dones)
+        e2e_ms   = _bench_cpu(numpy_episodic_prefix_sum_np_to_triton, inputs_np, dones_np)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "triton_dev_ms": triton_dev_ms,
-            "compiled_ms": compiled_ms, "compiled_dev_ms": compiled_dev_ms,
-            "su_compile": compiled_ms / triton_ms,
-            "su_compile_dev": compiled_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"),
+            "vec_ms": compiled_ms, "vec_dev_ms": compiled_dev_ms,
+            "loop_ms": loop_ms, "numpy_ms": numpy_ms, "e2e_ms": e2e_ms,
+            "su_vec": compiled_ms / triton_ms,
+            "su_vec_dev": compiled_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"),
+            "su_loop": loop_ms / triton_ms, "su_numpy": numpy_ms / triton_ms,
+            "su_e2e": numpy_ms / e2e_ms,
         })
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>10} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{compiled_ms:.3f}ms':>14} {f'{compiled_ms/triton_ms:.2f}x':>8} "
-            f"{f'{compiled_dev_ms/triton_dev_ms:.2f}x':>12}",
+            f"{f'{compiled_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{compiled_ms/triton_ms:.2f}x':>8} {f'{compiled_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1901,79 +1993,52 @@ def bench_prefix_sum():
 # ---------------------------------------------------------------------------
 
 def _fmt_row_numpy(r):
-    """Row for GAE / V-Trace: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | vs loop | numpy | vs numpy | e2e | e2e vs numpy."""
+    """Row for GAE / V-Trace: all raw values first (triton, dev, vec, vec dev,
+    loop, numpy, e2e), then all ratios (vs vec, vs vec dev, vs loop, vs numpy,
+    e2e vs numpy)."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
-            f" {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
-            f" {r['e2e_ms']:>14.3f} | {r['su_e2e']:>7.1f}x |")
-
-
-def _fmt_row_simple(r):
-    """Row for λ-returns / discounted-returns / eligibility-traces: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | numpy."""
-    return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
-            f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x | {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |")
+            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} "
+            f"| {r['loop_ms']:>10.3f} | {r['numpy_ms']:>10.3f} | {r['e2e_ms']:>14.3f} |"
+            f" {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
+            f" {r['su_loop']:>7.1f}x | {r['su_numpy']:>8.1f}x | {r['su_e2e']:>7.1f}x |")
 
 
 def _fmt_row_retrace(r):
-    """Row for Retrace: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | vs loop | numpy | vs numpy | e2e | e2e vs numpy."""
+    """Row for Retrace: all raw values first (triton, dev, vec, vec dev, loop,
+    numpy, e2e), then all ratios (vs vec, vs vec dev, vs loop, vs numpy,
+    e2e vs numpy)."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
-            f" {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
-            f" {r['e2e_ms']:>14.3f} | {r['su_e2e']:>7.1f}x |")
-
-
-def _fmt_row_prefix(r):
-    """Row for episodic prefix sum: triton | dev | compile(vec) | compile(vec) dev | vs vec | vs vec(dev)."""
-    return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
-            f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['compiled_ms']:>13.3f} | {r['compiled_dev_ms']:>13.3f} | {r['su_compile']:>6.1f}x | {r['su_compile_dev']:>6.1f}x |")
+            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} "
+            f"| {r['loop_ms']:>10.3f} | {r['numpy_ms']:>10.3f} | {r['e2e_ms']:>14.3f} |"
+            f" {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
+            f" {r['su_loop']:>7.1f}x | {r['su_numpy']:>8.1f}x | {r['su_e2e']:>7.1f}x |")
 
 
 def _table_numpy(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|")
+                   "| compile(vec) (ms) | compile(vec) device (ms) "
+                   "| loop gpu (ms) | numpy cpu (ms) | np→triton→np (ms) |"
+                   " vs vec (full-call) | vs vec (device) | vs loop | vs numpy | e2e vs numpy |")
+    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|"
+                   ":-------------:|:--------------:|:-----------------:|"
+                   ":-------------------:|:---------------:|:-------:|:--------:|:------------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_numpy(r) for r in rows)
     return header + "\n" + body
 
 
-def _table_simple(title, rows):
-    header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|")
-    header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
-    body = "\n".join(_fmt_row_simple(r) for r in rows)
-    return header + "\n" + body
-
-
 def _table_retrace(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|")
+                   "| compile(vec) (ms) | compile(vec) device (ms) "
+                   "| loop gpu (ms) | numpy cpu (ms) | np→triton→np (ms) |"
+                   " vs vec (full-call) | vs vec (device) | vs loop | vs numpy | e2e vs numpy |")
+    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|"
+                   ":-------------:|:--------------:|:-----------------:|"
+                   ":-------------------:|:---------------:|:-------:|:--------:|:------------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_retrace(r) for r in rows)
-    return header + "\n" + body
-
-
-def _table_prefix_sum(title, rows):
-    header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |")
-    sep_cols    = "|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-    header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
-    body = "\n".join(_fmt_row_prefix(r) for r in rows)
     return header + "\n" + body
 
 
@@ -2683,12 +2748,12 @@ def main():
             _table_truncation("V-Trace – with truncations (`compute_vtrace`)", [dummy_trunc]),
             _table_retrace("Retrace(λ) (`compute_retrace`)", [dummy]),
             _table_truncation("Retrace(λ) – with truncations (`compute_retrace`)", [dummy_trunc]),
-            _table_simple("λ-returns (`compute_lambda_returns`)", [dummy]),
+            _table_numpy("λ-returns (`compute_lambda_returns`)", [dummy]),
             _table_truncation("λ-returns – with truncations (`compute_lambda_returns`)", [dummy_trunc]),
-            _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
+            _table_numpy("Discounted returns (`compute_discounted_returns`)", [dummy]),
             _table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", [dummy_trunc]),
-            _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
-            _table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
+            _table_numpy("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
+            _table_numpy("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
             _table_production("Production regime (dummy)", [dummy_prod]),
         ]
         print(_section(args.gpu or "dry-run GPU", tables))
@@ -2771,14 +2836,14 @@ def main():
         all_violations += v
         production_rows_all += returns_prod
         if "lambda_returns" in _want_plain_in_trio:
-            full_tables.append(_table_simple("λ-returns (`compute_lambda_returns`)", lambda_rows))
-            headline_tables.append(_table_simple("λ-returns (`compute_lambda_returns`)", _headline(lambda_rows)))
+            full_tables.append(_table_numpy("λ-returns (`compute_lambda_returns`)", lambda_rows))
+            headline_tables.append(_table_numpy("λ-returns (`compute_lambda_returns`)", _headline(lambda_rows)))
         if "discounted_returns" in _want_plain_in_trio:
-            full_tables.append(_table_simple("Discounted returns (`compute_discounted_returns`)", disc_rows))
-            headline_tables.append(_table_simple("Discounted returns (`compute_discounted_returns`)", _headline(disc_rows)))
+            full_tables.append(_table_numpy("Discounted returns (`compute_discounted_returns`)", disc_rows))
+            headline_tables.append(_table_numpy("Discounted returns (`compute_discounted_returns`)", _headline(disc_rows)))
         if "eligibility_traces" in _want_plain_in_trio:
-            full_tables.append(_table_simple("Eligibility traces (`compute_eligibility_traces`)", traces_rows))
-            headline_tables.append(_table_simple("Eligibility traces (`compute_eligibility_traces`)", _headline(traces_rows)))
+            full_tables.append(_table_numpy("Eligibility traces (`compute_eligibility_traces`)", traces_rows))
+            headline_tables.append(_table_numpy("Eligibility traces (`compute_eligibility_traces`)", _headline(traces_rows)))
 
     if "lambda_returns" in selected_algos and run_trunc:
         print("Running λ-returns truncation-path benchmark …", flush=True)
@@ -2799,8 +2864,8 @@ def main():
         prefix_sum_rows, prefix_prod, v = bench_prefix_sum()
         all_violations += v
         production_rows_all += prefix_prod
-        full_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows))
-        headline_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", _headline(prefix_sum_rows)))
+        full_tables.append(_table_numpy("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows))
+        headline_tables.append(_table_numpy("Episodic prefix sum (`compute_episodic_prefix_sum`)", _headline(prefix_sum_rows)))
 
     # --parent-sweep's per-group subprocesses stop here: dump raw tables/rows
     # instead of building the (cross-group) production table or touching

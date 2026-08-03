@@ -129,12 +129,20 @@ def _ref_gae_trunc(rewards, values, terminateds, truncateds, bootstrap_values, g
     """Vectorized-over-N (loop over T only) ground truth with interior
     truncations -- same recurrence as test_gae.py's O(N*T) _ref_gae_sequential,
     but fast enough to run at every swept config (production regime included).
+
+    carry seeds at 0, not bootstrap_values[:, T-1]: an advantage carry
+    represents trace mass past the buffer, of which there is none.
+    bootstrap_values[:, T-1] already enters once, at t=T-1, as v_next --
+    seeding the carry with it too double-counts it by
+    (gamma*lambda)^(T-t)*bootstrap_values[:, T-1] (see 9efadb1, which fixed
+    this same bug in the kernels and test_gae.py's references but missed
+    this copy in bench_release.py).
     """
     N, T = rewards.shape
     next_values = torch.empty_like(values)
     next_values[:, :-1] = values[:, 1:]
     out   = torch.zeros_like(rewards)
-    carry = bootstrap_values[:, T - 1].clone()
+    carry = torch.zeros(N, device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
         if t == T - 1:
             v_next = bootstrap_values[:, t]
@@ -159,8 +167,12 @@ def _ref_vtrace(log_pi_t, log_pi_b, values, rewards, dones, gamma,
     deltas = rho * (rewards + gamma * next_values * (1.0 - dones) - values)
     decays = gamma * c * (1.0 - dones)
     out   = torch.zeros_like(rewards)
-    carry = (bootstrap_values.clone() if bootstrap_values is not None
-             else torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype))
+    # carry seeds at 0, not bootstrap_values: a correction-term carry
+    # represents trace mass past the buffer, of which there is none --
+    # bootstrap_values already enters once, via next_values[:, -1] above.
+    # Seeding the carry with it too double-counts it (same bug class as
+    # _ref_gae_trunc above; see 9efadb1).
+    carry = torch.zeros(num_envs, device=rewards.device, dtype=rewards.dtype)
     for t in reversed(range(T)):
         carry     = deltas[:, t] + decays[:, t] * carry
         out[:, t] = carry

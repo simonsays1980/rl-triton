@@ -1964,13 +1964,6 @@ def _fmt_row_retrace(r):
             f" {r['e2e_ms']:>14.3f} | {r['su_e2e']:>7.1f}x |")
 
 
-def _fmt_row_prefix(r):
-    """Row for episodic prefix sum: triton | dev | compile(vec) | compile(vec) dev | vs vec | vs vec(dev)."""
-    return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
-            f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['compiled_ms']:>13.3f} | {r['compiled_dev_ms']:>13.3f} | {r['su_compile']:>6.1f}x | {r['su_compile_dev']:>6.1f}x |")
-
-
 def _table_numpy(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
                    "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
@@ -2001,15 +1994,6 @@ def _table_retrace(title, rows):
                    ":-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_retrace(r) for r in rows)
-    return header + "\n" + body
-
-
-def _table_prefix_sum(title, rows):
-    header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |")
-    sep_cols    = "|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-    header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
-    body = "\n".join(_fmt_row_prefix(r) for r in rows)
     return header + "\n" + body
 
 

@@ -423,6 +423,19 @@ def numpy_eligibility_traces_cpu(features: torch.Tensor, dones: torch.Tensor,
     return out
 
 
+def numpy_episodic_prefix_sum_cpu(inputs: torch.Tensor, dones: torch.Tensor) -> np.ndarray:
+    """Pure NumPy forward scan for episodic prefix sum on CPU."""
+    x = inputs.cpu().numpy()
+    d = dones.cpu().numpy()
+    T = x.shape[1]
+    out   = np.empty_like(x)
+    carry = np.zeros(x.shape[0], dtype=np.float32)
+    for t in range(T):
+        carry    = x[:, t] + (1.0 - d[:, t]) * carry
+        out[:, t] = carry
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Input factories
 # ---------------------------------------------------------------------------
@@ -1825,7 +1838,8 @@ def bench_prefix_sum():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>10} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12}"
+        f"{'triton':>10} {'dev':>8} {'compile(vec)':>14} {'loop(gpu)':>11} "
+        f"{'numpy(cpu)':>12} {'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -1866,19 +1880,29 @@ def bench_prefix_sum():
         compiled_ms = _bench_gpu(compiled, inputs, dones, n_iter=ni)
         triton_dev_ms, _   = _device_profile(compute_episodic_prefix_sum, inputs, dones)
         compiled_dev_ms, _ = _device_profile(compiled, inputs, dones)
+        # loop (gpu): reference_episodic_prefix_sum is an uncompiled,
+        # unvectorized Python loop over T dispatching individual GPU ops on
+        # the same CUDA tensors -- already used above as the correctness
+        # oracle, so no extra function needed here (same pattern as
+        # bench_returns()'s _ref_traces/_ref_disc doubling as both).
+        loop_ms  = _bench_cpu(reference_episodic_prefix_sum, inputs, dones)
+        numpy_ms = _bench_cpu(numpy_episodic_prefix_sum_cpu, inputs, dones)
 
         rows.append({
             "num_envs": num_envs, "seq_len": seq_len,
             "triton_ms": triton_ms, "triton_dev_ms": triton_dev_ms,
-            "compiled_ms": compiled_ms, "compiled_dev_ms": compiled_dev_ms,
-            "su_compile": compiled_ms / triton_ms,
-            "su_compile_dev": compiled_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"),
+            "vec_ms": compiled_ms, "vec_dev_ms": compiled_dev_ms,
+            "loop_ms": loop_ms, "numpy_ms": numpy_ms,
+            "su_vec": compiled_ms / triton_ms,
+            "su_vec_dev": compiled_dev_ms / triton_dev_ms if triton_dev_ms else float("nan"),
+            "su_loop": loop_ms / triton_ms, "su_numpy": numpy_ms / triton_ms,
         })
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>10} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{compiled_ms:.3f}ms':>14} {f'{compiled_ms/triton_ms:.2f}x':>8} "
-            f"{f'{compiled_dev_ms/triton_dev_ms:.2f}x':>12}",
+            f"{f'{compiled_ms:.3f}ms':>14} {f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} "
+            f"{f'{compiled_ms/triton_ms:.2f}x':>8} {f'{compiled_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10}",
             flush=True,
         )
 
@@ -2700,7 +2724,7 @@ def main():
             _table_simple("Discounted returns (`compute_discounted_returns`)", [dummy]),
             _table_truncation("Discounted returns – with truncations (`compute_discounted_returns`)", [dummy_trunc]),
             _table_simple("Eligibility traces (`compute_eligibility_traces`)", [dummy]),
-            _table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
+            _table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", [dummy]),
             _table_production("Production regime (dummy)", [dummy_prod]),
         ]
         print(_section(args.gpu or "dry-run GPU", tables))
@@ -2811,8 +2835,8 @@ def main():
         prefix_sum_rows, prefix_prod, v = bench_prefix_sum()
         all_violations += v
         production_rows_all += prefix_prod
-        full_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows))
-        headline_tables.append(_table_prefix_sum("Episodic prefix sum (`compute_episodic_prefix_sum`)", _headline(prefix_sum_rows)))
+        full_tables.append(_table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", prefix_sum_rows))
+        headline_tables.append(_table_simple("Episodic prefix sum (`compute_episodic_prefix_sum`)", _headline(prefix_sum_rows)))
 
     # --parent-sweep's per-group subprocesses stop here: dump raw tables/rows
     # instead of building the (cross-group) production table or touching

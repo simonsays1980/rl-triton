@@ -748,9 +748,9 @@ def bench_gae():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} {'numpy(cpu)':>12} {'vs numpy':>10} "
-        f"{'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -807,11 +807,11 @@ def bench_gae():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -956,9 +956,9 @@ def bench_vtrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} {'numpy(cpu)':>12} {'vs numpy':>10} "
-        f"{'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -1014,11 +1014,11 @@ def bench_vtrace():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1166,9 +1166,9 @@ def bench_retrace():
 
     header = (
         f"\n{'num_envs':>10} {'seq_len':>8} "
-        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} {'vs vec':>8} {'vs vec(dev)':>12} "
-        f"{'loop(gpu)':>11} {'vs loop':>9} "
-        f"{'numpy(cpu)':>12} {'vs numpy':>10} {'np->tri->np':>13} {'e2e vs np':>11}"
+        f"{'triton':>8} {'dev':>8} {'compile(vec)':>14} "
+        f"{'loop(gpu)':>11} {'numpy(cpu)':>12} {'np->tri->np':>13} "
+        f"{'vs vec':>8} {'vs vec(dev)':>12} {'vs loop':>9} {'vs numpy':>10} {'e2e vs np':>11}"
     )
     print(header)
     print("-" * len(header))
@@ -1224,11 +1224,11 @@ def bench_retrace():
         print(
             f"{num_envs:>10} {seq_len:>8} "
             f"{f'{triton_ms:.3f}ms':>8} {f'{triton_dev_ms:.3f}ms':>8} "
-            f"{f'{vec_ms:.3f}ms':>14} {f'{vec_ms/triton_ms:.2f}x':>8} "
-            f"{f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
-            f"{f'{loop_ms:.3f}ms':>11} {f'{loop_ms/triton_ms:.1f}x':>9} "
-            f"{f'{numpy_ms:.3f}ms':>12} {f'{numpy_ms/triton_ms:.1f}x':>10} "
-            f"{f'{e2e_ms:.3f}ms':>13} {f'{numpy_ms/e2e_ms:.1f}x':>11}",
+            f"{f'{vec_ms:.3f}ms':>14} "
+            f"{f'{loop_ms:.3f}ms':>11} {f'{numpy_ms:.3f}ms':>12} {f'{e2e_ms:.3f}ms':>13} "
+            f"{f'{vec_ms/triton_ms:.2f}x':>8} {f'{vec_dev_ms/triton_dev_ms:.2f}x':>12} "
+            f"{f'{loop_ms/triton_ms:.1f}x':>9} {f'{numpy_ms/triton_ms:.1f}x':>10} "
+            f"{f'{numpy_ms/e2e_ms:.1f}x':>11}",
             flush=True,
         )
 
@@ -1937,39 +1937,49 @@ def bench_prefix_sum():
 # ---------------------------------------------------------------------------
 
 def _fmt_row_numpy(r):
-    """Row for GAE / V-Trace: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | vs loop | numpy | vs numpy | e2e | e2e vs numpy."""
+    """Row for GAE / V-Trace: all raw values first (triton, dev, vec, vec dev,
+    loop, numpy, e2e), then all ratios (vs vec, vs vec dev, vs loop, vs numpy,
+    e2e vs numpy)."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
-            f" {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
-            f" {r['e2e_ms']:>14.3f} | {r['su_e2e']:>7.1f}x |")
+            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} "
+            f"| {r['loop_ms']:>10.3f} | {r['numpy_ms']:>10.3f} | {r['e2e_ms']:>14.3f} |"
+            f" {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
+            f" {r['su_loop']:>7.1f}x | {r['su_numpy']:>8.1f}x | {r['su_e2e']:>7.1f}x |")
 
 
 def _fmt_row_simple(r):
-    """Row for λ-returns / discounted-returns / eligibility-traces: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | numpy."""
+    """Row for λ-returns / discounted-returns / eligibility-traces / prefix-sum:
+    all raw values first (triton, dev, vec, vec dev, loop, numpy), then all
+    ratios (vs vec, vs vec dev, vs loop, vs numpy)."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x | {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |")
+            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} "
+            f"| {r['loop_ms']:>10.3f} | {r['numpy_ms']:>10.3f} |"
+            f" {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
+            f" {r['su_loop']:>7.1f}x | {r['su_numpy']:>8.1f}x |")
 
 
 def _fmt_row_retrace(r):
-    """Row for Retrace: triton | dev | vec | vec dev | vs vec | vs vec(dev) | loop | vs loop | numpy | vs numpy | e2e | e2e vs numpy."""
+    """Row for Retrace: all raw values first (triton, dev, vec, vec dev, loop,
+    numpy, e2e), then all ratios (vs vec, vs vec dev, vs loop, vs numpy,
+    e2e vs numpy)."""
     return (f"| {r['num_envs']:>8} | {r['seq_len']:>7} "
             f"| {r['triton_ms']:>10.3f} | {r['triton_dev_ms']:>9.3f} "
-            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} | {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
-            f" {r['loop_ms']:>10.3f} | {r['su_loop']:>7.1f}x |"
-            f" {r['numpy_ms']:>10.3f} | {r['su_numpy']:>8.1f}x |"
-            f" {r['e2e_ms']:>14.3f} | {r['su_e2e']:>7.1f}x |")
+            f"| {r['vec_ms']:>13.3f} | {r['vec_dev_ms']:>13.3f} "
+            f"| {r['loop_ms']:>10.3f} | {r['numpy_ms']:>10.3f} | {r['e2e_ms']:>14.3f} |"
+            f" {r['su_vec']:>6.1f}x | {r['su_vec_dev']:>6.1f}x |"
+            f" {r['su_loop']:>7.1f}x | {r['su_numpy']:>8.1f}x | {r['su_e2e']:>7.1f}x |")
 
 
 def _table_numpy(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|")
+                   "| compile(vec) (ms) | compile(vec) device (ms) "
+                   "| loop gpu (ms) | numpy cpu (ms) | np→triton→np (ms) |"
+                   " vs vec (full-call) | vs vec (device) | vs loop | vs numpy | e2e vs numpy |")
+    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|"
+                   ":-------------:|:--------------:|:-----------------:|"
+                   ":-------------------:|:---------------:|:-------:|:--------:|:------------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_numpy(r) for r in rows)
     return header + "\n" + body
@@ -1977,10 +1987,12 @@ def _table_numpy(title, rows):
 
 def _table_simple(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|")
+                   "| compile(vec) (ms) | compile(vec) device (ms) "
+                   "| loop gpu (ms) | numpy cpu (ms) |"
+                   " vs vec (full-call) | vs vec (device) | vs loop | vs numpy |")
+    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|"
+                   ":-------------:|:--------------:|"
+                   ":-------------------:|:---------------:|:-------:|:--------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_simple(r) for r in rows)
     return header + "\n" + body
@@ -1988,10 +2000,12 @@ def _table_simple(title, rows):
 
 def _table_retrace(title, rows):
     header_cols = ("| num_envs | seq_len | triton full-call (ms) | triton device (ms) "
-                   "| compile(vec) (ms) | compile(vec) device (ms) | vs vec (full-call) | vs vec (device) |"
-                   " loop gpu (ms) | vs loop | numpy cpu (ms) | vs numpy | np→triton→np (ms) | e2e vs numpy |")
-    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|:-------------------:|:---------------:|"
-                   ":-------------:|:-------:|:--------------:|:--------:|:-----------------:|:------------:|")
+                   "| compile(vec) (ms) | compile(vec) device (ms) "
+                   "| loop gpu (ms) | numpy cpu (ms) | np→triton→np (ms) |"
+                   " vs vec (full-call) | vs vec (device) | vs loop | vs numpy | e2e vs numpy |")
+    sep_cols    = ("|:--------:|:-------:|:---------------------:|:-------------------:|:-----------------:|:-------------------------:|"
+                   ":-------------:|:--------------:|:-----------------:|"
+                   ":-------------------:|:---------------:|:-------:|:--------:|:------------:|")
     header = f"#### {title}\n\n{header_cols}\n{sep_cols}"
     body = "\n".join(_fmt_row_retrace(r) for r in rows)
     return header + "\n" + body

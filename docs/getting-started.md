@@ -47,6 +47,7 @@ advantages = compute_gae(
     lambda_=0.95,
     last_value=last_value,
 )  # → (num_envs, seq_len)
+print("GAE advantages:", advantages.shape, advantages.dtype)
 ```
 
 `last_value` is the convenience form for the common case of no interior truncations -- see [Tensor Layout](#tensor-layout) below. For per-step truncations, pass a full `(num_envs, seq_len)` `bootstrap_values` tensor instead (mutually exclusive with `last_value`).
@@ -70,7 +71,52 @@ vs, advantages = compute_vtrace(
     c_bar=1.0,
     last_value=last_value,
 )  # → (num_envs, seq_len), (num_envs, seq_len)
+print("V-Trace targets:", vs.shape, "advantages:", advantages.shape)
 ```
+
+### Retrace(λ) (off-policy, discrete actions)
+
+```python
+from rl_triton import compute_retrace
+
+num_actions = 4
+
+# Genuine probability distributions over actions, not raw randn -- Retrace's
+# importance-sampling ratios require valid probabilities.
+target_logits   = torch.randn(num_envs, seq_len, num_actions, device=device)
+behavior_logits = torch.randn(num_envs, seq_len, num_actions, device=device)
+
+# action_probs_target: the FULL target-policy distribution, all actions --
+# not gathered at the taken action. Shape [num_envs, seq_len, num_actions].
+action_probs_target = torch.softmax(target_logits, dim=-1)
+
+actions = torch.randint(0, num_actions, (num_envs, seq_len), device=device)
+
+# action_probs_behavior: only the PROBABILITY OF THE TAKEN ACTION under the
+# behavior policy -- gathered down to [num_envs, seq_len].
+action_probs_behavior_all = torch.softmax(behavior_logits, dim=-1)
+action_probs_behavior = action_probs_behavior_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+
+q_values          = torch.randn(num_envs, seq_len, device=device)              # Q(s_t, a_t)
+next_q_values_all = torch.randn(num_envs, seq_len, num_actions, device=device)  # Q(s_{t+1}, ·), all actions
+truncateds        = torch.zeros(num_envs, seq_len, device=device)
+
+q_targets, advantages = compute_retrace(
+    action_probs_target=action_probs_target,
+    action_probs_behavior=action_probs_behavior,
+    q_values=q_values,
+    next_q_values_all=next_q_values_all,
+    actions=actions,
+    rewards=rewards,
+    terminateds=terminateds,
+    truncateds=truncateds,
+    gamma=0.99,
+    lambda_=1.0,
+)  # → (num_envs, seq_len), (num_envs, seq_len)
+print("Retrace Q-targets:", q_targets.shape, "advantages:", advantages.shape)
+```
+
+Discrete actions only -- use `compute_vtrace` for continuous action spaces. `truncateds` is required (not optional as for the other kernels): Retrace has no `bootstrap_values`/`last_value` parameter, so the continuation value at every boundary, including the final column, must already be embedded in `next_q_values_all`.
 
 ### Discounted Returns
 
@@ -82,6 +128,7 @@ returns = compute_discounted_returns(
     terminateds=terminateds,
     gamma=0.99,
 )  # → (num_envs, seq_len)
+print("Discounted returns:", returns.shape)
 ```
 
 ### TD(λ) Returns
@@ -89,7 +136,10 @@ returns = compute_discounted_returns(
 ```python
 from rl_triton import compute_lambda_returns
 
-next_values = values[:, 1:]  # V(s_{t+1}) for each step
+# next_values[env, t] = V(s_{t+1}); same shape as rewards, not values[:, 1:]
+# (that would be one column short -- the critic must be queried at every
+# t+1 including the last, typically via a separate forward pass in real code).
+next_values = torch.randn(num_envs, seq_len, device=device)
 
 returns = compute_lambda_returns(
     rewards=rewards,
@@ -98,6 +148,7 @@ returns = compute_lambda_returns(
     gamma=0.99,
     lambda_=0.95,
 )  # → (num_envs, seq_len)
+print("TD(λ) returns:", returns.shape)
 ```
 
 ### Eligibility Traces
@@ -114,6 +165,7 @@ traces = compute_eligibility_traces(
     gamma=0.99,
     lambda_=0.95,
 )  # → (num_envs, seq_len)
+print("Eligibility traces:", traces.shape)
 ```
 
 ### Episodic Prefix Sum
@@ -128,6 +180,7 @@ prefix_sums = compute_episodic_prefix_sum(
     inputs=inputs,
     dones=dones,
 )  # → (num_envs, seq_len)
+print("Prefix sums:", prefix_sums.shape)
 ```
 
 The accumulation resets to zero whenever `dones[t] == 1`, so each episode's cumulative sum is independent of the previous one. An optional `seed_values` tensor of shape `(num_envs,)` sets the initial carry $C[-1]$ per environment (defaults to zero). Limited to `seq_len ≤ 131072`.

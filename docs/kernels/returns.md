@@ -92,7 +92,7 @@ In a rollout buffer containing multiple episodes or truncation boundaries, the k
 
 $$G^\lambda_t = r_t + \gamma(1 - d_t)\left[(1-\lambda)V(s_{t+1}) + \lambda\, G^\lambda_{t+1}\right], \qquad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
 
-[Handling episode boundaries](#handling-episode-boundaries-1) details what this means for the caller.
+[Handling episode boundaries](#handling-episode-boundaries_1) details what this means for the caller.
 
 ### Special cases
 
@@ -268,7 +268,7 @@ where $V_k = V(s_k)$. Collecting reward and value terms:
 
 $$= \sum_{k=1}^{4} (\gamma\lambda)^{k-1} r_k + \gamma(1-\lambda)\sum_{k=1}^{4}(\gamma\lambda)^{k-1}V_{k+1}$$
 
-This is the λ-weighted mixture of 1- through 4-step returns truncated at $t=4$, exactly matching $G^\lambda_1$ from the forward-view definition. The verification assumes no done flags; how truncated steps are handled is described in [Handling episode boundaries](#handling-episode-boundaries-1).
+This is the λ-weighted mixture of 1- through 4-step returns truncated at $t=4$, exactly matching $G^\lambda_1$ from the forward-view definition. The verification assumes no done flags; how truncated steps are handled is described in [Handling episode boundaries](#handling-episode-boundaries_1).
 
 ### Eligibility traces
 

@@ -6,7 +6,46 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+### Fixed
+- **GAE and V-Trace double-counted the window-boundary bootstrap value.** The
+  backward scan's additive boundary carry (`A[T]` / `Δ[T]`) was seeded with
+  the window bootstrap `V(s_T)` in addition to using it inside
+  `delta[T-1]`/`α[T-1]` as the next-state value. An advantage/value-delta
+  carry represents trace mass past the buffer, of which there is none, so
+  seeding it with a value double-counted `V(s_T)` by
+  `(gamma*lambda)^(T-t) * V(s_T)` at every position. The error is silent
+  (finite, plausible-looking output, not NaN/inf) and vanishes when
+  `V(s_T)=0` (episode terminates at the window edge), which is why most
+  existing tests passed despite the bug. Verified against the
+  implementation-independent identity that at `lambda=1`, GAE must telescope
+  to the Monte-Carlo advantage `A_t = G_t - V(s_t)`. V-Trace has the same bug
+  class (on-policy, `rho=c=1`, its recurrence reduces to GAE at `lambda=1`).
+  Retrace already seeded its carry at 0; lambda-returns and discounted-returns
+  are structurally correct and unaffected (their analogous carry legitimately
+  carries a nonzero weight that sums to 1 with the in-`delta`/`alpha` term,
+  rather than overlapping with it). Adds regression tests that check the
+  recurrence against an independently hand-rolled Monte-Carlo return rather
+  than the sequential oracles, so a future regression can't share the
+  oracles' own bug. `docs/kernels/gae.md` and `docs/kernels/vtrace.md`
+  corrected to match -- both previously documented the double-counting
+  behavior as intentional, dual-purpose design.
+
+### Added
+- `np->triton->np` (NumPy adoption-path) baseline timing for episodic prefix
+  sum, lambda-returns, discounted-returns, and eligibility-traces -- GAE,
+  V-Trace, and Retrace already had this baseline; the other four were
+  missing it with no documented reason. Episodic prefix sum additionally
+  gained the `loop(gpu)`/`numpy(cpu)` baselines every other algorithm already
+  had. All seven algorithms now report the identical set of baseline
+  comparisons.
+
 ### Changed
+- Unified the column ordering of every benchmark table and console printout:
+  all raw timing values first, then all speedup ratios. Previously GAE,
+  V-Trace, and Retrace interleaved value/ratio pairs per baseline while the
+  remaining algorithms used a block layout -- and even the block layout mixed
+  both conventions within a single row (block for the first baseline,
+  interleaved for `loop`/`numpy`). One convention everywhere now.
 - Removed the `torch.zeros(num_envs)` bootstrap/seed-default allocation from
   the no-bootstrap/no-seed kernel path across all kernels (GAE, V-Trace,
   Lambda Returns, Discounted Returns, Eligibility Traces, Prefix Sum, and the

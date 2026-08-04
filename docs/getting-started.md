@@ -34,10 +34,10 @@ from rl_triton import compute_gae
 num_envs, seq_len = 64, 512
 device = "cuda"
 
-rewards          = torch.randn(num_envs, seq_len, device=device)
-values           = torch.randn(num_envs, seq_len, device=device)
-terminateds      = torch.zeros(num_envs, seq_len, device=device)
-bootstrap_values = torch.zeros(num_envs, device=device)  # V(s_T) for truncated episodes
+rewards     = torch.randn(num_envs, seq_len, device=device)
+values      = torch.randn(num_envs, seq_len, device=device)
+terminateds = torch.zeros(num_envs, seq_len, device=device)
+last_value  = torch.zeros(num_envs, device=device)  # V(s_T); 0 if the window ends at a true termination
 
 advantages = compute_gae(
     rewards=rewards,
@@ -45,9 +45,11 @@ advantages = compute_gae(
     terminateds=terminateds,
     gamma=0.99,
     lambda_=0.95,
-    bootstrap_values=bootstrap_values,
+    last_value=last_value,
 )  # → (num_envs, seq_len)
 ```
+
+`last_value` is the convenience form for the common case of no interior truncations -- see [Tensor Layout](#tensor-layout) below. For per-step truncations, pass a full `(num_envs, seq_len)` `bootstrap_values` tensor instead (mutually exclusive with `last_value`).
 
 ### V-Trace (off-policy)
 
@@ -66,7 +68,7 @@ vs, advantages = compute_vtrace(
     gamma=0.99,
     rho_bar=1.0,
     c_bar=1.0,
-    bootstrap_values=bootstrap_values,
+    last_value=last_value,
 )  # → (num_envs, seq_len), (num_envs, seq_len)
 ```
 
@@ -77,9 +79,8 @@ from rl_triton import compute_discounted_returns
 
 returns = compute_discounted_returns(
     rewards=rewards,
-    dones=dones,
+    terminateds=terminateds,
     gamma=0.99,
-    bootstrap_values=bootstrap_values,
 )  # → (num_envs, seq_len)
 ```
 
@@ -93,10 +94,9 @@ next_values = values[:, 1:]  # V(s_{t+1}) for each step
 returns = compute_lambda_returns(
     rewards=rewards,
     next_values=next_values,
-    dones=dones,
+    terminateds=terminateds,
     gamma=0.99,
     lambda_=0.95,
-    bootstrap_values=bootstrap_values,
 )  # → (num_envs, seq_len)
 ```
 
@@ -106,6 +106,7 @@ returns = compute_lambda_returns(
 from rl_triton import compute_eligibility_traces
 
 gradients = torch.randn(num_envs, seq_len, device=device)  # ∇_w V̂(s_t)
+dones     = torch.zeros(num_envs, seq_len, device=device)  # terminated | truncated
 
 traces = compute_eligibility_traces(
     gradients=gradients,
@@ -121,6 +122,7 @@ traces = compute_eligibility_traces(
 from rl_triton import compute_episodic_prefix_sum
 
 inputs = torch.randn(num_envs, seq_len, device=device)
+dones  = torch.zeros(num_envs, seq_len, device=device)  # terminated | truncated
 
 prefix_sums = compute_episodic_prefix_sum(
     inputs=inputs,
@@ -134,11 +136,11 @@ The accumulation resets to zero whenever `dones[t] == 1`, so each episode's cumu
 
 All kernels expect `float32` tensors with shape `(num_envs, seq_len)`.
 
-**`terminateds`** (used by `compute_gae` and `compute_vtrace`): pass only true episode terminations (`1.0`). Truncated episodes - where the rollout window ended but the environment continues - must be `0.0` here; supply `V(s_T)` via `bootstrap_values` instead.
+**`terminateds`** (used by `compute_gae`, `compute_vtrace`, `compute_retrace`, `compute_lambda_returns`, `compute_discounted_returns`): pass only true episode terminations (`1.0`). Truncated episodes - where the rollout window ended but the environment continues - must be `0.0` here. All five of these functions additionally accept an optional `truncateds` tensor (`1.0` at time-limit boundaries) to distinguish the two cases for correct bootstrap gating; `compute_retrace` requires it, the other four treat it as optional (defaulting every boundary to a termination if omitted).
 
-**`dones`** (used by `compute_retrace`, `compute_lambda_returns`, `compute_discounted_returns`, `compute_eligibility_traces`, `compute_episodic_prefix_sum`): pass `terminated | truncated`. `compute_retrace` additionally accepts an optional `truncateds` tensor to distinguish the two cases for correct bootstrap gating.
+**`dones`** (used by `compute_eligibility_traces` and `compute_episodic_prefix_sum`): pass `terminated | truncated`. Neither of these forward-scan kernels distinguishes termination from truncation - both simply reset the trace/sum at the boundary - so there is no separate `truncateds` parameter for either.
 
-`bootstrap_values` is a `(num_envs,)` tensor. Pass `V(s_T)` for truncated episodes and `0` for terminated ones. When omitted, it defaults to zero.
+**`bootstrap_values`** (used by `compute_gae`, `compute_vtrace`, `compute_lambda_returns`, `compute_discounted_returns`) is a `(num_envs, seq_len)` tensor: the true continuation value `V(s_{t+1})` at truncated steps and at the final column (`t = T-1`) if the window ends mid-episode, zero everywhere else. `compute_gae` and `compute_vtrace` additionally accept **`last_value`** - a `(num_envs,)` convenience tensor for the common case of no interior truncations, mutually exclusive with `bootstrap_values` - which populates only the final column automatically. `compute_lambda_returns` and `compute_discounted_returns` have no `last_value` shortcut; pass a full `bootstrap_values` tensor even for a window-only boundary. `compute_retrace` has neither parameter: its continuation value is embedded directly in `next_q_values_all`, which the caller must supply for every step including the final column.
 
 ## Environment Variables
 
@@ -198,7 +200,7 @@ pytest -m slow -v   # requires CUDA, takes several minutes
 To reproduce the release benchmark numbers on your own GPU:
 
 ```bash
-python tests/bench_release.py --gpu "RTX 4090"
+python tests/bench_release.py --parent-sweep --gpu "RTX 2000 Ada"
 ```
 
-Omit `--gpu` to skip the header label. Add `--no-update` to print results without writing them back to the README.
+`--gpu` sets the label recorded in the output; omit it to auto-detect from `torch.cuda.get_device_name(0)`. This stages the results to `docs/benchmark-history/unreleased.md` for review - it never writes `benchmarks.md` directly. Add `--no-update` to print results to the console without staging anything. See [Contributing](contributing.md#adding-a-new-kernel) and the release workflow in `.github/workflows/gpu-tests.yml` for the full staging → promotion process.

@@ -1100,3 +1100,115 @@ large enough that the fixed ~26µs dispatch cost is a small fraction of
 total time on both sides -- the truncation path's numbers are less sensitive
 to the same GPU-speed effect that makes the plain-path floor
 hardware-specific.
+
+---
+
+## Production-regime and main-grid tables disagreed at shared shapes -- allocation inside the timed closure, not Dynamo/Inductor state
+
+GAE's production-regime table reported a different `compile(vec)` speedup
+than the main CONFIGS-grid table at the identical shape (`num_envs=4096,
+seq_len=128`): 2.97x (production-regime) vs. 2.4x (main grid) on RTX 2000
+Ada, a ~24% gap with the same GPU, same run, same underlying `compiled_vec`
+object (`torch.compile(vectorized_gae_with_truncations)`, compiled once
+and reused by both tables within `bench_gae()`).
+
+**First hypothesis, ruled out:** cross-shape Dynamo/Inductor state
+contamination (the same bug class as the cross-object/cross-shape bugs
+documented earlier in this file) -- the main CONFIGS-grid loop calls
+`torch._dynamo.reset()` before every shape, while `_bench_production_
+regime()` only resets at padding-boundary transitions (`_needs_pad`
+changes, effectively only around `seq_len=80`), so the production-regime
+object carries more accumulated compile history by the time it reaches
+4096x128. Adding `_dynamo.reset()` before every production-regime shape
+(matching the main grid) did **not** close the gap -- ruling this out.
+
+**Actual root cause:** `bench_gae()`'s eager shim for the production-regime
+call, `_compiled_vec_prod(rewards, values, terminateds, gamma, lambda_)`,
+allocated `trunc = torch.zeros_like(terminateds)` and
+`bsv = torch.zeros_like(rewards)` **inside** the function passed to the
+timer, so both allocations ran on every timed iteration. The main-grid
+loop, by contrast, allocates its equivalent `trunc0`/`bsv0` tensors once
+per shape, outside the timed region, before calling `_bench_gpu`. Isolated
+A/B measurement confirmed this allocation costs ~14% of `compile(vec)`'s
+full-call time at 4096x128 -- accounting for essentially the entire gap.
+
+**Fix (`c5695c5`):** `_bench_production_regime()` gained an optional
+`compiled_extra_fn(num_envs, seq_len)` parameter that builds any extra
+positional args (the zero truncateds/bootstrap tensors) once per shape,
+outside the timed region, exactly mirroring the main grid's own pattern.
+Wired in for GAE, V-Trace, lambda-returns, and discounted-returns -- the
+four algorithms whose production-regime table reuses a with-truncations-
+capable compiled object via a thin eager wrapper. After the fix, GAE's
+main-grid and production-regime tables agree at 4096x128 (verified on both
+RTX 2000 Ada and H100: RTX 2.60x vs 2.61x, H100 2.4x vs 2.45x) -- and the
+same convergence holds for the other five algorithms checked at this
+shape, not just GAE.
+
+**Also added, non-default:** `--per-shape-sweep`, which subprocess-
+isolates every individual shape (not just plain/truncation-variant groups
+like `--parent-sweep` already does) -- a real fixed-shape production loop
+never shares compile state with any other shape at all, which per-shape
+subprocess isolation reproduces exactly and reset() cannot fully guarantee
+(reset() clears Dynamo's guard cache but not all Inductor-level state).
+Kept non-default because it adds host-dispatch noise that scales with
+spawn count on shared hosts (~26% spread vs. ~3% under group-level
+`--parent-sweep` in one comparison) -- `--parent-sweep` remains the
+default methodology; `--per-shape-sweep` is available for deeper
+diagnosis when a discrepancy like this one needs to be chased down again.
+
+**Consequence for published numbers:** this bug inflated every affected
+algorithm's production-regime speedup (the number the README headline and
+paper Table 3 draw from) by a roughly constant per-call allocation cost,
+on top of whatever the bootstrap-fix-driven baseline changes (see the
+`[Unreleased]` CHANGELOG entry) already contributed. v0.1.2 was
+re-promoted with this fix in place; the pre-fix v0.1.2 content is
+preserved at `docs/benchmark-history/v0.1.2.md` for the record.
+
+---
+
+## A second, distinct zero-tensor-allocation fix -- this one on the kernel's caller side, eliminating a real extra launch
+
+Separate from the benchmark-harness allocation bug immediately above (which
+only affected the *measurement*, not the kernel), the kernels themselves
+used to pay for a genuine extra CUDA kernel launch on every call that had
+no bootstrap/seed value to inject -- the common case, since most episodes
+simply terminate at the window boundary rather than truncate mid-window.
+
+**Mechanism:** on the no-truncation path (`HAS_TRUNCATIONS=False`), the
+Triton kernel takes a scalar-per-env `bootstrap_ptr` (shape `[num_envs]`).
+When the caller has no `last_value` to inject, the ops-layer wrapper
+(`src/rl_triton/ops/gae.py`, and the equivalent for V-Trace, lambda-
+returns, discounted-returns, eligibility-traces, and prefix-sum) used to
+allocate `torch.zeros(num_envs)` just to hand the kernel *something* for
+this parameter -- even though the kernel's own logic never actually reads
+that buffer's contents when there's nothing to bootstrap from. That
+allocation call is itself a CUDA kernel launch (a fill kernel), separate
+from the main scan kernel's own launch -- measured at ~28-40% of the op's
+total full-call time at small sizes (e.g. ~33% at GAE 128x1024), since two
+launches' fixed dispatch overhead dominates when the actual scan work
+per launch is tiny.
+
+**Fix:** added a `HAS_BOOTSTRAP: tl.constexpr` compile-time flag (and the
+equivalent `HAS_SEED` for prefix-sum). When `False`, the wrapper passes
+`None` instead of allocating a zeros buffer, and the kernel substitutes a
+literal `0.0` in-register wherever it would have read from that pointer --
+see `gae_fused_kernel`'s docstring in `src/rl_triton/kernels/gae.py` for
+the exact dispatch. `HAS_BOOTSTRAP` only has meaning when
+`HAS_TRUNCATIONS=False` -- the with-truncations path already requires a
+full `[num_envs, seq_len]` bootstrap_values tensor and has no equivalent
+scalar-vs-none distinction to make. Bit-identical output verified against
+the pre-fix kernel for every affected kernel (this is a launch-elimination
+optimization, not a numerics change -- the substituted `0.0` is exactly
+what the allocated zeros buffer would have contained).
+
+**Consequence for published numbers:** `bench_safeguard.py`'s perf floors
+were recalibrated to the new, faster no-bootstrap-path numbers (e.g. GAE's
+floor moved 1.4x -> 1.9x; Prefix Sum's no-seed path flipped from a 0.75x
+non-regression guard to a genuine-win 1.1x floor, gated on median rather
+than min speedup since its short duration exposes the min to single-trial
+GPU clock-ramp transients that don't reflect its real ~1.24x median). This
+is a distinct effect from both the bootstrap double-counting fix and the
+production-regime harness allocation fix documented above -- three
+separate causes have each moved GAE/V-Trace's headline numbers across
+recent releases; do not attribute a speedup delta to one without checking
+which of the three (or a combination) actually explains it.

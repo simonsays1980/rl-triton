@@ -162,11 +162,11 @@ At a truncated step $t$, the episode continues, so $\delta_t$ still needs the tr
 
 At the last step of the window, $V(s_T)$ lies one step past the end of the `values` tensor. The caller supplies it as `bootstrap_values[env, T-1]` when the episode continues past the window, or leaves it zero if the episode terminated at $T-1$.
 
-This value serves two roles at once. It enters $\delta_{T-1}$ as the next-state value, and it is the scan carry $A_T$ added to every position's local scan result:
+This value enters $\delta_{T-1}$ as the ordinary next-state value that completes the one-step TD residual: $\delta_{T-1} = r_{T-1} + \gamma V(s_T) - V(s_{T-1})$. The scan's boundary carry is always $A_T = 0$:
 
-$$A_t = (\text{local scan result})_t + (\text{decay product})_t \cdot A_T$$
+$$A_t = (\text{local scan result})_t + (\text{decay product})_t \cdot 0 = (\text{local scan result})_t$$
 
-Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` satisfies both. The double use is necessary: $\delta_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual, while $A_T$ stands in for the true advantage beyond the window, since $A_{T-1} = \delta_{T-1} + \beta_{T-1} A_T$ and the windowed scan alone can only produce $\delta_{T-1}$.
+An advantage carry would represent trace mass from steps *past* the buffer, and there is none to represent: `bootstrap_values[env, T-1]` already prices $V(s_T)$ into $\delta_{T-1}$ at weight 1, exactly as the infinite-horizon recurrence in Section 1 requires. This is genuinely different from the [λ-returns kernel](returns.md), where the analogous carry legitimately contributes a nonzero term at weight $\gamma\lambda$ -- there $\alpha_t$ only carries $\gamma(1-\lambda)V(s_{t+1})$, so the two weights sum to $1$ rather than overlapping.
 
 #### The unifying rule
 
@@ -174,15 +174,15 @@ Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` s
 
 For the common case where no interior truncations occur, the `last_value` argument (shape `[num_envs]`) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates `bootstrap_values[:, -1]` automatically. `last_value` and `bootstrap_values` are mutually exclusive.
 
-**Infinite-horizon chunking:** For sequences longer than the flat kernel limit, the scan is chunked. The final advantage of a chronologically later chunk becomes the carry $A_T$ passed into the earlier chunk.
+**Long sequences (chunked path):** For sequences longer than the flat kernel's limit, `compute_gae` dispatches to a chunked scan kernel instead of the fused one, but the boundary carry is unaffected by this -- it is still always $0$ at $t=T$, computed by that same single kernel call over the whole sequence, not stitched together from separately-called chunks.
 
 #### Boundary summary
 
-| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\delta_t$ | Decay $\beta_t$ |
-|---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops |
-| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops |
-| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $A_T$ | $0$ -- carry absorbed |
+| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\delta_t$ | Decay $\beta_t$ | Scan carry $A_T$ |
+|---|---|---|---|---|---|
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops | $0$ |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops | $0$ |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]` | $0$ -- scan stops | $0$ (always -- never seeded from the bootstrap) |
 
 ---
 

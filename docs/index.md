@@ -61,12 +61,26 @@ pytest -m slow -v
 ## Benchmarking
 
 The release benchmark runs all algorithms across multiple (num_envs, seq_len) configs
-and updates the Performance section of this README automatically:
+and stages the results to `docs/benchmark-history/unreleased.md` for review -- it never
+writes `benchmarks.md` directly:
 
 ```bash
-python tests/bench_release.py --gpu "RTX 2000 Ada"
+python tests/bench_release.py --parent-sweep --gpu "RTX 2000 Ada"
 ```
 
-Use `--no-update` to print results without modifying the README.
+Use `--no-update` to print results without staging anything. A staged candidate becomes
+the published `benchmarks.md` only when explicitly promoted with a version tag:
 
-See [Benchmarks](benchmarks.md) for full results.
+```bash
+python tests/bench_release.py --promote --version v0.1.2
+```
+
+## Performance
+
+Full sweep, methodology, and truncation-path results: [Benchmarks](benchmarks.md).
+
+{%
+  include-markdown "../README.md"
+  start="benchmarks.md).*"
+  end="<!-- BENCH_END -->"
+%}

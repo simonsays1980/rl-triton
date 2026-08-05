@@ -76,17 +76,19 @@ Headline production-regime numbers below (num_envs=4096, seq_len=128 -- the
 PufferLib/Gigaflow-default rollout size), measured on two GPUs spanning a wide
 performance range. The Triton-vs-`torch.compile` margin is shape-dependent and does not
 move consistently in one direction between these two cards across the full config grid --
-see `NOTES.md` for the open investigation; no cross-GPU trend is asserted here.
+see `NOTES.md` for the open investigation; no cross-GPU trend is asserted here. Sourced
+directly from `benchmarks.md`'s v0.1.2 production-regime and with-truncations tables at
+this exact (num_envs, seq_len).
 
 ### NVIDIA H100 80GB HBM3
 
 | algorithm | speedup vs torch.compile (full-call) |
 |:---|:---:|
-| GAE | 3.4× |
-| V-Trace | 3.0× |
-| Retrace | 1.8× |
+| GAE | 2.5× |
+| V-Trace | 2.6× |
+| Retrace | 1.9× |
 | lambda-returns | 3.1× |
-| discounted-returns | 3.1× |
+| discounted-returns | 2.6× |
 | eligibility-traces | 2.3× |
 | prefix-sum | 2.4× |
 
@@ -99,34 +101,42 @@ mandatory, distinct arguments, and no separate bootstrap_values parameter -- the
 value is folded into `next_q_values_all` every step, see `docs/kernels/retrace.md` §4), has a
 row below.
 
+The with-truncations margin is smaller than the plain margin for GAE, V-Trace, and
+lambda-returns -- not because truncations make the `torch.compile` baseline slower (it runs the
+same compiled graph either way), but because the Triton kernel has a `HAS_TRUNCATIONS`
+compile-time fast path that skips the truncateds array and the 2D bootstrap-values tensor
+entirely when there are no truncations, making the plain-path kernel faster in absolute terms
+than the truncation-path kernel. The plain-path headline above should not be read as
+representative of truncation-heavy workloads.
+
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|
-| GAE | 2.0× |
-| V-Trace | 2.9× |
+| GAE | 1.6× |
+| V-Trace | 2.6× |
 | Retrace | 1.8× |
-| lambda-returns | 2.6× |
+| lambda-returns | 2.5× |
 | discounted-returns | 2.5× |
 
 ### NVIDIA RTX 2000 Ada Generation
 
 | algorithm | speedup vs torch.compile (full-call) |
 |:---|:---:|
-| GAE | 6.3× |
-| V-Trace | 6.8× |
+| GAE | 2.4× |
+| V-Trace | 2.7× |
 | Retrace | 1.6× |
-| lambda-returns | 5.7× |
-| discounted-returns | 6.0× |
-| eligibility-traces | 2.4× |
-| prefix-sum | 2.4× |
+| lambda-returns | 3.6× |
+| discounted-returns | 3.7× |
+| eligibility-traces | 2.2× |
+| prefix-sum | 2.2× |
 
 With truncations, same config and the same structural omissions as above:
 
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|
-| GAE | 3.4× |
-| V-Trace | 5.4× |
-| Retrace | 1.7× |
-| lambda-returns | 4.5× |
-| discounted-returns | 4.7× |
+| GAE | 1.4× |
+| V-Trace | 2.5× |
+| Retrace | 1.6× |
+| lambda-returns | 3.2× |
+| discounted-returns | 3.3× |
 
 <!-- BENCH_END -->

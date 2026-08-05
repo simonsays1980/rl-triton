@@ -590,6 +590,49 @@ ALL_ALGOS = [
     "discounted_returns", "eligibility_traces", "prefix_sum",
 ]
 
+# Algorithm key (--algos entry) -> the "algo" label used in production-table
+# rows (_bench_production_regime's algo_label / bench_retrace's inline
+# equivalent). Shared by _run_single_shape_worker (to find the one row a
+# lambda_returns/discounted_returns/eligibility_traces worker produced,
+# since bench_returns() computes all three's production rows together) and
+# main()'s --output-json handling (to filter a --parent-sweep subprocess's
+# production rows down to only the algos it was actually asked to run).
+_ALGO_TO_PROD_LABEL = {
+    "gae": "GAE", "vtrace": "V-Trace", "retrace": "Retrace",
+    "lambda_returns": "lambda-returns", "discounted_returns": "discounted-returns",
+    "eligibility_traces": "eligibility-traces", "prefix_sum": "prefix-sum",
+}
+
+# Set by main() from --only-shape/--only-table when this process is a
+# per-shape subprocess worker spawned by _run_per_shape_sweep -- see that
+# function's module docstring-style comment below for the full rationale.
+# When set, _active_configs()/_active_production_configs() collapse every
+# bench_*() function's shape grid down to AT MOST the one requested shape,
+# so this process's torch.compile(...) object(s) only ever see that single
+# shape: a real fixed-shape production loop compiles once and runs warm
+# forever with no other shape ever touching the object, which an in-process
+# multi-shape sweep (even with a reset() between every shape) cannot
+# faithfully reproduce -- reset() clears Dynamo's guard cache but the
+# process, allocator, and any Inductor-level state a future bug might depend
+# on are still shared across shapes; a fresh subprocess shares none of that.
+_ONLY_SHAPE = None
+_ONLY_TABLE = None
+
+
+def _active_configs():
+    """CONFIGS, or a single-shape override in per-shape-subprocess mode."""
+    if _ONLY_SHAPE is None:
+        return CONFIGS
+    return [_ONLY_SHAPE] if _ONLY_TABLE == "main" and _ONLY_SHAPE in CONFIGS else []
+
+
+def _active_production_configs():
+    """PRODUCTION_CONFIGS+BOUNDARY_CONFIG, or a single-shape override."""
+    full = PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]
+    if _ONLY_SHAPE is None:
+        return full
+    return [_ONLY_SHAPE] if _ONLY_TABLE == "production" and _ONLY_SHAPE in full else []
+
 
 def _needs_pad(seq_len):
     """Whether parallel_suffix_scan/parallel_prefix_scan will pad seq_len up
@@ -610,7 +653,8 @@ def _needs_pad(seq_len):
     return t_pad != seq_len
 
 
-def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_inputs_fn, kwargs):
+def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_inputs_fn, kwargs,
+                              compiled_extra_fn=None):
     """Shared production-regime + boundary-marker sweep for algorithms whose
     triton/compiled/reference callables all accept the SAME positional args
     (everything except Retrace, whose kernel needs a reordered arg tuple --
@@ -623,15 +667,33 @@ def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_in
     overhead from genuine per-call cost at these short seq_lens. Asserts
     tolerance-based correctness (atol=1e-4) at every config before trusting
     the timing.
+
+    compiled_extra_fn(num_envs, seq_len), if given, builds extra positional
+    args appended after args_gpu for EVERY compiled_fn call (timed and
+    untimed alike) -- built ONCE per shape, before any timed call, exactly
+    mirroring how the CONFIGS-grid callers of this same compiled object
+    pre-build their zero truncateds/bootstrap_values tensors outside the
+    timed region. Without this, a caller whose compiled_fn closure allocates
+    those zero tensors internally (torch.zeros_like(...) inside the function
+    body passed to _bench_gpu) pays that allocation on EVERY timed iteration
+    -- confirmed via isolated A/B measurement to add ~14% to compile(vec)'s
+    full-call time at 4096x128, which is what inflated GAE/V-Trace's
+    production-regime speedup relative to the CONFIGS-grid table's number
+    for the same shape (see the diagnostic in this bug's investigation:
+    torch._dynamo.reset()-ing every shape here, matching the CONFIGS loop,
+    did NOT close that gap -- ruling out Dynamo/Inductor cross-shape state
+    as the cause and pointing at this allocation-inside-the-timed-closure
+    asymmetry instead).
     """
     rows = []
     # compiled_fn was already used across CONFIGS beforehand in every current
     # caller, and every CONFIGS seq_len is a power of 2 (no padding) -- so the
     # object arrives here having never taken the padding branch.
     prev_needs_pad = False
-    for num_envs, seq_len in PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]:
+    for num_envs, seq_len in _active_production_configs():
         is_boundary = (num_envs, seq_len) == BOUNDARY_CONFIG
         args_gpu = make_inputs_fn(num_envs, seq_len)
+        compiled_extra = compiled_extra_fn(num_envs, seq_len) if compiled_extra_fn else ()
         ni = _n_iter_gpu(seq_len, num_envs)
 
         # Reusing one torch.compile(...)-wrapped object across a transition
@@ -651,7 +713,13 @@ def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_in
         # access late in the run); resetting only at these rare transitions
         # stays far below that threshold.
         needs_pad = _needs_pad(seq_len)
-        if needs_pad != prev_needs_pad:
+        # In per-shape-subprocess mode (_ONLY_SHAPE set) this loop body runs
+        # at most once -- always reset unconditionally so the sole shape's
+        # compile never carries over the (64,512) priming warmup this
+        # function's caller ran before entering this loop (see _ONLY_SHAPE's
+        # module comment: a real single-shape production loop never shares
+        # compile state with any other shape, including that warmup one).
+        if needs_pad != prev_needs_pad or _ONLY_SHAPE is not None:
             torch._dynamo.reset()
         prev_needs_pad = needs_pad
 
@@ -671,18 +739,18 @@ def _bench_production_regime(algo_label, triton_fn, compiled_fn, ref_fn, make_in
         ref_out    = ref_fn(*args_gpu, **kwargs)
         assert_correctness(triton_out, ref_out, f"{algo_label}[production,{num_envs}x{seq_len}]")
 
-        vec_out = compiled_fn(*args_gpu, **kwargs)
+        vec_out = compiled_fn(*args_gpu, *compiled_extra, **kwargs)
         assert_correctness(vec_out, ref_out, f"{algo_label}[production,{num_envs}x{seq_len}] (vec baseline)")
 
         _warmup_gpu(triton_fn,   *args_gpu, **kwargs)
-        _warmup_gpu(compiled_fn, *args_gpu, **kwargs)
+        _warmup_gpu(compiled_fn, *args_gpu, *compiled_extra, **kwargs)
 
         triton_ms = _bench_gpu(triton_fn,   *args_gpu, n_iter=ni, **kwargs)
-        vec_ms    = _bench_gpu(compiled_fn, *args_gpu, n_iter=ni, **kwargs)
+        vec_ms    = _bench_gpu(compiled_fn, *args_gpu, *compiled_extra, n_iter=ni, **kwargs)
         triton_dev_ms, _ = _device_profile(triton_fn,   *args_gpu, **kwargs)
-        vec_dev_ms, _    = _device_profile(compiled_fn, *args_gpu, **kwargs)
+        vec_dev_ms, _    = _device_profile(compiled_fn, *args_gpu, *compiled_extra, **kwargs)
         triton_amort_ms  = _bench_gpu_amortized(triton_fn,   *args_gpu, **kwargs)
-        vec_amort_ms     = _bench_gpu_amortized(compiled_fn, *args_gpu, **kwargs)
+        vec_amort_ms     = _bench_gpu_amortized(compiled_fn, *args_gpu, *compiled_extra, **kwargs)
 
         row = {
             "algo": algo_label, "num_envs": num_envs, "seq_len": seq_len, "is_boundary": is_boundary,
@@ -794,7 +862,7 @@ def bench_gae():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -861,18 +929,26 @@ def bench_gae():
     else:
         print("  monotonicity gate: PASSED (gae, triton_ms, 2% band)", flush=True)
 
-    # Eager (uncompiled) shim matching compute_gae's signature -- constructs
-    # truncateds/bootstrap in eager code per call (never inside the compiled
-    # region) before delegating to the already-compiled compiled_vec, per the
-    # torch.compile buffer-corruption note above.
-    def _compiled_vec_prod(rewards, values, terminateds, gamma, lambda_):
-        trunc = torch.zeros_like(terminateds)
-        bsv   = torch.zeros_like(rewards)
+    # Eager (uncompiled) shim matching compute_gae's signature -- takes
+    # truncateds/bootstrap as plain args (built once per shape by
+    # compiled_extra_fn below, outside the timed region -- see
+    # _bench_production_regime's compiled_extra_fn docstring) before
+    # delegating to the already-compiled compiled_vec. Never allocates them
+    # itself: constructing them INSIDE this function would (a) reintroduce
+    # the torch.compile buffer-corruption risk noted above if it ever ran
+    # inside a compiled region, and (b) pay that allocation on every timed
+    # iteration instead of once per shape, which is exactly the bug this
+    # signature change fixes.
+    def _compiled_vec_prod(rewards, values, terminateds, trunc, bsv, gamma, lambda_):
         return compiled_vec(rewards, values, terminateds, trunc, bsv, gamma, lambda_)
 
     production_rows = _bench_production_regime(
         "GAE", compute_gae, _compiled_vec_prod, _ref_gae, _make_gae,
         kwargs={"gamma": 0.99, "lambda_": 0.95},
+        compiled_extra_fn=lambda num_envs, seq_len: (
+            torch.zeros(num_envs, seq_len, device="cuda"),
+            torch.zeros(num_envs, seq_len, device="cuda"),
+        ),
     )
     prod_violations = check_monotonic_grid(
         [r for r in production_rows if not r["is_boundary"]], ms_key="triton_ms")
@@ -907,7 +983,7 @@ def bench_gae_truncation():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1002,7 +1078,7 @@ def bench_vtrace():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1068,15 +1144,20 @@ def bench_vtrace():
     else:
         print("  monotonicity gate: PASSED (vtrace, triton_ms, 2% band)", flush=True)
 
-    def _compiled_vec_prod(log_pi_target, log_pi_behavior, values, rewards, terminateds, gamma):
-        trunc = torch.zeros_like(terminateds)
-        bsv   = torch.zeros_like(rewards)
+    # See bench_gae()'s matching _compiled_vec_prod comment: trunc/bsv are
+    # plain args, built once per shape by compiled_extra_fn (outside the
+    # timed region), never allocated inside this shim.
+    def _compiled_vec_prod(log_pi_target, log_pi_behavior, values, rewards, terminateds, trunc, bsv, gamma):
         return compiled_vec(log_pi_target, log_pi_behavior, values, rewards, terminateds,
                              trunc, bsv, gamma=gamma)
 
     production_rows = _bench_production_regime(
         "V-Trace", compute_vtrace_fused, _compiled_vec_prod, _ref_vtrace, _make_vtrace,
         kwargs={"gamma": 0.99},
+        compiled_extra_fn=lambda num_envs, seq_len: (
+            torch.zeros(num_envs, seq_len, device="cuda"),
+            torch.zeros(num_envs, seq_len, device="cuda"),
+        ),
     )
     prod_violations = check_monotonic_grid(
         [r for r in production_rows if not r["is_boundary"]], ms_key="triton_ms")
@@ -1111,7 +1192,7 @@ def bench_vtrace_truncation():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1212,7 +1293,7 @@ def bench_retrace():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1286,10 +1367,11 @@ def bench_retrace():
     # padding-regime transition (compiled_vec already only saw non-padded
     # CONFIGS shapes above), not on every shape.
     prev_needs_pad = False
-    for num_envs, seq_len in PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]:
+    for num_envs, seq_len in _active_production_configs():
         is_boundary = (num_envs, seq_len) == BOUNDARY_CONFIG
         needs_pad = _needs_pad(seq_len)
-        if needs_pad != prev_needs_pad:
+        # See _bench_production_regime's matching comment on _ONLY_SHAPE.
+        if needs_pad != prev_needs_pad or _ONLY_SHAPE is not None:
             torch._dynamo.reset()
         prev_needs_pad = needs_pad
         args_gpu = _make_retrace(num_envs, seq_len)
@@ -1381,7 +1463,7 @@ def bench_retrace_truncation():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- see bench_gae_truncation's matching
         # comment: reusing one torch.compile(...) object across distinct
         # shapes without this can silently give wrong output at some
@@ -1509,7 +1591,7 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
         )
 
     rows_lambda, rows_disc, rows_traces = [], [], []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape in this loop (not just padding transitions
         # like _bench_production_regime's _needs_pad guard): direct isolation
         # testing found vectorized_discounted_returns_with_truncations gives
@@ -1649,26 +1731,32 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
         r, _nv, d = _make_returns(num_envs, seq_len, device)
         return r, d
 
-    def _c_lambda_vec_prod(rewards, next_values, terminateds, gamma, lambda_):
-        trunc = torch.zeros_like(terminateds)
-        bsv   = torch.zeros_like(rewards)
+    # See bench_gae()'s matching _compiled_vec_prod comment: trunc/bsv are
+    # plain args, built once per shape by compiled_extra_fn (outside the
+    # timed region), never allocated inside these shims.
+    def _c_lambda_vec_prod(rewards, next_values, terminateds, trunc, bsv, gamma, lambda_):
         return c_lambda_vec(rewards, next_values, terminateds, trunc, bsv, gamma=gamma, lambda_=lambda_)
 
-    def _c_disc_vec_prod(rewards, terminateds, gamma):
-        trunc = torch.zeros_like(terminateds)
-        bsv   = torch.zeros_like(rewards)
+    def _c_disc_vec_prod(rewards, terminateds, trunc, bsv, gamma):
         return c_disc_vec(rewards, terminateds, trunc, bsv, gamma=gamma)
+
+    _zeros_extra_fn = lambda num_envs, seq_len: (
+        torch.zeros(num_envs, seq_len, device="cuda"),
+        torch.zeros(num_envs, seq_len, device="cuda"),
+    )
 
     production_rows = []
     if want_lambda:
         production_rows += _bench_production_regime(
             "lambda-returns", compute_lambda_returns, _c_lambda_vec_prod, _ref_lambda, _make_returns,
             kwargs={"gamma": 0.99, "lambda_": 0.95},
+            compiled_extra_fn=_zeros_extra_fn,
         )
     if want_disc:
         production_rows += _bench_production_regime(
             "discounted-returns", compute_discounted_returns, _c_disc_vec_prod, _ref_disc, _make_returns_2,
             kwargs={"gamma": 0.99},
+            compiled_extra_fn=_zeros_extra_fn,
         )
     if want_traces:
         production_rows += _bench_production_regime(
@@ -1715,7 +1803,7 @@ def bench_lambda_returns_truncation():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1804,7 +1892,7 @@ def bench_discounted_returns_truncation():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -1896,7 +1984,7 @@ def bench_prefix_sum():
     print("-" * len(header))
 
     rows = []
-    for num_envs, seq_len in CONFIGS:
+    for num_envs, seq_len in _active_configs():
         # Reset before every shape -- Bug 2 (see NOTES.md): reusing one
         # torch.compile(...) object across distinct shapes without this can
         # silently give wrong output at some transition. bench_returns()
@@ -2639,6 +2727,109 @@ def render_readme_table_draft(gpu_label: str, production_rows: list[dict],
 
 
 # ---------------------------------------------------------------------------
+# Single-shape subprocess worker (see --only-shape / _run_per_shape_sweep)
+# ---------------------------------------------------------------------------
+
+def _run_single_shape_worker(args):
+    """Run exactly one algorithm's bench_*() function with its shape grid
+    collapsed to the single --only-shape shape, extract the one row that
+    matters, and dump it to --output-row-json.
+
+    This calls the SAME bench_*() functions the normal single-process and
+    --parent-sweep paths call -- no separate per-shape measurement code path
+    to keep in sync -- relying on _active_configs()/_active_production_configs()
+    (module-level, driven by _ONLY_SHAPE/_ONLY_TABLE) to shrink CONFIGS /
+    PRODUCTION_CONFIGS+BOUNDARY_CONFIG down to that one shape everywhere they're
+    consulted, including inside bench_retrace()'s inline production loop and
+    bench_returns()'s shared trio loop.
+    """
+    global _ONLY_SHAPE, _ONLY_TABLE
+    try:
+        ne_str, sl_str = args.only_shape.split(",")
+        _ONLY_SHAPE = (int(ne_str), int(sl_str))
+    except ValueError:
+        print(f"--only-shape must be 'NUM_ENVS,SEQ_LEN', got {args.only_shape!r}")
+        sys.exit(1)
+    _ONLY_TABLE = args.only_table
+
+    if not torch.cuda.is_available():
+        print("CUDA not available -- --only-shape workers need a GPU.")
+        sys.exit(1)
+
+    selected = [a.strip() for a in args.algos.split(",")]
+    if len(selected) != 1:
+        print("--only-shape requires exactly one --algos entry.")
+        sys.exit(1)
+    algo = selected[0]
+
+    if _ONLY_TABLE == "production" and args.variant not in ("plain", "all"):
+        print("--only-table production requires --variant plain or all (the truncation-path "
+              "variant's compiled object has no separate production table).")
+        sys.exit(1)
+
+    row = None
+    if algo == "gae":
+        if args.variant == "truncation":
+            rows, _v = bench_gae_truncation()
+            row = rows[0] if rows else None
+        else:
+            rows, production_rows, _v = bench_gae()
+            row = rows[0] if _ONLY_TABLE == "main" else (production_rows[0] if production_rows else None)
+    elif algo == "vtrace":
+        if args.variant == "truncation":
+            rows, _v = bench_vtrace_truncation()
+            row = rows[0] if rows else None
+        else:
+            rows, production_rows, _v = bench_vtrace()
+            row = rows[0] if _ONLY_TABLE == "main" else (production_rows[0] if production_rows else None)
+    elif algo == "retrace":
+        if args.variant == "truncation":
+            rows, _v = bench_retrace_truncation()
+            row = rows[0] if rows else None
+        else:
+            rows, production_rows, _v = bench_retrace()
+            row = rows[0] if _ONLY_TABLE == "main" else (production_rows[0] if production_rows else None)
+    elif algo in ("lambda_returns", "discounted_returns", "eligibility_traces"):
+        if args.variant == "truncation":
+            if algo == "lambda_returns":
+                rows, _v = bench_lambda_returns_truncation()
+            elif algo == "discounted_returns":
+                rows, _v = bench_discounted_returns_truncation()
+            else:
+                print("eligibility_traces has no truncation-path table.")
+                sys.exit(1)
+            row = rows[0] if rows else None
+        else:
+            lambda_rows, disc_rows, traces_rows, production_rows, _v = bench_returns({algo})
+            main_rows = {"lambda_returns": lambda_rows, "discounted_returns": disc_rows,
+                        "eligibility_traces": traces_rows}[algo]
+            if _ONLY_TABLE == "main":
+                row = main_rows[0] if main_rows else None
+            else:
+                label = _ALGO_TO_PROD_LABEL[algo]
+                matches = [r for r in production_rows if r["algo"] == label]
+                row = matches[0] if matches else None
+    elif algo == "prefix_sum":
+        if args.variant == "truncation":
+            print("prefix_sum has no truncation-path table.")
+            sys.exit(1)
+        rows, production_rows, _v = bench_prefix_sum()
+        row = rows[0] if _ONLY_TABLE == "main" else (production_rows[0] if production_rows else None)
+    else:
+        print(f"Unknown --algos entry {algo!r}.")
+        sys.exit(1)
+
+    if row is None:
+        print(f"No row produced for algo={algo} variant={args.variant} table={_ONLY_TABLE} "
+              f"shape={_ONLY_SHAPE} -- is that shape actually in the requested grid?")
+        sys.exit(1)
+
+    Path(args.output_row_json).write_text(json.dumps(row))
+    print(f"Wrote single-shape row ({algo}, {args.variant}, {_ONLY_TABLE}, {_ONLY_SHAPE}) to "
+          f"{args.output_row_json}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -2702,7 +2893,45 @@ def main():
                              "which is why the plain and truncation tables for gae/vtrace/retrace/"
                              "lambda_returns/discounted_returns are split into separate "
                              "subprocesses via --variant, not just separate algorithms.")
+    parser.add_argument("--only-shape", default="", metavar="NUM_ENVS,SEQ_LEN",
+                        help="Restrict this invocation's --algos entry (must be exactly one) to "
+                             "a single (num_envs, seq_len) shape, drawn from either CONFIGS or "
+                             "PRODUCTION_CONFIGS+BOUNDARY_CONFIG depending on --only-table. Used "
+                             "internally by --per-shape-sweep's per-shape subprocess workers: "
+                             "with this set, every bench_*() function's shape grid collapses to "
+                             "at most this one shape, so the torch.compile(...) object(s) built "
+                             "in this process only ever see it -- compile-once-for-this-shape, "
+                             "warm, no other shape's state anywhere in the process. Requires "
+                             "--only-table and --output-row-json.")
+    parser.add_argument("--only-table", default="", choices=["", "main", "production"],
+                        help="Which table --only-shape's shape belongs to: 'main' filters "
+                             "CONFIGS, 'production' filters PRODUCTION_CONFIGS+BOUNDARY_CONFIG. "
+                             "Required with --only-shape.")
+    parser.add_argument("--output-row-json", default="", metavar="PATH",
+                        help="Dump the single row produced by --only-shape as JSON to PATH and "
+                             "exit, skipping table formatting/staging entirely. Required with "
+                             "--only-shape.")
+    parser.add_argument("--per-shape-sweep", action="store_true",
+                        help="Like --parent-sweep, but isolates every INDIVIDUAL shape in its "
+                             "own subprocess rather than every (algorithm, variant) group -- see "
+                             "_run_per_shape_sweep's comment. This is the methodologically "
+                             "faithful way to generate benchmarks.md: every shape's compile(vec) "
+                             "measurement reflects a real fixed-shape production loop (compile "
+                             "once for that exact shape, run warm, never touched by any other "
+                             "shape), with no reset-completeness assumption anywhere. Costs far "
+                             "more wall-clock than --parent-sweep (one torch.compile(...) per "
+                             "shape instead of amortized across a whole grid) -- Inductor's "
+                             "on-disk codecache still amortizes the underlying LLVM/PTX codegen "
+                             "across repeated runs, so this cost is mostly paid once per shape "
+                             "ever seen, not once per invocation.")
     args = parser.parse_args()
+
+    if args.only_shape:
+        if not args.only_table or not args.output_row_json:
+            print("--only-shape requires both --only-table and --output-row-json.")
+            sys.exit(1)
+        _run_single_shape_worker(args)
+        return
 
     if args.promote:
         if not args.version:
@@ -2722,6 +2951,10 @@ def main():
 
     if args.parent_sweep:
         _run_parent_sweep(selected_algos, args)
+        return
+
+    if args.per_shape_sweep:
+        _run_per_shape_sweep(selected_algos, args)
         return
 
     if not torch.cuda.is_available() and not args.no_update:
@@ -2883,11 +3116,6 @@ def main():
         # invocation actually selected, or the parent's merge across 3
         # subprocesses would triple lambda-returns/discounted-returns/
         # eligibility-traces production rows in the final combined table.
-        _ALGO_TO_PROD_LABEL = {
-            "gae": "GAE", "vtrace": "V-Trace", "retrace": "Retrace",
-            "lambda_returns": "lambda-returns", "discounted_returns": "discounted-returns",
-            "eligibility_traces": "eligibility-traces", "prefix_sum": "prefix-sum",
-        }
         selected_prod_labels = {_ALGO_TO_PROD_LABEL[a] for a in selected_algos}
         production_rows_all = [r for r in production_rows_all if r["algo"] in selected_prod_labels]
         payload = {
@@ -3056,6 +3284,95 @@ def _run_parent_sweep(selected_algos, args):
             headline_tables += payload["headline_tables"]
             production_rows_all += payload["production_rows_all"]
             all_violations += payload["all_violations"]
+
+    _finalize(full_tables, headline_tables, production_rows_all, all_violations, args)
+
+
+# (title, table-formatter) for each _PARENT_SWEEP_GROUPS (algo, variant) pair --
+# used by _run_per_shape_sweep to render the rows its per-shape subprocess
+# workers collect, identically to how main()'s single-process path titles
+# and formats the same rows inline.
+_TABLE_SPECS = {
+    ("gae", "plain"):                  ("GAE (`compute_gae`)", _table_numpy),
+    ("gae", "truncation"):             ("GAE – with truncations (`compute_gae`)", _table_truncation),
+    ("vtrace", "plain"):               ("V-Trace (`compute_vtrace`)", _table_numpy),
+    ("vtrace", "truncation"):          ("V-Trace – with truncations (`compute_vtrace`)", _table_truncation),
+    ("retrace", "plain"):              ("Retrace(λ) (`compute_retrace`)", _table_retrace),
+    ("retrace", "truncation"):         ("Retrace(λ) – with truncations (`compute_retrace`)", _table_truncation),
+    ("lambda_returns", "plain"):       ("λ-returns (`compute_lambda_returns`)", _table_numpy),
+    ("lambda_returns", "truncation"):  ("λ-returns – with truncations (`compute_lambda_returns`)", _table_truncation),
+    ("discounted_returns", "plain"):   ("Discounted returns (`compute_discounted_returns`)", _table_numpy),
+    ("discounted_returns", "truncation"): ("Discounted returns – with truncations (`compute_discounted_returns`)", _table_truncation),
+    ("eligibility_traces", "all"):     ("Eligibility traces (`compute_eligibility_traces`)", _table_numpy),
+    ("prefix_sum", "all"):             ("Episodic prefix sum (`compute_episodic_prefix_sum`)", _table_numpy),
+}
+
+
+def _collect_shape_rows(script, tmpdir, algo, variant, table, shapes, gpu_label):
+    """Spawn one fresh subprocess PER SHAPE in `shapes`, each restricted via
+    --only-shape/--only-table to measure exactly that shape, and collect the
+    rows in the same order as `shapes`. See --per-shape-sweep's help and
+    _ONLY_SHAPE's module comment for why this is the methodologically
+    faithful measurement: each subprocess's torch.compile(...) object is
+    compiled once, for this shape only, and never touched by any other
+    shape -- a real fixed-shape production loop.
+    """
+    rows = []
+    for num_envs, seq_len in shapes:
+        out_path = Path(tmpdir) / f"{algo}_{variant}_{table}_{num_envs}x{seq_len}.json"
+        cmd = [
+            sys.executable, script,
+            "--algos", algo, "--variant", variant,
+            "--only-shape", f"{num_envs},{seq_len}", "--only-table", table,
+            "--gpu", gpu_label, "--output-row-json", str(out_path),
+        ]
+        print(f"\n{'-' * 88}\nShape worker: {algo}/{variant}/{table} @ {num_envs}x{seq_len} "
+              f"-- fresh CUDA/Dynamo process\n{'-' * 88}", flush=True)
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print(f"\nShape worker FAILED (exit {result.returncode}) for {algo}/{variant}/{table} "
+                  f"@ {num_envs}x{seq_len} -- aborting the per-shape sweep. See the subprocess's "
+                  f"own output above for the traceback.", flush=True)
+            sys.exit(result.returncode)
+        rows.append(json.loads(out_path.read_text()))
+    return rows
+
+
+def _run_per_shape_sweep(selected_algos, args):
+    """Like _run_parent_sweep, but isolates every INDIVIDUAL shape in its own
+    subprocess rather than every (algorithm, variant) group -- see
+    --per-shape-sweep's help for the full rationale.
+
+    Reuses _PARENT_SWEEP_GROUPS purely to enumerate the (algo, variant) pairs
+    and their table titles/formatters (via _TABLE_SPECS) -- the isolation
+    boundary itself has moved from "one subprocess per group" down to "one
+    subprocess per shape", handled by _collect_shape_rows.
+    """
+    full_tables, headline_tables, production_rows_all, all_violations = [], [], [], []
+    script = str(Path(__file__).resolve())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for label, group_algos, variant in _PARENT_SWEEP_GROUPS:
+            wanted = [a for a in group_algos if a in selected_algos]
+            if not wanted:
+                continue
+            algo = wanted[0]
+            title, formatter = _TABLE_SPECS[(algo, variant)]
+
+            main_rows = _collect_shape_rows(script, tmpdir, algo, variant, "main", CONFIGS, args.gpu)
+            full_tables.append(formatter(title, main_rows))
+            headline_tables.append(formatter(title, _headline(main_rows)))
+            all_violations += [f"{label} (main grid): {v}"
+                                for v in check_monotonic_grid(main_rows, ms_key="triton_ms")]
+
+            if variant != "truncation":
+                prod_shapes = PRODUCTION_CONFIGS + [BOUNDARY_CONFIG]
+                prod_rows = _collect_shape_rows(script, tmpdir, algo, variant, "production",
+                                                 prod_shapes, args.gpu)
+                production_rows_all += prod_rows
+                non_boundary = [r for r in prod_rows if not r["is_boundary"]]
+                all_violations += [f"{label} (production regime): {v}"
+                                    for v in check_monotonic_grid(non_boundary, ms_key="triton_ms")]
 
     _finalize(full_tables, headline_tables, production_rows_all, all_violations, args)
 

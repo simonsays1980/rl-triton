@@ -29,6 +29,22 @@ Versioning: [Semantic Versioning](https://semver.org/)
   oracles' own bug. `docs/kernels/gae.md` and `docs/kernels/vtrace.md`
   corrected to match -- both previously documented the double-counting
   behavior as intentional, dual-purpose design.
+- **Production-regime benchmark table reported an inflated speedup for GAE,
+  V-Trace, lambda-returns, and discounted-returns**, disagreeing with the
+  main config-grid table by up to ~24% at shared shapes (e.g. GAE at
+  `num_envs=4096, seq_len=128`: 2.97x production-regime vs. 2.4x main-grid
+  on RTX 2000 Ada). Cause: the production-regime measurement's eager
+  wrapper allocated the zero truncateds/bootstrap-values tensors it feeds
+  the `torch.compile` baseline *inside* the timed closure, so that
+  allocation ran on every timed iteration, while the main-grid table
+  allocates its equivalent tensors once per shape, outside the timed
+  region -- costing the baseline ~14% of its measured full-call time.
+  Fixed by building those tensors once per shape in both tables alike. The
+  two tables now agree at shared shapes on both RTX 2000 Ada and H100. See
+  `NOTES.md` for the full investigation, including the ruled-out
+  Dynamo/Inductor cross-shape-state hypothesis. v0.1.2 has been
+  re-promoted with corrected numbers; the pre-fix v0.1.2 content is
+  preserved at `docs/benchmark-history/v0.1.2.md`.
 
 ### Added
 - `np->triton->np` (NumPy adoption-path) baseline timing for episodic prefix

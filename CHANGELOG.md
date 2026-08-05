@@ -4,7 +4,7 @@ All notable changes to rl-triton are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 Versioning: [Semantic Versioning](https://semver.org/)
 
-## [Unreleased]
+## [0.1.2] - 2026-08-05
 
 ### Fixed
 - **GAE and V-Trace double-counted the window-boundary bootstrap value.** The

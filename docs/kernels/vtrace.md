@@ -155,11 +155,11 @@ At a truncated step $t$, the episode continues, so $\alpha_t$ still needs the tr
 
 At the last step of the window, $V(s_T)$ lies one step past the end of the `values` tensor. The caller supplies it as `bootstrap_values[env, T-1]` when the episode continues past the window, or leaves it zero if the episode terminated at $T-1$.
 
-This value serves two roles at once. It enters $\alpha_{T-1}$ as the next-state value, and it is the scan carry $\Delta_T$ added to every position's local scan result:
+This value enters $\alpha_{T-1}$ as the ordinary next-state value that completes the one-step TD residual. The scan's boundary carry is always $\Delta_T = 0$:
 
-$$\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot \Delta_T$$
+$$\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot 0 = (\text{local scan result})_t$$
 
-Both uses read the same number, so a single entry in `bootstrap_values[:, -1]` satisfies both. The double use is necessary: $\alpha_{T-1}$ needs $V(s_T)$ to complete the one-step TD residual, while $\Delta_T$ stands in for the true value delta beyond the window, since $\Delta_{T-1} = \alpha_{T-1} + \beta_{T-1} \Delta_T$ and the windowed scan alone can only produce $\alpha_{T-1}$.
+A value-delta carry would represent trace mass from steps *past* the buffer, and there is none to represent: `bootstrap_values[env, T-1]` already prices $V(s_T)$ into $\alpha_{T-1}$ at weight 1, exactly as the infinite-horizon recurrence in Section 3 requires.
 
 ### The unifying rule
 
@@ -169,11 +169,11 @@ For the common case where no interior truncations occur, the `last_value` argume
 
 ### Boundary summary
 
-| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\alpha_t$ | Decay $\beta_t$ |
-|---|---|---|---|---|
-| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops |
-| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops |
-| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]`; also seeds carry $\Delta_T$ | $0$ -- carry absorbed |
+| Situation | $d_t$ | $d_t^{\text{term}}$ | Bootstrap $V(s_{t+1})$ in $\alpha_t$ | Decay $\beta_t$ | Scan carry $\Delta_T$ |
+|---|---|---|---|---|---|
+| **Terminated** | 1 | 1 | Zeroed by $(1-d_t^{\text{term}})$; `bootstrap_values` ignored | $0$ -- scan stops | $0$ |
+| **Truncated** | 1 | 0 | Kept; caller supplies `bootstrap_values[env, t]` | $0$ -- scan stops | $0$ |
+| **Window end** | 0 | 0 | Kept; caller supplies `bootstrap_values[env, T-1]` | $0$ -- scan stops | $0$ (always -- never seeded from the bootstrap) |
 
 ---
 

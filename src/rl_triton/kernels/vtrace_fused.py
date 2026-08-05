@@ -122,13 +122,15 @@ def vtrace_fused_kernel(
         v_next = v_next_raw + bootstrap
 
         delta = rho * (r + gamma * v_next * not_terminated - v)
-        decay = gamma * c * not_done
+        decay = gamma * c * not_done   # beta[t], the scan decay coefficient
 
         # --- Step 2: backward scan ---
-        delta_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-
-        carry       = tl.sum(tl.where(offs == 0, bootstrap, 0.0))
-        value_delta = delta_local + decay_prod * carry
+        # Additive boundary carry Delta[T] = 0: bootstrap[T-1] already entered
+        # delta[T-1] above (via v_next, weight 1). Seeding the scan's boundary
+        # carry with it again here would double-count it -- same class of bug
+        # as GAE's window-boundary carry (see kernels/gae.py's module
+        # docstring). beta (decay) itself is unaffected by this fix.
+        value_delta, _ = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
 
         # --- Step 3: targets ---
         target = value_delta + v
@@ -169,11 +171,15 @@ def vtrace_fused_kernel(
         v_next = tl.where(offs == 0, bootstrap, v_next_raw)
 
         delta = rho * (r + gamma * v_next * not_terminated - v)
-        decay = gamma * c * not_done
+        decay = gamma * c * not_done   # beta[t], the scan decay coefficient
 
         # --- Step 2: backward scan ---
-        delta_local, decay_prod = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
-        value_delta = delta_local + decay_prod * bootstrap
+        # Additive boundary carry Delta[T] = 0: bootstrap already entered
+        # delta above (via v_next, weight 1). Seeding the scan's boundary
+        # carry with it again here would double-count it -- same class of bug
+        # as GAE's window-boundary carry (see kernels/gae.py's module
+        # docstring). beta (decay) itself is unaffected by this fix.
+        value_delta, _ = tl.associative_scan((delta, decay), axis=0, combine_fn=_combine)
 
         # --- Step 3: targets ---
         target = value_delta + v

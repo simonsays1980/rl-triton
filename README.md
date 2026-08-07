@@ -12,7 +12,7 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 | `compute_retrace` | Retrace(λ) | Off-policy return estimate with truncated IS ratios |
 | `compute_lambda_returns` | TD(λ) | λ-return targets mixing one-step TD and Monte Carlo |
 | `compute_discounted_returns` | Returns | Discounted reward-to-go |
-| `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d)e[t-1]` |
+| `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d[t-1])e[t-1]` |
 | `compute_episodic_prefix_sum` | Prefix sum | Episodic cumulative sum with done-mask resets |
 
 ## Paper

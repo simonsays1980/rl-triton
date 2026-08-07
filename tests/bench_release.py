@@ -240,13 +240,18 @@ def _ref_disc(rewards, dones, gamma, bootstrap=None):
 
 
 def _ref_traces(features, dones, gamma, lambda_, seed=None):
+    """dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     T     = features.shape[1]
     out   = torch.zeros_like(features)
     carry = (seed.clone() if seed is not None
              else torch.zeros(features.shape[0], device=features.device, dtype=features.dtype))
+    prev_done = torch.zeros(features.shape[0], device=features.device, dtype=features.dtype)
     for t in range(T):
-        carry     = features[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        carry     = features[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = dones[:, t]
     return out
 
 
@@ -432,15 +437,21 @@ def numpy_discounted_returns_np_to_triton(rewards_np: np.ndarray, dones_np: np.n
 
 def numpy_eligibility_traces_cpu(features: torch.Tensor, dones: torch.Tensor,
                                   gamma: float, lambda_: float) -> np.ndarray:
-    """Pure NumPy forward scan for eligibility traces on CPU."""
+    """Pure NumPy forward scan for eligibility traces on CPU.
+
+    dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     x = features.cpu().numpy()
     d = dones.cpu().numpy()
     T = x.shape[1]
     out   = np.empty_like(x)
     carry = np.zeros(x.shape[0], dtype=np.float32)
+    prev_done = np.zeros(x.shape[0], dtype=np.float32)
     for t in range(T):
-        carry    = x[:, t] + gamma * lambda_ * (1.0 - d[:, t]) * carry
+        carry     = x[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = d[:, t]
     return out
 
 

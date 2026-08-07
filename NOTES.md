@@ -1020,16 +1020,51 @@ underflow.
 
 **`vectorized_episodic_prefix_sum`:** the old formula
 (`running = cumsum(inputs); boundary = running*dones; offset =
-cumsum(boundary)-boundary; result = running-offset`) resets one step later
-than this codebase's convention (`done[t]=1` means the reset applies *at*
-`t` itself, not at `t+1`). Wrong at every shape ever benchmarked with it --
-44-95.8% of elements, including the smallest configs -- because the
-baseline's own correctness had never been checked, only timed. **Fix:**
-replaced with `parallel_prefix_scan(inputs, 1.0 - dones)`, which encodes the
-reset convention directly rather than reconstructing it after the fact.
-Any previously-published prefix-sum speedup number predates this fix and
-should not be trusted; the current `benchmarks.md` table reflects the
-corrected baseline.
+cumsum(boundary)-boundary; result = running-offset`) disagreed with this
+file's own sequential reference at 44-95.8% of elements, including the
+smallest configs, because the baseline's own correctness had never been
+checked, only timed. **Fix:** replaced with `parallel_prefix_scan(inputs,
+1.0 - dones)`, which encodes the reset convention directly rather than
+reconstructing it after the fact. This fix was and remains correct: it made
+the baseline match the single boundary convention the kernel implemented at
+the time (`done[t]=1` resets *at* `t` itself). Any previously-published
+prefix-sum speedup number predating this fix should not be trusted; the
+current `benchmarks.md` table reflects the corrected baseline.
+
+---
+
+## `compute_episodic_prefix_sum`'s two boundary conventions
+
+The kernel supports two mutually-exclusive interpretations of `dones`,
+selected via the `boundary` parameter, because the primitive has two real
+use cases that disagree about where a `dones[t]=1` flag's reset should land:
+
+- `boundary='ends_at'` (default): `done[t]=1` means the segment *ends at*
+  `t`; the reset lands at `t+1`. This is the Gymnasium-next-step /
+  GAE-canonical convention used identically by every other kernel in this
+  library (`compute_gae`, `compute_lambda_returns`,
+  `compute_discounted_returns`, `compute_vtrace`, `compute_retrace`, and
+  `compute_eligibility_traces`). An RL user computing advantages, returns,
+  and a reset-aware timestep counter from one rollout buffer's
+  `terminated`/`truncated` flags gets boundary-consistent results across
+  every kernel by default.
+- `boundary='starts_at'`: `done[t]=1` means the segment *starts at* `t`; the
+  reset lands at `t` itself, immediately. This is the convention
+  sequence-packing callers want: a document-boundary flag marks a new
+  document's first token, and the RoPE local-position counter must reset
+  exactly there, not one token later. Pass this explicitly for that use
+  case -- it is not the default.
+
+Prior to this parameter's introduction (see the entry immediately above),
+the kernel supported only `starts_at` behavior unconditionally, and that
+fix stays correctly credited: it made `vectorized_episodic_prefix_sum`
+match the convention the kernel *was implementing at the time*. It was not,
+however, an evaluation of whether `starts_at` is the only correct
+convention for every use of this primitive -- the RL-side consistency
+argument (this kernel's `dones` semantics silently disagreeing with every
+backward kernel's, and with `compute_eligibility_traces`, when fed the same
+rollout-buffer `dones` array) was identified later, motivating this
+parameter rather than a second flip of the default.
 
 ---
 

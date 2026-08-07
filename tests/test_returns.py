@@ -118,14 +118,20 @@ def numpy_eligibility_traces(
     gamma: float,
     lambda_: float,
 ) -> torch.Tensor:
-    """CPU eligibility-trace forward loop -- moves GPU tensors to CPU and runs a plain Python loop."""
+    """CPU eligibility-trace forward loop -- moves GPU tensors to CPU and runs a plain Python loop.
+
+    dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     gradients, dones = gradients.cpu(), dones.cpu()
     T     = gradients.shape[1]
     out   = torch.zeros_like(gradients)
     carry = torch.zeros(gradients.shape[0])
+    prev_done = torch.zeros(gradients.shape[0])
     for t in range(T):
-        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = dones[:, t]
     return out
 
 
@@ -317,12 +323,15 @@ def test_eligibility_traces_known_values_decay():
 
 @cuda_only
 def test_eligibility_traces_known_values_done():
-    # done[1]=1 resets the trace: e[1] = gradients[1] + gamma*lambda*(1-done[1])*e[0] = gradients[1] + 0.
-    # e[0] = 1,  e[1] = 2 + 0.9*0 = 2,  e[2] = 3 + 0.9*2 = 4.8
+    # done[1]=1 means the episode ends AT t=1, so t=2 is the first step of a
+    # new episode and must reset: e[2] = gradients[2] + gamma*lambda*(1-done[1])*e[1] = gradients[2] + 0.
+    # e[1] itself still belongs to the SAME episode as e[0] (done[0]=0), so it
+    # correctly includes e[0]'s history.
+    # e[0] = 1,  e[1] = 2 + 0.9*(1-done[-1])*1 = 2 + 0.9*1 = 2.9,  e[2] = 3 + 0.9*(1-done[1])*2.9 = 3 + 0 = 3.0
     gradients = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones    = torch.tensor([[0.0, 1.0, 0.0]], device="cuda")
     out = compute_eligibility_traces(gradients, dones, gamma=1.0, lambda_=0.9)
-    torch.testing.assert_close(out, torch.tensor([[1.0, 2.0, 4.8]], device="cuda"), atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(out, torch.tensor([[1.0, 2.9, 3.0]], device="cuda"), atol=1e-5, rtol=1e-5)
 
 
 @cuda_only
@@ -357,15 +366,21 @@ def reference_eligibility_traces(
     lambda_: float,
     seed_values: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pure-PyTorch forward scan -- ground truth."""
+    """Pure-PyTorch forward scan -- ground truth.
+
+    dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     T     = gradients.shape[1]
     out   = torch.zeros_like(gradients)
     carry = torch.zeros(gradients.shape[0], device=gradients.device, dtype=gradients.dtype)
     if seed_values is not None:
         carry = seed_values.clone()
+    prev_done = torch.zeros(gradients.shape[0], device=gradients.device, dtype=gradients.dtype)
     for t in range(T):
-        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        carry     = gradients[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = dones[:, t]
     return out
 
 
@@ -832,9 +847,17 @@ def vectorized_eligibility_traces(
     size actually benchmarked, never checked. parallel_prefix_scan doesn't
     have that failure mode. Not production-hardened for extreme scale beyond
     what this project's kernels target; only used for benchmarking.
+
+    dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); b[t] must therefore gate on dones[t-1] (episode
+    ended at the PRECEDING step, so t starts fresh), not dones[t] -- see
+    eligibility_traces_fused_kernel's docstring for the full argument.
     """
     a = gradients
-    b = gamma * lambda_ * (1.0 - dones)
+    prev_dones = torch.empty_like(dones)
+    prev_dones[:, 0]  = 0.0
+    prev_dones[:, 1:] = dones[:, :-1]
+    b = gamma * lambda_ * (1.0 - prev_dones)
     if seed_values is not None:
         a = a.clone()
         a[:, 0] = a[:, 0] + b[:, 0] * seed_values
@@ -1030,11 +1053,11 @@ def test_discounted_returns_performance():
 
 # Eligibility traces: no truncation/bootstrap path.
 # compute_eligibility_traces is a forward scan that accumulates gradient-weighted
-# eligibility e[t] = g[t] + gamma*lambda*(1-done[t])*e[t-1].  There is no
-# continuation value from the future -- the only boundary value is seed_values
-# (a scalar per env, not per-step).  `truncated` has no meaning here: there is
-# no next-state value to inject at a truncated step.  No truncation correctness
-# test or truncation benchmark is added.
+# eligibility e[t] = g[t] + gamma*lambda*(1-done[t-1])*e[t-1], done[-1]:=0.
+# There is no continuation value from the future -- the only boundary value is
+# seed_values (a scalar per env, not per-step).  `truncated` has no meaning
+# here: there is no next-state value to inject at a truncated step.  No
+# truncation correctness test or truncation benchmark is added.
 
 
 @cuda_only

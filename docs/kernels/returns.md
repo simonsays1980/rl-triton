@@ -151,11 +151,11 @@ $$\mathbf{z}_t = \gamma\lambda\,\mathbf{z}_{t-1} + \nabla_\mathbf{w}\hat{V}(s_t,
 
 The trace $\mathbf{z}_t$ is a decayed accumulation of the value-function gradients at all previously visited states within a single episode. In a rollout buffer containing multiple episodes, the kernel introduces the masked version:
 
-$$\mathbf{z}_t = \gamma\lambda(1 - d_t)\,\mathbf{z}_{t-1} + \nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t), \qquad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}$$
+$$\mathbf{z}_t = \gamma\lambda(1 - d_{t-1})\,\mathbf{z}_{t-1} + \nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t), \qquad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}, \qquad d_{-1} := 0$$
 
-which resets the trace to zero at every episode boundary. This is the general semi-gradient TD(λ) trace and applies to any differentiable function approximator -- including the neural-network value functions this library targets.
+$d_t = 1$ means the episode **ends at** $t$ -- the same convention as `compute_gae` and every other kernel in this package, and the convention a raw Gymnasium `terminated`/`truncated` flag already uses without any shifting. The trace carried *into* $t$ is severed whenever the *preceding* step ended an episode ($d_{t-1}=1$), i.e. whenever $t$ is the first step of a new episode, which resets the trace to zero there. This is the general semi-gradient TD(λ) trace and applies to any differentiable function approximator -- including the neural-network value functions this library targets.
 
-Unlike the backward algorithms, the distinction between terminated and truncated steps does not matter here. In GAE, V-Trace, and Retrace, a truncated step requires injecting $V(s_{t+1}^{\text{true}})$ as a bootstrap into the TD error. The eligibility trace carries no TD error and no continuation value: $\alpha_t = \mathbf{g}_t$ is simply the gradient at the current step. At any boundary, terminated or truncated, the correct action is the same -- zero $\beta_t$ to prevent gradients from the ending episode from bleeding into the new one. The step at $t+1$ starts a fresh trace from $\mathbf{g}_{t+1}$ with no memory of what came before. The caller passes `terminateds` and `truncateds` and the kernel combines them as $d_t$; no `bootstrap_values` argument exists for eligibility traces.
+Unlike the backward algorithms, the distinction between terminated and truncated steps does not matter here. In GAE, V-Trace, and Retrace, a truncated step requires injecting $V(s_{t+1}^{\text{true}})$ as a bootstrap into the TD error. The eligibility trace carries no TD error and no continuation value: $\alpha_t = \mathbf{g}_t$ is simply the gradient at the current step. At any boundary, terminated or truncated, the correct action is the same -- zero $\beta_t$ to prevent gradients from the ending episode from bleeding into the new one. The step at $t+1$ starts a fresh trace from $\mathbf{g}_{t+1}$ with no memory of what came before -- gating on $d_{t-1}$ rather than $d_t$ is what makes this land at the right index: $d_t$ describes the boundary $t$ itself ends at, not the boundary $t$ begins after. The caller passes `terminateds` and `truncateds` and the kernel combines them as $d_t$, unshifted; no `bootstrap_values` argument exists for eligibility traces.
 
 > The trace accumulates the value gradient $\nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t)$, **not** the feature vector $x_t$. Throughout this documentation $x_t$ denotes features; the eligibility-trace input is the gradient.
 
@@ -179,7 +179,7 @@ The decay rate $\gamma\lambda$ ensures that a state visited $k$ steps ago contri
 
 For linear function approximation $\hat{V}(s) = \mathbf{w}^\top x(s)$, the gradient is the feature vector itself, $\nabla_\mathbf{w}\hat{V}(s_t) = x_t$, and the general trace reduces to a decayed accumulation of feature vectors:
 
-$$\mathbf{z}_t = \gamma\lambda(1 - d_t)\,\mathbf{z}_{t-1} + x_t$$
+$$\mathbf{z}_t = \gamma\lambda(1 - d_{t-1})\,\mathbf{z}_{t-1} + x_t$$
 
 This is the **only** place $x_t$ enters the trace. The feature-vector form is the special case of the gradient form, not the other way around.
 
@@ -195,33 +195,33 @@ The field responded to staleness by preferring the forward view: compute the λ-
 
 Writing $\mathbf{g}_t := \nabla_\mathbf{w}\hat{V}(s_t, \mathbf{w}_t)$ for the per-step gradient input:
 
-$$\alpha_t = \mathbf{g}_t, \qquad \beta_t = \gamma\lambda(1-d_t)$$
+$$\alpha_t = \mathbf{g}_t, \qquad \beta_t = \gamma\lambda(1-d_{t-1}), \qquad d_{-1} := 0$$
 
-The form is structurally identical to discounted returns, but processed left-to-right via `_run_scan_forward` instead of right-to-left via `_run_scan`. The forward kernel reads $\alpha$ and $\beta$ in natural time order; no reversal is needed.
+The form is structurally identical to discounted returns, but processed left-to-right via `_run_scan_forward` instead of right-to-left via `_run_scan`. The forward kernel reads $\alpha$ and $\beta$ in natural time order; no reversal is needed. $\beta_t$ reads the *preceding* step's done flag, not $t$'s own -- see [Definition](#definition) above for why the index shifts between the backward and forward kernels.
 
 The $\lambda=0$ case collapses the trace to $\mathbf{z}_t = \mathbf{g}_t$ (current input only, no history); $\lambda=1$ retains the full undiscounted accumulation of all past inputs.
 
 ### How the parallel scan computes a backward-looking trace
 
-The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_t)\,\mathbf{z}_{t-1}$ is sequential in appearance -- each step depends on the previous -- but the same associative structure that enables the backward scan parallelises it equally well in the forward direction.
+The recurrence $\mathbf{z}_t = \mathbf{g}_t + \gamma\lambda(1-d_{t-1})\,\mathbf{z}_{t-1}$ is sequential in appearance -- each step depends on the previous -- but the same associative structure that enables the backward scan parallelises it equally well in the forward direction.
 
 The combine function is identical to the backward case:
 
 $$(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B\,\alpha_A,\; \beta_A \beta_B)$$
 
-One thread block per environment loads the entire sequence $(\mathbf{g}_0, \gamma\lambda(1-d_0)), \ldots, (\mathbf{g}_{T-1}, \gamma\lambda(1-d_{T-1}))$ in natural order. `tl.associative_scan` then computes the prefix reduction in $O(\log T)$ parallel steps across SIMD lanes within the block.
+One thread block per environment loads the entire sequence $(\mathbf{g}_0, \gamma\lambda(1-d_{-1})), \ldots, (\mathbf{g}_{T-1}, \gamma\lambda(1-d_{T-2}))$ in natural order ($d_{-1}=0$ by convention). `tl.associative_scan` then computes the prefix reduction in $O(\log T)$ parallel steps across SIMD lanes within the block.
 
 After the scan, position $t$ holds the pair $(\alpha_{0..t},\, \beta_{0..t})$ where:
 
 $$\alpha_{0..t} = \mathbf{g}_t + \gamma\lambda\,\mathbf{g}_{t-1} + (\gamma\lambda)^2\mathbf{g}_{t-2} + \cdots + (\gamma\lambda)^t\,\mathbf{g}_0$$
 
-$$\beta_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_k)$$
+$$\beta_{0..t} = \prod_{k=0}^{t} \gamma\lambda(1-d_{k-1})$$
 
 The seed $\mathbf{z}_{-1}$ is then folded in with a single fused addition:
 
 $$\mathbf{z}_t = \alpha_{0..t} + \beta_{0..t} \cdot \mathbf{z}_{-1}$$
 
-Done flags collapse any $\beta$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary -- exactly the correct trace reset.
+Done flags collapse any $\beta$ factor to zero, which zeroes all further contributions of past inputs from before the episode boundary -- exactly the correct trace reset. Because $\beta_t$ reads $d_{t-1}$, the reset takes effect starting at the position *after* the flagged step, matching the "episode ends at $t$, new episode begins at $t+1$" convention used throughout this package.
 
 The key observation is that the scan runs the same reduction tree as the backward kernel; the only implementation difference is that the input array is loaded in forward order rather than reversed. Every position in the output corresponds to a partial scan from $t=0$ up to that position, which is precisely the decayed sum of past gradients the trace requires.
 

@@ -24,23 +24,44 @@ def compute_episodic_prefix_sum(
     inputs: torch.Tensor,
     dones: torch.Tensor,
     seed_values: torch.Tensor | None = None,
+    boundary: str = "ends_at",
 ) -> torch.Tensor:
     """
-    Cumulative sum that resets to zero at episode boundaries.
+    Cumulative sum that resets to zero at episode/segment boundaries.
 
-    Recurrence:
+    Two mutually-exclusive boundary conventions, selected by `boundary`:
 
-    - C[t] = x[t] + (1 - done[t]) * C[t-1],  C[-1] = seed
-    - done[t]=1: accumulator resets, C[t] = x[t]
-    - done[t]=0: accumulator continues, C[t] = x[t] + C[t-1]
+    - "ends_at" (default): done[t]=1 means the segment ENDS at t; the reset
+      lands at t+1.
+        C[t] = x[t] + (1 - done[t-1]) * C[t-1],  C[-1] = seed,  done[-1] := 0
+      This is the Gymnasium-next-step / GAE-canonical convention used
+      identically by every other kernel in this library (compute_gae,
+      compute_lambda_returns, compute_discounted_returns, compute_vtrace,
+      compute_retrace, and compute_eligibility_traces). An RL user computing
+      advantages, returns, and a reset-aware timestep counter from one
+      rollout buffer's terminated/truncated flags gets boundary-consistent
+      results across every kernel by default.
+    - "starts_at": done[t]=1 means the segment STARTS at t; the reset lands
+      at t itself, immediately.
+        C[t] = x[t] + (1 - done[t]) * C[t-1],  C[-1] = seed
+      This is the convention sequence-packing callers want: a document-
+      boundary flag marks a new document's first token, and a RoPE local
+      position counter must reset exactly there, not one token later.
+      Pass this explicitly for that use case -- it is not the default.
+
+    In both modes: done[t]=1 accumulator resets (C[t]=x[t], modulo which
+    index the reset is keyed to); done[t]=0 accumulator continues.
 
     Limited to seq_len <= 131072.
 
     Args:
         inputs:      Values to accumulate x[t], [num_envs, seq_len], float32, CUDA.
-        dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
+        dones:       Episode/segment boundary flags (1.0=flagged), [num_envs, seq_len],
+                     float32, CUDA. Meaning depends on `boundary`; never pre-shift
+                     this array yourself -- the kernel handles the index internally.
         seed_values: Initial carry C[-1] per environment, shape [num_envs].
                      Defaults to zeros.
+        boundary:    "ends_at" (default) or "starts_at" -- see above.
 
     Returns:
         prefix_sums: C[t], shape [num_envs, seq_len], float32.
@@ -56,6 +77,8 @@ def compute_episodic_prefix_sum(
             assert seed_values.shape == (num_envs,), \
                 f"seed_values must have shape [{num_envs}], got {seed_values.shape}"
             assert seed_values.is_cuda, "seed_values must be on CUDA"
+        assert boundary in ("ends_at", "starts_at"), \
+            f"boundary must be 'ends_at' or 'starts_at', got {boundary!r}"
 
     assert seq_len <= _FLAT_MAX_SEQ_LEN, (
         f"seq_len={seq_len} exceeds the flat kernel limit {_FLAT_MAX_SEQ_LEN}. "
@@ -83,5 +106,6 @@ def compute_episodic_prefix_sum(
         num_warps=num_warps,
         num_stages=num_stages,
         HAS_SEED=has_seed,
+        BOUNDARY_ENDS_AT=(boundary == "ends_at"),
     )
     return out

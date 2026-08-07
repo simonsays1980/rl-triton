@@ -275,17 +275,27 @@ def compute_eligibility_traces(
 
     Recurrence:
 
-    - z[t] = g[t] + γ·λ·(1 - done[t]) * z[t-1],  z[-1] = seed
+    - z[t] = g[t] + γ·λ·(1 - done[t-1]) * z[t-1],  z[-1] = seed,  done[-1] := 0
 
     g[t] is the per-step input: the value-function gradient ∇_w V̂(s_t) for
     general function approximation, or the feature vector x(s_t) in the linear
     case.  Unlike all other kernels, this scan runs forward in time.
+
+    `done` uses the same convention as every other function in this package
+    (done[t]=1 means the episode ends AT t) -- callers pass the same raw done
+    array used elsewhere, unshifted.  Internally, the trace carried into t is
+    severed whenever the PRECEDING step ended an episode (done[t-1]=1), i.e.
+    whenever t is the first step of a new episode; gating on done[t] instead
+    would sever the carry at the old episode's own last step (still that
+    episode's data) and fail to sever it at the new episode's first step.
     Limited to seq_len <= 131072.
 
     Args:
         gradients:   g[t] -- value-function gradients or feature vectors,
                      [num_envs, seq_len], float32, CUDA.
         dones:       Episode termination flags (1.0=done), [num_envs, seq_len], float32, CUDA.
+                     done[t]=1 means episode ends at t (same convention as
+                     compute_gae etc.); do not pre-shift this array.
         gamma:       Discount factor.
         lambda_:     Trace decay parameter.
         seed_values: Initial trace z[-1] per environment, shape [num_envs].

@@ -240,13 +240,18 @@ def _ref_disc(rewards, dones, gamma, bootstrap=None):
 
 
 def _ref_traces(features, dones, gamma, lambda_, seed=None):
+    """dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     T     = features.shape[1]
     out   = torch.zeros_like(features)
     carry = (seed.clone() if seed is not None
              else torch.zeros(features.shape[0], device=features.device, dtype=features.dtype))
+    prev_done = torch.zeros(features.shape[0], device=features.device, dtype=features.dtype)
     for t in range(T):
-        carry     = features[:, t] + gamma * lambda_ * (1.0 - dones[:, t]) * carry
+        carry     = features[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = dones[:, t]
     return out
 
 
@@ -432,15 +437,21 @@ def numpy_discounted_returns_np_to_triton(rewards_np: np.ndarray, dones_np: np.n
 
 def numpy_eligibility_traces_cpu(features: torch.Tensor, dones: torch.Tensor,
                                   gamma: float, lambda_: float) -> np.ndarray:
-    """Pure NumPy forward scan for eligibility traces on CPU."""
+    """Pure NumPy forward scan for eligibility traces on CPU.
+
+    dones[t]=1 means episode ends AT t (same convention as every other
+    reference in this file); the carry into t is severed by dones[t-1]
+    (episode ended at the PRECEDING step, so t starts fresh), not dones[t]."""
     x = features.cpu().numpy()
     d = dones.cpu().numpy()
     T = x.shape[1]
     out   = np.empty_like(x)
     carry = np.zeros(x.shape[0], dtype=np.float32)
+    prev_done = np.zeros(x.shape[0], dtype=np.float32)
     for t in range(T):
-        carry    = x[:, t] + gamma * lambda_ * (1.0 - d[:, t]) * carry
+        carry     = x[:, t] + gamma * lambda_ * (1.0 - prev_done) * carry
         out[:, t] = carry
+        prev_done = d[:, t]
     return out
 
 
@@ -453,23 +464,41 @@ def numpy_eligibility_traces_np_to_triton(features_np: np.ndarray, dones_np: np.
     return out.cpu().numpy()
 
 
-def numpy_episodic_prefix_sum_cpu(inputs: torch.Tensor, dones: torch.Tensor) -> np.ndarray:
-    """Pure NumPy forward scan for episodic prefix sum on CPU."""
+def numpy_episodic_prefix_sum_cpu(inputs: torch.Tensor, dones: torch.Tensor,
+                                   boundary: str = "ends_at") -> np.ndarray:
+    """Pure NumPy forward scan for episodic prefix sum on CPU.
+
+    Two mutually-exclusive boundary conventions, matching
+    compute_episodic_prefix_sum's `boundary` parameter -- see its docstring
+    and NOTES.md. "ends_at" (default): dones[t]=1 means the segment ends AT
+    t; the reset lands at t+1 (gate on dones[t-1], dones[-1]:=0).
+    "starts_at": dones[t]=1 means the segment starts AT t; the reset lands
+    at t itself (gate on dones[t] directly)."""
     x = inputs.cpu().numpy()
     d = dones.cpu().numpy()
     T = x.shape[1]
     out   = np.empty_like(x)
     carry = np.zeros(x.shape[0], dtype=np.float32)
-    for t in range(T):
-        carry    = x[:, t] + (1.0 - d[:, t]) * carry
-        out[:, t] = carry
+    if boundary == "starts_at":
+        for t in range(T):
+            carry     = x[:, t] + (1.0 - d[:, t]) * carry
+            out[:, t] = carry
+    elif boundary == "ends_at":
+        prev_done = np.zeros(x.shape[0], dtype=np.float32)
+        for t in range(T):
+            carry     = x[:, t] + (1.0 - prev_done) * carry
+            out[:, t] = carry
+            prev_done = d[:, t]
+    else:
+        raise ValueError(f"boundary must be 'ends_at' or 'starts_at', got {boundary!r}")
     return out
 
 
-def numpy_episodic_prefix_sum_np_to_triton(inputs_np: np.ndarray, dones_np: np.ndarray) -> np.ndarray:
+def numpy_episodic_prefix_sum_np_to_triton(inputs_np: np.ndarray, dones_np: np.ndarray,
+                                            boundary: str = "ends_at") -> np.ndarray:
     """NumPy → GPU Triton → NumPy end-to-end adoption path for episodic prefix sum."""
     to_gpu = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to("cuda", torch.float32)
-    out = compute_episodic_prefix_sum(to_gpu(inputs_np), to_gpu(dones_np))
+    out = compute_episodic_prefix_sum(to_gpu(inputs_np), to_gpu(dones_np), boundary=boundary)
     torch.cuda.synchronize()
     return out.cpu().numpy()
 
@@ -1673,6 +1702,21 @@ def bench_returns(selected=frozenset({"lambda_returns", "discounted_returns", "e
                                              gamma=0.99, lambda_=0.9)
             trc_vec_dev_ms, _ = _device_profile(c_traces_vec, rewards, dones, gamma=0.99, lambda_=0.9)
             trc_loop_ms = _bench_cpu(_ref_traces, rewards, dones, gamma=0.99, lambda_=0.9)
+            # Correctness-gate the numpy/e2e baselines before trusting their
+            # timing, same principle as the kernel/vec-baseline gate above --
+            # assert_correctness's own docstring: "the gate that must hold --
+            # for the Triton kernel AND for every baseline compared against
+            # it -- before any timing is trusted." These two were previously
+            # timed but never checked.
+            trc_np_out = torch.from_numpy(
+                numpy_eligibility_traces_cpu(rewards, dones, gamma=0.99, lambda_=0.9)
+            ).to(trc_ref.device)
+            assert_correctness(trc_np_out, trc_ref, f"eligibility_traces[{num_envs}x{seq_len}] (numpy baseline)")
+            trc_e2e_out = torch.from_numpy(
+                numpy_eligibility_traces_np_to_triton(rewards_np, dones_np, gamma=0.99, lambda_=0.9)
+            ).to(trc_ref.device)
+            assert_correctness(trc_e2e_out, trc_ref, f"eligibility_traces[{num_envs}x{seq_len}] (e2e np->triton->np)")
+
             trc_np_ms = _bench_cpu(numpy_eligibility_traces_cpu, rewards, dones, gamma=0.99, lambda_=0.9)
             trc_e2e_ms = _bench_cpu(numpy_eligibility_traces_np_to_triton, rewards_np, dones_np,
                                      gamma=0.99, lambda_=0.9)
@@ -2026,6 +2070,19 @@ def bench_prefix_sum():
         # oracle, so no extra function needed here (same pattern as
         # bench_returns()'s _ref_traces/_ref_disc doubling as both).
         loop_ms  = _bench_cpu(reference_episodic_prefix_sum, inputs, dones)
+
+        # Correctness-gate the numpy/e2e baselines before trusting their
+        # timing, same principle as the kernel/vec-baseline gate above --
+        # assert_correctness's own docstring: "the gate that must hold --
+        # for the Triton kernel AND for every baseline compared against it
+        # -- before any timing is trusted." These two were previously timed
+        # but never checked. Both default to boundary="ends_at", matching
+        # ref_out above.
+        numpy_out = torch.from_numpy(numpy_episodic_prefix_sum_cpu(inputs, dones)).to(ref_out.device)
+        assert_correctness(numpy_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}] (numpy baseline)")
+        e2e_out = torch.from_numpy(numpy_episodic_prefix_sum_np_to_triton(inputs_np, dones_np)).to(ref_out.device)
+        assert_correctness(e2e_out, ref_out, f"prefix_sum[{num_envs}x{seq_len}] (e2e np->triton->np)")
+
         numpy_ms = _bench_cpu(numpy_episodic_prefix_sum_cpu, inputs, dones)
         e2e_ms   = _bench_cpu(numpy_episodic_prefix_sum_np_to_triton, inputs_np, dones_np)
 

@@ -114,7 +114,8 @@ tensor.  There is no per-row length argument.  When episodes in a batch differ
 in length, use the **zero-decay convention**:
 
 Set the decay factor to `0.0` at the terminal step of each episode.  Because
-every kernel implements a recurrence of the form
+every *backward* kernel (GAE, V-Trace, Retrace, TD(λ) returns, discounted
+returns) implements a recurrence of the form
 
 ```
 A[t] = u[t] + decay[t] * A[t+1]
@@ -144,55 +145,59 @@ numpy do when concatenating episodes into fixed-length trajectory windows.
 
 ### Eligibility traces (forward scan)
 
-`compute_eligibility_traces` runs a forward scan.  The same `done` flag zeroes
-`v[t] = gamma * lambda * (1 - done[t])`, resetting the trace at episode
-boundaries in exactly the same way.
+`compute_eligibility_traces` runs a forward scan.  The trace carried *into*
+`t` is severed by the *preceding* step's done flag: `v[t] = gamma * lambda *
+(1 - done[t-1])`, `done[-1] := 0`.  Gating on `done[t-1]` rather than
+`done[t]` is what makes a forward recurrence reset at the correct index --
+see the section below for why.
 
 ---
 
-## `done` flag convention: end-of-episode vs. start-of-episode
+## `done` flag convention: end-of-episode, everywhere
 
-All kernels in this package use the **start-of-episode** convention for `done`
-flags:
-
-> `done[t] = 1` means step `t` is the **first step of a new episode**.  The
-> carry from the previous step is zeroed *before* accumulating step `t`.
-
-This is expressed directly in the recurrence as `v[t] = f(1 - done[t])`, so
-`done[t] = 1` → `v[t] = 0` → the carry is dropped at `t` itself.
-
-### Gymnasium uses the opposite convention
-
-Gymnasium (and most gym-compatible environments) use the **end-of-episode**
-convention:
+All kernels in this package use the **end-of-episode** convention for `done`
+flags, matching Gymnasium (and most gym-compatible environments) directly:
 
 > `done[t] = 1` means step `t` is the **last step of the current episode**.
 > Step `t` still belongs to the ending episode; the new episode begins at
 > `t+1`.
 
-Passing Gymnasium `dones` directly to any kernel in this package is **silently
-wrong**: the episode boundary will be applied one step too early.
+Callers pass the same raw `terminated | truncated` array to every kernel in
+this package unshifted -- `compute_gae`, `compute_vtrace`, `compute_retrace`,
+`compute_lambda_returns`, `compute_discounted_returns`,
+`compute_eligibility_traces`, and `compute_episodic_prefix_sum`'s default
+mode all agree on this convention.  There is no adaptation step for a
+Gymnasium `dones`/`terminated`/`truncated` buffer; it is the native input
+format.
 
-### Adapting Gymnasium dones
+### Why backward and forward kernels read a different index
 
-Shift the `done` signal forward by one position before passing it to the
-kernel:
+A **backward** kernel (`A[t] = u[t] + decay[t] * A[t+1]`) gates the edge
+*leaving* `t`, so it reads `done[t]` directly: `decay[t] = gamma * lambda_ *
+(1 - done[t])`.  `done[t] = 1` severs `t`'s connection to `t+1`, which is
+exactly the edge that needs cutting when `t` is the episode's last step.
 
-```python
-# gym_dones[t] = 1 means t is the last step of an episode (Gymnasium convention)
-# kernel_dones[t] = 1 means t is the first step of a new episode (this package)
-kernel_dones = torch.roll(gym_dones, shifts=1, dims=1)
-kernel_dones[:, 0] = 0  # first step is never a boundary carry-reset
-```
+A **forward** kernel (`A[t] = u[t] + decay[t] * A[t-1]`) gates the edge
+*entering* `t` instead.  Using the same raw `done[t]` there would sever the
+wrong edge -- it would cut `t`'s connection to `t-1` (still the same,
+still-running episode) instead of `t`'s connection to the episode that ended
+*before* it.  The forward kernels in this package (`compute_eligibility_traces`,
+and `compute_episodic_prefix_sum` in its default mode) correct for this
+internally by reading `done[t-1]` (`done[-1] := 0`) rather than `done[t]` --
+the caller never shifts anything; both directions accept the identical,
+unshifted `done` array.
 
-After this shift, `done` at the original terminal step `t` now sits at `t+1`,
-correctly zeroing the carry at the first step of the next episode.
+### `compute_episodic_prefix_sum`'s `boundary` parameter is the one exception
 
-### Which convention to use
-
-If you build `dones` yourself (e.g. from `truncated | terminated` in a rollout
-buffer), use the start-of-episode convention directly -- place `done=1` at the
-first timestep of each new episode -- and no shift is needed.
+Sequence-packing callers (RoPE position IDs, and similar) construct their own
+boundary array directly -- a document-boundary flag that marks a new
+document's *first* token, not an ending token -- and want the reset to land
+at that exact flagged index, not one step later.  `compute_episodic_prefix_sum`
+supports this via `boundary="starts_at"` (non-default; the default is
+`"ends_at"`, matching every other kernel above).  See
+`docs/kernels/prefix_sum.md` for both modes in full.  This is the only
+kernel in the package with two supported conventions -- everything else is
+`ends_at`-only.
 
 ---
 
@@ -1020,16 +1025,51 @@ underflow.
 
 **`vectorized_episodic_prefix_sum`:** the old formula
 (`running = cumsum(inputs); boundary = running*dones; offset =
-cumsum(boundary)-boundary; result = running-offset`) resets one step later
-than this codebase's convention (`done[t]=1` means the reset applies *at*
-`t` itself, not at `t+1`). Wrong at every shape ever benchmarked with it --
-44-95.8% of elements, including the smallest configs -- because the
-baseline's own correctness had never been checked, only timed. **Fix:**
-replaced with `parallel_prefix_scan(inputs, 1.0 - dones)`, which encodes the
-reset convention directly rather than reconstructing it after the fact.
-Any previously-published prefix-sum speedup number predates this fix and
-should not be trusted; the current `benchmarks.md` table reflects the
-corrected baseline.
+cumsum(boundary)-boundary; result = running-offset`) disagreed with this
+file's own sequential reference at 44-95.8% of elements, including the
+smallest configs, because the baseline's own correctness had never been
+checked, only timed. **Fix:** replaced with `parallel_prefix_scan(inputs,
+1.0 - dones)`, which encodes the reset convention directly rather than
+reconstructing it after the fact. This fix was and remains correct: it made
+the baseline match the single boundary convention the kernel implemented at
+the time (`done[t]=1` resets *at* `t` itself). Any previously-published
+prefix-sum speedup number predating this fix should not be trusted; the
+current `benchmarks.md` table reflects the corrected baseline.
+
+---
+
+## `compute_episodic_prefix_sum`'s two boundary conventions
+
+The kernel supports two mutually-exclusive interpretations of `dones`,
+selected via the `boundary` parameter, because the primitive has two real
+use cases that disagree about where a `dones[t]=1` flag's reset should land:
+
+- `boundary='ends_at'` (default): `done[t]=1` means the segment *ends at*
+  `t`; the reset lands at `t+1`. This is the Gymnasium-next-step /
+  GAE-canonical convention used identically by every other kernel in this
+  library (`compute_gae`, `compute_lambda_returns`,
+  `compute_discounted_returns`, `compute_vtrace`, `compute_retrace`, and
+  `compute_eligibility_traces`). An RL user computing advantages, returns,
+  and a reset-aware timestep counter from one rollout buffer's
+  `terminated`/`truncated` flags gets boundary-consistent results across
+  every kernel by default.
+- `boundary='starts_at'`: `done[t]=1` means the segment *starts at* `t`; the
+  reset lands at `t` itself, immediately. This is the convention
+  sequence-packing callers want: a document-boundary flag marks a new
+  document's first token, and the RoPE local-position counter must reset
+  exactly there, not one token later. Pass this explicitly for that use
+  case -- it is not the default.
+
+Prior to this parameter's introduction (see the entry immediately above),
+the kernel supported only `starts_at` behavior unconditionally, and that
+fix stays correctly credited: it made `vectorized_episodic_prefix_sum`
+match the convention the kernel *was implementing at the time*. It was not,
+however, an evaluation of whether `starts_at` is the only correct
+convention for every use of this primitive -- the RL-side consistency
+argument (this kernel's `dones` semantics silently disagreeing with every
+backward kernel's, and with `compute_eligibility_traces`, when fed the same
+rollout-buffer `dones` array) was identified later, motivating this
+parameter rather than a second flip of the default.
 
 ---
 

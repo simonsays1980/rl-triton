@@ -19,16 +19,40 @@ def reference_episodic_prefix_sum(
     inputs: torch.Tensor,
     dones: torch.Tensor,
     seed_values: torch.Tensor | None = None,
+    boundary: str = "ends_at",
 ) -> torch.Tensor:
-    """Pure-PyTorch forward scan -- ground truth for correctness tests only."""
+    """Pure-PyTorch forward scan -- ground truth for correctness tests only.
+
+    Two mutually-exclusive boundary conventions, matching
+    compute_episodic_prefix_sum's `boundary` parameter:
+
+    - "ends_at" (default): dones[t]=1 means the segment ends AT t; the reset
+      lands at t+1 (gate the carry into t on dones[t-1], dones[-1]:=0).
+      GAE-canonical -- same convention as every other kernel in this
+      library when fed the same rollout-buffer dones array.
+    - "starts_at": dones[t]=1 means the segment starts AT t; the reset lands
+      at t itself (gate the carry into t on dones[t] directly). This is the
+      sequence-packing convention (a document-boundary flag marks a new
+      document's first token).
+    """
     num_envs, seq_len = inputs.shape
     out  = torch.zeros_like(inputs)
     carry = torch.zeros(num_envs, device=inputs.device, dtype=inputs.dtype)
     if seed_values is not None:
         carry = seed_values.clone()
-    for t in range(seq_len):
-        carry     = inputs[:, t] + (1.0 - dones[:, t]) * carry
-        out[:, t] = carry
+
+    if boundary == "starts_at":
+        for t in range(seq_len):
+            carry     = inputs[:, t] + (1.0 - dones[:, t]) * carry
+            out[:, t] = carry
+    elif boundary == "ends_at":
+        prev_done = torch.zeros(num_envs, device=inputs.device, dtype=inputs.dtype)
+        for t in range(seq_len):
+            carry     = inputs[:, t] + (1.0 - prev_done) * carry
+            out[:, t] = carry
+            prev_done = dones[:, t]
+    else:
+        raise ValueError(f"boundary must be 'ends_at' or 'starts_at', got {boundary!r}")
     return out
 
 
@@ -38,71 +62,115 @@ def reference_episodic_prefix_sum(
 
 @cuda_only
 def test_prefix_sum_known_values_no_reset():
-    # No episode boundaries -- plain cumulative sum.
+    # No episode boundaries -- plain cumulative sum. Convention-invariant:
+    # identical under both boundary modes since no done flag ever fires.
     # inputs=[1,2,3], dones=[0,0,0]
     # C[0]=1, C[1]=1+2=3, C[2]=3+3=6
     inputs = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones  = torch.zeros(1, 3, device="cuda")
     expected = torch.tensor([[1.0, 3.0, 6.0]], device="cuda")
-    torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones), expected, atol=1e-5, rtol=1e-5
-    )
+    for boundary in ("ends_at", "starts_at"):
+        torch.testing.assert_close(
+            compute_episodic_prefix_sum(inputs, dones, boundary=boundary),
+            expected, atol=1e-5, rtol=1e-5,
+        )
 
 
 @cuda_only
-def test_prefix_sum_known_values_reset_at_start():
-    # done=1 at t=0 resets carry immediately: C[0] = inputs[0] + (1-1)*carry = inputs[0].
+def test_prefix_sum_known_values_reset_at_start_starts_at():
+    # starts_at: done=1 at t=0 resets carry immediately: C[0] = inputs[0] + (1-1)*carry = inputs[0].
     # inputs=[5,2,3], dones=[1,0,0]
     # C[0]=5, C[1]=5+2=7, C[2]=7+3=10
     inputs = torch.tensor([[5.0, 2.0, 3.0]], device="cuda")
     dones  = torch.tensor([[1.0, 0.0, 0.0]], device="cuda")
     expected = torch.tensor([[5.0, 7.0, 10.0]], device="cuda")
     torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones), expected, atol=1e-5, rtol=1e-5
+        compute_episodic_prefix_sum(inputs, dones, boundary="starts_at"),
+        expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
-def test_prefix_sum_known_values_mid_reset():
-    # done=1 at t=2 drops the carry: C[2] = inputs[2] + (1-done[2])*C[1] = 3 + 0*3 = 3.
+def test_prefix_sum_known_values_reset_at_start_ends_at():
+    # ends_at: done=1 at t=0 means the segment ending at t=0 is a 1-step
+    # segment; the reset lands at t=1, not t=0.
+    # inputs=[5,2,3], dones=[1,0,0]
+    # C[0]=5+(1-done[-1])*0=5, C[1]=2+(1-done[0])*C[0]=2+0*5=2, C[2]=3+(1-done[1])*C[1]=3+1*2=5
+    inputs = torch.tensor([[5.0, 2.0, 3.0]], device="cuda")
+    dones  = torch.tensor([[1.0, 0.0, 0.0]], device="cuda")
+    expected = torch.tensor([[5.0, 2.0, 5.0]], device="cuda")
+    torch.testing.assert_close(
+        compute_episodic_prefix_sum(inputs, dones),  # default boundary="ends_at"
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
+def test_prefix_sum_known_values_mid_reset_starts_at():
+    # starts_at: done=1 at t=2 drops the carry: C[2] = inputs[2] + (1-done[2])*C[1] = 3 + 0*3 = 3.
     # inputs=[1,2,3,4], dones=[0,0,1,0]
     # C[0]=1, C[1]=1+2=3, C[2]=3 (carry zeroed), C[3]=3+4=7
     inputs = torch.tensor([[1.0, 2.0, 3.0, 4.0]], device="cuda")
     dones  = torch.tensor([[0.0, 0.0, 1.0, 0.0]], device="cuda")
     expected = torch.tensor([[1.0, 3.0, 3.0, 7.0]], device="cuda")
     torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones), expected, atol=1e-5, rtol=1e-5
+        compute_episodic_prefix_sum(inputs, dones, boundary="starts_at"),
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
+def test_prefix_sum_known_values_mid_reset_ends_at():
+    # ends_at: done=1 at t=2 means the segment ENDS at t=2; the reset lands
+    # at t=3, one step later than starts_at.
+    # inputs=[1,2,3,4], dones=[0,0,1,0]
+    # C[0]=1, C[1]=1+2=3, C[2]=3+3=6 (t=2 still belongs to the ending segment), C[3]=4 (reset)
+    inputs = torch.tensor([[1.0, 2.0, 3.0, 4.0]], device="cuda")
+    dones  = torch.tensor([[0.0, 0.0, 1.0, 0.0]], device="cuda")
+    expected = torch.tensor([[1.0, 3.0, 6.0, 4.0]], device="cuda")
+    torch.testing.assert_close(
+        compute_episodic_prefix_sum(inputs, dones),  # default boundary="ends_at"
+        expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
 def test_prefix_sum_known_values_all_resets():
     # Every step is a terminal -- each output equals its own input.
+    # Convention-invariant: under ends_at, every step being flagged means
+    # every NEXT step resets, which for an all-ones pattern coincides with
+    # every step resetting at its own index.
     inputs = torch.tensor([[1.0, 2.0, 3.0]], device="cuda")
     dones  = torch.ones(1, 3, device="cuda")
-    torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones), inputs, atol=1e-6, rtol=1e-6
-    )
+    for boundary in ("ends_at", "starts_at"):
+        torch.testing.assert_close(
+            compute_episodic_prefix_sum(inputs, dones, boundary=boundary),
+            inputs, atol=1e-6, rtol=1e-6,
+        )
 
 
 @cuda_only
 def test_prefix_sum_known_values_seed():
-    # Non-zero seed carries into t=0 unless done=1 at t=0.
+    # Non-zero seed carries into t=0 unless done=1 at t=0 under starts_at;
+    # under ends_at the seed always applies unconditionally at t=0 (nothing
+    # precedes t=0 to gate it). No done=1 fires in this test either way, so
+    # both modes agree.
     # seed=10, inputs=[1,2], dones=[0,0]
     # C[0]=1+(1-0)*10=11, C[1]=2+(1-0)*11=13
     inputs = torch.tensor([[1.0, 2.0]], device="cuda")
     dones  = torch.zeros(1, 2, device="cuda")
     seed   = torch.tensor([10.0], device="cuda")
     expected = torch.tensor([[11.0, 13.0]], device="cuda")
-    torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones, seed_values=seed),
-        expected, atol=1e-5, rtol=1e-5,
-    )
+    for boundary in ("ends_at", "starts_at"):
+        torch.testing.assert_close(
+            compute_episodic_prefix_sum(inputs, dones, seed_values=seed, boundary=boundary),
+            expected, atol=1e-5, rtol=1e-5,
+        )
 
 
 @cuda_only
-def test_prefix_sum_known_values_seed_cancelled_by_done():
-    # done=1 at t=0 means the seed does not carry over.
+def test_prefix_sum_known_values_seed_cancelled_by_done_starts_at():
+    # starts_at: done=1 at t=0 means the seed does not carry over.
     # seed=10, inputs=[1,2], dones=[1,0]
     # C[0]=1+(1-1)*10=1, C[1]=2+(1-0)*1=3
     inputs = torch.tensor([[1.0, 2.0]], device="cuda")
@@ -110,13 +178,30 @@ def test_prefix_sum_known_values_seed_cancelled_by_done():
     seed   = torch.tensor([10.0], device="cuda")
     expected = torch.tensor([[1.0, 3.0]], device="cuda")
     torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones, seed_values=seed),
+        compute_episodic_prefix_sum(inputs, dones, seed_values=seed, boundary="starts_at"),
         expected, atol=1e-5, rtol=1e-5,
     )
 
 
 @cuda_only
-def test_prefix_sum_known_values_batch():
+def test_prefix_sum_known_values_seed_cancelled_by_done_ends_at():
+    # ends_at: the seed is "history from before t=0" and always applies
+    # unconditionally at t=0 -- nothing precedes t=0 to gate it. done[0]=1's
+    # effect instead resets the carry entering t=1.
+    # seed=10, inputs=[1,2], dones=[1,0]
+    # C[0]=1+(1-done[-1])*10=1+10=11, C[1]=2+(1-done[0])*C[0]=2+0*11=2
+    inputs = torch.tensor([[1.0, 2.0]], device="cuda")
+    dones  = torch.tensor([[1.0, 0.0]], device="cuda")
+    seed   = torch.tensor([10.0], device="cuda")
+    expected = torch.tensor([[11.0, 2.0]], device="cuda")
+    torch.testing.assert_close(
+        compute_episodic_prefix_sum(inputs, dones, seed_values=seed),  # default boundary="ends_at"
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
+def test_prefix_sum_known_values_batch_starts_at():
     # Two environments with independent accumulations.
     # Env 0: no resets, C=[1,3,6]
     # Env 1: reset at t=1, C=[4,2,5]
@@ -124,7 +209,22 @@ def test_prefix_sum_known_values_batch():
     dones  = torch.tensor([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], device="cuda")
     expected = torch.tensor([[1.0, 3.0, 6.0], [4.0, 2.0, 5.0]], device="cuda")
     torch.testing.assert_close(
-        compute_episodic_prefix_sum(inputs, dones), expected, atol=1e-5, rtol=1e-5
+        compute_episodic_prefix_sum(inputs, dones, boundary="starts_at"),
+        expected, atol=1e-5, rtol=1e-5,
+    )
+
+
+@cuda_only
+def test_prefix_sum_known_values_batch_ends_at():
+    # Two environments with independent accumulations.
+    # Env 0: no resets, C=[1,3,6] (unchanged -- convention-invariant here)
+    # Env 1: segment ends at t=1, reset lands at t=2, C=[4,6,3]
+    inputs = torch.tensor([[1.0, 2.0, 3.0], [4.0, 2.0, 3.0]], device="cuda")
+    dones  = torch.tensor([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], device="cuda")
+    expected = torch.tensor([[1.0, 3.0, 6.0], [4.0, 6.0, 3.0]], device="cuda")
+    torch.testing.assert_close(
+        compute_episodic_prefix_sum(inputs, dones),  # default boundary="ends_at"
+        expected, atol=1e-5, rtol=1e-5,
     )
 
 
@@ -133,19 +233,21 @@ def test_prefix_sum_known_values_batch():
 # ---------------------------------------------------------------------------
 
 @cuda_only
-def test_prefix_sum_correctness_basic():
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
+def test_prefix_sum_correctness_basic(boundary):
     torch.manual_seed(0)
     num_envs, seq_len = 64, 512
     inputs = torch.randn(num_envs, seq_len, device="cuda")
     dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
 
-    expected = reference_episodic_prefix_sum(inputs, dones)
-    actual   = compute_episodic_prefix_sum(inputs, dones)
+    expected = reference_episodic_prefix_sum(inputs, dones, boundary=boundary)
+    actual   = compute_episodic_prefix_sum(inputs, dones, boundary=boundary)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
 @pytest.mark.parametrize("num_envs,seq_len", [
     (1,   1),
     (1,   7),       # non-power-of-2
@@ -154,65 +256,69 @@ def test_prefix_sum_correctness_basic():
     (128, 1024),
     (256, 2048),
 ])
-def test_prefix_sum_correctness_shapes(num_envs, seq_len):
+def test_prefix_sum_correctness_shapes(num_envs, seq_len, boundary):
     torch.manual_seed(42)
     inputs = torch.randn(num_envs, seq_len, device="cuda")
     dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
 
-    expected = reference_episodic_prefix_sum(inputs, dones)
-    actual   = compute_episodic_prefix_sum(inputs, dones)
+    expected = reference_episodic_prefix_sum(inputs, dones, boundary=boundary)
+    actual   = compute_episodic_prefix_sum(inputs, dones, boundary=boundary)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
-def test_prefix_sum_no_dones():
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
+def test_prefix_sum_no_dones(boundary):
     """With no episode boundaries the result is a standard prefix sum."""
     torch.manual_seed(1)
     inputs = torch.randn(16, 256, device="cuda")
     dones  = torch.zeros(16, 256, device="cuda")
 
-    expected = reference_episodic_prefix_sum(inputs, dones)
-    actual   = compute_episodic_prefix_sum(inputs, dones)
+    expected = reference_episodic_prefix_sum(inputs, dones, boundary=boundary)
+    actual   = compute_episodic_prefix_sum(inputs, dones, boundary=boundary)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
-def test_prefix_sum_all_dones():
-    """All terminals -- output equals input elementwise."""
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
+def test_prefix_sum_all_dones(boundary):
+    """All terminals -- output equals input elementwise, both boundary modes."""
     torch.manual_seed(2)
     inputs = torch.randn(16, 256, device="cuda")
     dones  = torch.ones(16, 256, device="cuda")
 
-    actual = compute_episodic_prefix_sum(inputs, dones)
+    actual = compute_episodic_prefix_sum(inputs, dones, boundary=boundary)
     torch.testing.assert_close(actual, inputs, atol=1e-6, rtol=1e-6)
 
 
 @cuda_only
-def test_prefix_sum_with_seed():
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
+def test_prefix_sum_with_seed(boundary):
     torch.manual_seed(3)
     num_envs, seq_len = 32, 128
     inputs = torch.randn(num_envs, seq_len, device="cuda")
     dones  = (torch.rand(num_envs, seq_len, device="cuda") < 0.05).float()
     seed   = torch.randn(num_envs, device="cuda")
 
-    expected = reference_episodic_prefix_sum(inputs, dones, seed_values=seed)
-    actual   = compute_episodic_prefix_sum(inputs, dones, seed_values=seed)
+    expected = reference_episodic_prefix_sum(inputs, dones, seed_values=seed, boundary=boundary)
+    actual   = compute_episodic_prefix_sum(inputs, dones, seed_values=seed, boundary=boundary)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
 
 @cuda_only
-def test_prefix_sum_non_contiguous_input():
+@pytest.mark.parametrize("boundary", ["ends_at", "starts_at"])
+def test_prefix_sum_non_contiguous_input(boundary):
     """Wrapper must handle non-contiguous inputs via .contiguous()."""
     torch.manual_seed(4)
     base   = torch.randn(64, 512, 2, device="cuda")
     inputs = base[..., 0]
     dones  = (torch.rand(64, 512, 2, device="cuda") < 0.05).float()[..., 0]
 
-    expected = reference_episodic_prefix_sum(inputs.contiguous(), dones.contiguous())
-    actual   = compute_episodic_prefix_sum(inputs, dones)
+    expected = reference_episodic_prefix_sum(inputs.contiguous(), dones.contiguous(), boundary=boundary)
+    actual   = compute_episodic_prefix_sum(inputs, dones, boundary=boundary)
 
     torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
 
@@ -240,25 +346,36 @@ BENCH_CONFIGS = [
 def vectorized_episodic_prefix_sum(
     inputs: torch.Tensor,
     dones: torch.Tensor,
+    boundary: str = "ends_at",
 ) -> torch.Tensor:
     """
     Episodic prefix sum via parallel_prefix_scan -- a strong compiled baseline
     a competent PyTorch user would write to avoid a Python timestep loop.
 
-    reference_episodic_prefix_sum's (and the kernel's, per its own ground-
-    truth tests e.g. test_prefix_sum_known_values_reset_at_start) convention
-    is carry = inputs[t] + (1-dones[t])*carry -- dones[t]=1 means the reset
-    already applies to step t itself (out[t] = inputs[t] alone, no carry-in),
-    not "t is the last step before a reset takes effect". This is exactly
-    the recurrence parallel_prefix_scan(a, b) computes: z[t] = a[t] + b[t]*z[t-1].
+    Two mutually-exclusive boundary conventions, matching
+    compute_episodic_prefix_sum's `boundary` parameter (see its docstring
+    and NOTES.md for the full rationale):
 
-    An earlier cumsum-difference formula here effectively deferred the reset
-    by one step, and was wrong at ~95% of elements at EVERY shape ever
-    benchmarked -- never caught because this file's own CONFIGS loop only
-    ever checked the Triton kernel against the reference, never this vec
-    baseline's own output (see NOTES.md).
+    - "starts_at": dones[t]=1 means the reset applies AT step t itself
+      (out[t] = inputs[t] alone, no carry-in). b[t] = 1 - dones[t] directly
+      -- this is exactly the recurrence parallel_prefix_scan(a, b) computes:
+      z[t] = a[t] + b[t]*z[t-1].
+    - "ends_at" (default): dones[t]=1 means the segment ENDS at t; the reset
+      lands at t+1. b[t] must gate on the PRECEDING step's flag instead:
+      b[t] = 1 - dones[t-1], dones[-1] := 0 -- built here via a manually
+      shifted `prev_dones` tensor (not torch.roll, since roll wraps the
+      last element around to the front instead of zeroing it).
     """
-    return parallel_prefix_scan(inputs, 1.0 - dones)
+    if boundary == "starts_at":
+        b = 1.0 - dones
+    elif boundary == "ends_at":
+        prev_dones = torch.empty_like(dones)
+        prev_dones[:, 0]  = 0.0
+        prev_dones[:, 1:] = dones[:, :-1]
+        b = 1.0 - prev_dones
+    else:
+        raise ValueError(f"boundary must be 'ends_at' or 'starts_at', got {boundary!r}")
+    return parallel_prefix_scan(inputs, b)
 
 
 @cuda_only

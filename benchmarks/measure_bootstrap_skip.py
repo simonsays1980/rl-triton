@@ -37,6 +37,7 @@ Writes benchmarks/bootstrap_skip.md.
 import argparse
 import datetime
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -158,36 +159,65 @@ def main():
               f"saved: {saved_ms:.4f}ms ({pct_of_with:.1f}% of the True-path total)")
 
     date = datetime.date.today().isoformat()
-    lines = [
+    header = [
         "# HAS_BOOTSTRAP scalar-allocation skip: isolated measurement",
         "",
-        f"*Measured on {gpu_label} · {date} · isolates `gae_fused_kernel`'s "
-        "`HAS_BOOTSTRAP` compile-time branch directly, bypassing `compute_gae`'s "
-        "dispatch, so no other cost (truncation handling, wrapper overhead) is mixed in.*",
+        "Isolates `gae_fused_kernel`'s `HAS_BOOTSTRAP` compile-time branch "
+        "directly, bypassing `compute_gae`'s dispatch, so no other cost "
+        "(truncation handling, wrapper overhead) is mixed in.",
         "",
-        "Run via `python benchmarks/measure_bootstrap_skip.py`. Not part of the release "
-        "sweep (`bench_release.py`) -- GPU/Triton/driver-version specific by design; "
-        "re-run to check whether a cited percentage (e.g. the "
-        "`gae_fused_kernel` docstring's \"~33% at 128x1024\") is still current rather "
-        "than trusting it indefinitely.",
+        "Run via `python benchmarks/measure_bootstrap_skip.py [--gpu LABEL]`. "
+        "Not part of the release sweep (`bench_release.py`) -- "
+        "GPU/Triton/driver-version specific by design; re-run to check "
+        "whether a cited percentage (e.g. the `gae_fused_kernel` "
+        "docstring's \"~33% at 128x1024\") is still current rather than "
+        "trusting it indefinitely.",
         "",
-        "Both configurations are asserted bit-for-bit identical in output before any "
-        "timing is trusted (an all-zeros bootstrap buffer is mathematically a no-op, "
-        "so `HAS_BOOTSTRAP=True` with zeros and `HAS_BOOTSTRAP=False` must agree exactly).",
+        "Both configurations are asserted bit-for-bit identical in output "
+        "before any timing is trusted (an all-zeros bootstrap buffer is "
+        "mathematically a no-op, so `HAS_BOOTSTRAP=True` with zeros and "
+        "`HAS_BOOTSTRAP=False` must agree exactly).",
+        "",
+        "This file is an UPSERT KEYED BY GPU, like "
+        "`docs/benchmark-history/unreleased.md` -- re-running on the same "
+        "GPU replaces that GPU's own section in place; running on a "
+        "different GPU appends a new section, leaving others untouched. "
+        "Never a wholesale overwrite.",
+    ]
+
+    section_lines = [
+        f"## {gpu_label} · {date}",
         "",
         "| num_envs | seq_len | HAS_BOOTSTRAP=True (ms) | HAS_BOOTSTRAP=False (ms) | saved (ms) | saved (% of True-path total) |",
         "|:--------:|:-------:|:------------------------:|:--------------------------:|:----------:|:-----------------------------:|",
     ]
     for r in rows:
-        lines.append(
+        section_lines.append(
             f"| {r['num_envs']:>8} | {r['seq_len']:>7} | "
             f"{r['with_ms']:>24.4f} | {r['without_ms']:>26.4f} | "
             f"{r['saved_ms']:>10.4f} | {r['pct_of_with']:>29.1f} |"
         )
+    new_section = "\n".join(section_lines) + "\n"
 
     out_path = Path(__file__).parent / "bootstrap_skip.md"
-    out_path.write_text("\n".join(lines) + "\n")
-    print(f"\nWrote {out_path}")
+    section_re = re.compile(r"(?m)^## (.+?) · \d{4}-\d{2}-\d{2}\n\n(?:\|.*\n)+")
+    if out_path.exists():
+        existing = out_path.read_text()
+        # Split off everything before the first "## <gpu> ·" section (the
+        # shared header block) so it can be regenerated fresh each run
+        # without accumulating stale duplicates.
+        first_section_match = re.search(r"(?m)^## ", existing)
+        prior_sections_text = existing[first_section_match.start():] if first_section_match else ""
+        kept_full = [
+            m.group(0) for m in section_re.finditer(prior_sections_text)
+            if m.group(1) != gpu_label
+        ]
+        body = "\n".join(kept_full) + ("\n" if kept_full else "") + new_section
+    else:
+        body = new_section
+
+    out_path.write_text("\n".join(header) + "\n\n" + body)
+    print(f"\nWrote {out_path} (section for {gpu_label!r})")
 
 
 if __name__ == "__main__":

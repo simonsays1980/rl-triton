@@ -8,6 +8,15 @@ Both configurations are asserted bit-for-bit identical in output before any timi
 
 This file is an UPSERT KEYED BY GPU, like `docs/benchmark-history/unreleased.md` -- re-running on the same GPU replaces that GPU's own section in place; running on a different GPU appends a new section, leaving others untouched. Never a wholesale overwrite.
 
+## NVIDIA H100 80GB HBM3 · 2026-08-08
+
+| num_envs | seq_len | HAS_BOOTSTRAP=True (ms) | HAS_BOOTSTRAP=False (ms) | saved (ms) | saved (% of True-path total) |
+|:--------:|:-------:|:------------------------:|:--------------------------:|:----------:|:-----------------------------:|
+|      128 |    1024 |                   0.0385 |                     0.0295 |     0.0091 |                          23.5 |
+|       64 |     512 |                   0.0382 |                     0.0289 |     0.0093 |                          24.4 |
+|      512 |     512 |                   0.0387 |                     0.0289 |     0.0098 |                          25.4 |
+|     4096 |     128 |                   0.0382 |                     0.0301 |     0.0081 |                          21.2 |
+
 ## NVIDIA RTX 2000 Ada Generation · 2026-08-08
 
 | num_envs | seq_len | HAS_BOOTSTRAP=True (ms) | HAS_BOOTSTRAP=False (ms) | saved (ms) | saved (% of True-path total) |

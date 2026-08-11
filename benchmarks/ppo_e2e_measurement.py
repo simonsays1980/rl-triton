@@ -50,13 +50,19 @@ METHODOLOGY NOTE 2 -- CUDA events (fixed here).
 The previous version timed every stage with `torch.cuda.synchronize()` +
 `time.perf_counter()`, and computed the step total as the SUM of those stage
 timers. That puts ~82 full device drains per iteration (5 stages x 16
-minibatches, plus the pre-pass) inside the denominator. At hidden=(1024,1024),
-with a ~153ms step, that is under 1% and the published numbers are essentially
-sound. At hidden=(64,64) the step is several times shorter while the
-instrumentation cost is fixed, so the same overhead plausibly reaches 3-8% of
-the denominator -- and it lands in the DENOMINATOR, biasing GAE's share
-DOWNWARD exactly at the small-net end this sweep exists to measure. It cannot
-manufacture a favourable curve, but it can flatten a real one.
+minibatches, plus the pre-pass) inside the denominator. MEASURED (2026-08-11, --grid legacy --timing both): the effect is far larger
+than the "<1% at large nets" this note originally estimated. At
+hidden=(1024,1024) the true total is 166ms under sync timing vs 126ms under
+event timing -- the drains inflated the denominator by ~24%. The per-stage
+"gae" figure is inflated far worse: 0.30ms under sync vs 0.012ms under events,
+a ~25x gap, because a device drain around a ~12us kernel is almost entirely
+drain. A roofline check confirms the event number is the real one: at
+4096x128, GAE moves ~8MB, which at H100 HBM bandwidth is ~3us -- so 12us is
+plausible kernel time and 0.30ms is not.
+Consequence for the previously published rows: they used the sync method, so
+their denominators were ~24% too large AND their GAE numerators ~25x too
+large. The numerator error dominates, so the published shares (0.53%, 0.13%)
+are OVERSTATED, not understated. The corrected shares are ~0.03%.
 
 Fix: per-stage timing now uses torch.cuda.Event(enable_timing=True) pairs
 recorded on the stream, with a single synchronize() at the END of the whole
@@ -169,7 +175,12 @@ N_WARMUP = 10
 N_ITERS = 30
 SEED = 0
 
-STAGES = ("forward", "gae", "loss", "backward", "optimizer")
+# "gather" is the per-minibatch advanced-indexing copy (flat_obs[idx] etc.)
+# plus the randperm. It is real step cost and was previously untimed, which
+# made sum-of-stages fall BELOW the true total (negative `resid`). It is
+# broken out rather than folded into "forward" because at long seq_len it
+# materializes ~1GB per minibatch and becomes a story of its own.
+STAGES = ("forward", "gather", "gae", "loss", "backward", "optimizer")
 
 
 @dataclass(frozen=True)
@@ -360,9 +371,11 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
 
         perm = torch.randperm(batch_size, device=obs.device)
         for mb in range(cfg.n_minibatches):
+            timer.start("gather")
             idx = perm[mb * minibatch_size:(mb + 1) * minibatch_size]
             mb_obs, mb_actions = flat_obs[idx], flat_actions[idx]
             mb_old_lp, mb_adv, mb_ret = flat_old_log_probs[idx], flat_advantages[idx], flat_returns[idx]
+            timer.stop()
 
             timer.start("forward")
             mean, log_std, value = net(mb_obs)

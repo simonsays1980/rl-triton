@@ -639,7 +639,24 @@ def _row(cfg, samples, arms, ref="triton"):
             "gae": gae, "dev": dev,
             "share": gae / tot * 100 if tot else 0.0,
             "speedup": sp, "speedup_iqr": sp_iqr,
+            "stages": {st: _agg(s[st])[0] for st in STAGES},
         }
+
+    # NON-GAE contamination check. A GAE-only change cannot alter forward,
+    # gather, perm, backward or optimizer cost -- those stages run after GAE
+    # has finished and share no state with it. If they differ between arms,
+    # the arm totals are not comparable and any end-to-end ratio built from
+    # them is an artifact, not a result. This exists because the four-arm run
+    # showed loop_compiled finishing the whole step ~2.5ms FASTER than the
+    # Triton arm at (256,256) -- 100x more than GAE's entire 0.019ms budget,
+    # so it cannot have come from the GAE call.
+    # `nongae_vs_ref` is (this arm's non-GAE time) / (ref's non-GAE time);
+    # anything more than ~1% from 1.0 means the comparison is contaminated.
+    ref_nongae = sum(out[ref]["stages"][st] for st in STAGES if st != "gae")
+    for name in arms:
+        nongae = sum(out[name]["stages"][st] for st in STAGES if st != "gae")
+        out[name]["nongae"] = nongae
+        out[name]["nongae_vs_ref"] = nongae / ref_nongae if ref_nongae else 0.0
     return out
 
 
@@ -720,11 +737,16 @@ def main():
             per_timing[tm] = r
             for name in arms:
                 a = r[name]
+                flag = "" if abs(a["nongae_vs_ref"] - 1.0) < 0.01 else "  <-- CONTAMINATED"
                 print(f"  [{tm:5s}] {name:<14} total {a['total']:>9.3f}ms "
                       f"(IQR {a['total_iqr']:.3f})  GAE {a['gae']:.4f}ms "
                       f"(dev {a['dev']:.4f})  share {a['share']:.3f}%  "
                       f"vs-triton {a['speedup']:.4f}x (IQR {a['speedup_iqr']:.4f})  "
                       f"resid {a['resid']:+.3f}")
+                print(f"           {'':<14} non-GAE {a['nongae']:>7.3f}ms "
+                      f"({a['nongae_vs_ref']:.4f}x ref)  "
+                      + " ".join(f"{st}={a['stages'][st]:.2f}" for st in STAGES)
+                      + flag)
         results.append((cfg, per_timing))
         if args.probe_launch_bound:
             e, g = _probe_launch_bound(cfg)
@@ -752,6 +774,32 @@ def main():
                     f"{a['gae']:.4f} | {a['dev']:.4f} | {a['share']:.3f}% | "
                     f"{a['speedup']:.4f} ({a['speedup_iqr']:.4f}) | "
                     f"{a['resid']:+.3f} |"
+                )
+
+    report += [
+        "",
+        "## Per-stage breakdown (contamination check)",
+        "",
+        "A GAE-only change cannot alter forward, gather, perm, backward or optimizer "
+        "cost -- those stages run after GAE has finished and share no state with it. "
+        "`non-GAE vs ref` is this arm's total non-GAE stage time divided by the Triton "
+        "arm's. Anything more than ~1% from 1.000 means the arms' step totals are not "
+        "comparable and any end-to-end ratio built from them is an artifact.",
+        "",
+        "| config | timing | arm | " + " | ".join(STAGES) + " | non-GAE | non-GAE vs ref |",
+        "|---|---|---|" + "---|" * (len(STAGES) + 2),
+    ]
+    for cfg, per_timing in results:
+        for tm, r in per_timing.items():
+            if r is None:
+                continue
+            for name in arms:
+                a = r[name]
+                cells = " | ".join(f"{a['stages'][st]:.3f}" for st in STAGES)
+                mark = "" if abs(a["nongae_vs_ref"] - 1.0) < 0.01 else " **!**"
+                report.append(
+                    f"| {cfg.label} | {tm} | {name} | {cells} | "
+                    f"{a['nongae']:.3f} | {a['nongae_vs_ref']:.4f}{mark} |"
                 )
 
     report += [

@@ -469,6 +469,60 @@ _ARMS = {
 }
 DEFAULT_ARMS = ("triton", "scan", "loop", "loop_compiled")
 
+# Matches tests/test_gae.py's convention for cross-implementation checks
+# (distinct algorithms compared against each other, not one formula against
+# itself, which uses the tighter 1e-5 elsewhere in that file).
+_GATE_ATOL = 1e-4
+_GATE_RTOL = 1e-4
+
+# nongae_vs_ref beyond this distance from 1.0 marks a row as contaminated:
+# non-GAE stage cost differs from the reference arm for reasons unrelated to
+# GAE, so its speedup/share numbers must not be cited.
+_CONTAMINATION_THRESHOLD = 0.01
+
+
+def correctness_gate(cfg, arms, device="cuda"):
+    """Verify every active arm computes the SAME advantages as `triton` on
+    identical inputs, before any timing from this config is trusted.
+
+    Every other benchmark in this paper's evaluation is correctness-gated
+    against an independent reference before its timings are reported (see
+    docs/paper.tex sec:results-pufferlib); this script was the one place
+    arms were timed without that check. Raises AssertionError on mismatch --
+    a timing number for an arm that does not compute GAE is not a GAE
+    benchmark.
+    """
+    torch.manual_seed(SEED)
+    rollout = _make_rollout(cfg, seed=42, device=device)
+    _, _, _, rewards, dones, old_values = rollout
+
+    ref_fn = _ARMS["triton"][0]()
+    ref_adv = ref_fn(rewards, old_values, dones, gamma=GAMMA, lambda_=LAMBDA)
+
+    print(f"  [gate] correctness vs triton, atol={_GATE_ATOL} rtol={_GATE_RTOL}:")
+    results = {}
+    for name in arms:
+        if name == "triton":
+            continue
+        fn = _ARMS[name][0]()
+        adv = fn(rewards, old_values, dones, gamma=GAMMA, lambda_=LAMBDA)
+        diff = (adv - ref_adv).abs()
+        max_abs = diff.max().item()
+        denom = ref_adv.abs().clamp_min(1e-12)
+        max_rel = (diff / denom).max().item()
+        ok = torch.allclose(adv, ref_adv, atol=_GATE_ATOL, rtol=_GATE_RTOL)
+        results[name] = (ok, max_abs, max_rel)
+        status = "PASS" if ok else "FAIL"
+        print(f"         {name:<14} {status}  max_abs={max_abs:.3e}  max_rel={max_rel:.3e}")
+        if not ok:
+            raise AssertionError(
+                f"correctness gate failed for arm '{name}' at {cfg.label}: "
+                f"max_abs={max_abs:.3e} max_rel={max_rel:.3e} exceeds "
+                f"atol={_GATE_ATOL}/rtol={_GATE_RTOL} -- refusing to time an "
+                f"arm that does not compute GAE."
+            )
+    return results
+
 
 def measure(cfg, timing="event", arms=DEFAULT_ARMS, device="cuda"):
     """Interleaved N-way A/B across GAE implementations.
@@ -721,9 +775,11 @@ def main():
         "",
     ]
 
+    gate_results = {}
     results = []
     for cfg in grid:
         print(f"=== {cfg.label} ===")
+        gate_results[cfg.label] = correctness_gate(cfg, arms)
         per_timing = {}
         for tm in timings:
             try:
@@ -737,7 +793,7 @@ def main():
             per_timing[tm] = r
             for name in arms:
                 a = r[name]
-                flag = "" if abs(a["nongae_vs_ref"] - 1.0) < 0.01 else "  <-- CONTAMINATED"
+                flag = "" if abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD else "  <-- CONTAMINATED"
                 print(f"  [{tm:5s}] {name:<14} total {a['total']:>9.3f}ms "
                       f"(IQR {a['total_iqr']:.3f})  GAE {a['gae']:.4f}ms "
                       f"(dev {a['dev']:.4f})  share {a['share']:.3f}%  "
@@ -756,6 +812,27 @@ def main():
         print()
 
     report += [
+        "## Correctness gate",
+        "",
+        f"Every arm's advantages checked against `triton` on identical inputs "
+        f"before timing, atol={_GATE_ATOL} rtol={_GATE_RTOL} "
+        f"(matches tests/test_gae.py's cross-implementation convention). "
+        f"A FAIL here means the affected arm's timings below do not measure GAE "
+        f"and must not be cited.",
+        "",
+        "| config | arm | result | max abs diff | max rel diff |",
+        "|---|---|---|---|---|",
+    ]
+    for cfg in grid:
+        for name, (ok, max_abs, max_rel) in gate_results[cfg.label].items():
+            report.append(
+                f"| {cfg.label} | {name} | {'PASS' if ok else 'FAIL'} | "
+                f"{max_abs:.3e} | {max_rel:.3e} |"
+            )
+    report += [
+        "",
+        "## Timing",
+        "",
         "| config | ladder | timing | arm | total | GAE | GAE dev | share | "
         "vs-triton | resid |",
         "|---|---|---|---|---|---|---|---|---|---|",
@@ -796,11 +873,43 @@ def main():
             for name in arms:
                 a = r[name]
                 cells = " | ".join(f"{a['stages'][st]:.3f}" for st in STAGES)
-                mark = "" if abs(a["nongae_vs_ref"] - 1.0) < 0.01 else " **!**"
+                mark = "" if abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD else " **!**"
                 report.append(
                     f"| {cfg.label} | {tm} | {name} | {cells} | "
                     f"{a['nongae']:.3f} | {a['nongae_vs_ref']:.4f}{mark} |"
                 )
+
+    excluded = []
+    citable = []
+    for cfg, per_timing in results:
+        for tm, r in per_timing.items():
+            if r is None:
+                continue
+            for name in arms:
+                a = r[name]
+                row = f"{cfg.label} [{tm}] {name}"
+                if abs(a["nongae_vs_ref"] - 1.0) >= _CONTAMINATION_THRESHOLD:
+                    excluded.append(f"{row} (non-GAE vs ref = {a['nongae_vs_ref']:.4f})")
+                else:
+                    citable.append(row)
+
+    report += [
+        "",
+        "## Citable rows",
+        "",
+        f"Contamination threshold: |non-GAE vs ref - 1.0| < {_CONTAMINATION_THRESHOLD} "
+        f"AND correctness gate PASS. Rows failing either are not GAE-only comparisons "
+        f"and must not be cited in the paper.",
+        "",
+        f"**Excluded ({len(excluded)}):**",
+        "",
+    ] + ([f"- {r}" for r in excluded] if excluded else ["- (none)"]) + [
+        "",
+        f"**Citable ({len(citable)}):**",
+        "",
+    ] + ([f"- {r}" for r in citable] if citable else ["- (none)"]) + [
+        "",
+    ]
 
     report += [
         "",

@@ -153,7 +153,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent / "tests"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from test_gae import vectorized_gae
+from test_gae import vectorized_gae, reference_gae
 from rl_triton.ops.gae import compute_gae
 
 torch._dynamo.config.cache_size_limit = 64  # avoid the silent eager-fallback bug from Experiment 1
@@ -444,59 +444,88 @@ def _agg(samples):
     return med, q3 - q1
 
 
-def measure(cfg, timing="event", device="cuda"):
-    """Interleaved A/B: arm 'triton' (compute_gae) vs arm 'baseline'
-    (torch.compile(vectorized_gae)), alternating which arm runs first every
-    iteration, same rollout/seed for both arms within an iteration."""
+def _loop_gae(rewards, values, terminateds, gamma, lambda_):
+    """The sequential backward loop most RL libraries actually ship: vectorized
+    over envs, but a Python-level `for t in reversed(range(T))` over the time
+    axis, launching O(T) tiny kernels. This is `reference_gae` from the test
+    suite, wrapped to match the call signature of the other arms.
+
+    Included because the paper's headline table reports a Loop baseline
+    (2.5-2.8x at 4096x128) but tab:ppo-e2e did not -- so the end-to-end table
+    compared the kernel only against the STRONG compiled-scan baseline, which
+    is not what most users run. Measuring it here says what GAE's share is for
+    a library that never adopted a scan at all.
+    """
+    return reference_gae(rewards, values, terminateds, gamma, lambda_)
+
+
+# name -> (callable factory, needs_compile). Factories are called once per
+# measure() so torch.compile wrappers are per-config, not shared across shapes.
+_ARMS = {
+    "triton":     (lambda: compute_gae, False),
+    "scan":       (lambda: torch.compile(vectorized_gae), False),
+    "loop":       (lambda: _loop_gae, False),
+    "loop_compiled": (lambda: torch.compile(_loop_gae), False),
+}
+DEFAULT_ARMS = ("triton", "scan", "loop", "loop_compiled")
+
+
+def measure(cfg, timing="event", arms=DEFAULT_ARMS, device="cuda"):
+    """Interleaved N-way A/B across GAE implementations.
+
+    Each arm gets its OWN net and optimizer, all initialized identically, so
+    the only difference between arms is the GAE call. Arm order is ROTATED
+    every iteration (not merely swapped, which only works for two arms) so
+    slow GPU clock/allocator drift lands on every arm equally instead of
+    contaminating whichever ran last -- the generalization of the original
+    two-arm interleaving fix.
+    """
     torch.manual_seed(SEED)
-    net_a = ActorCritic(cfg.hidden).to(device)
-    net_b = ActorCritic(cfg.hidden).to(device)
-    net_b.load_state_dict(net_a.state_dict())  # identical init -- isolates the GAE-arm difference
+    ref_net = ActorCritic(cfg.hidden).to(device)
+    state = ref_net.state_dict()
 
-    net_a_fwd = torch.compile(net_a) if cfg.compiled else net_a
-    net_b_fwd = torch.compile(net_b) if cfg.compiled else net_b
-
-    opt_a = torch.optim.Adam(net_a.parameters(), lr=3e-4)
-    opt_b = torch.optim.Adam(net_b.parameters(), lr=3e-4)
-    gae_baseline = torch.compile(vectorized_gae)
+    nets, opts, fns = {}, {}, {}
+    for name in arms:
+        net = ActorCritic(cfg.hidden).to(device)
+        net.load_state_dict(state)  # identical init -- isolates the GAE-arm difference
+        nets[name] = torch.compile(net) if cfg.compiled else net
+        opts[name] = torch.optim.Adam(net.parameters(), lr=3e-4)
+        fns[name] = _ARMS[name][0]()
 
     mk = _EventTimer if timing == "event" else _SyncTimer
-    samples_a = {k: [] for k in (*STAGES, "_total", "_gae_device")}
-    samples_b = {k: [] for k in (*STAGES, "_total", "_gae_device")}
+    samples = {n: {k: [] for k in (*STAGES, "_total", "_gae_device")} for n in arms}
 
-    def run(net_fwd, opt, gae_fn, rollout, sink):
+    def run(name, rollout, record):
         # The true-total wrapper is ALWAYS an _EventTimer, even under
         # --timing sync, so the total is measured the same way in both modes
         # and the two are directly comparable.
         #
         # Note what this means under --timing sync: the event pair spans the
-        # whole update, so the true total there legitimately INCLUDES the ~82
+        # whole update, so the true total there legitimately INCLUDES the
         # per-stage device drains. That is the point -- it is what the old
         # method's denominator actually was. The event-vs-sync difference in
         # `_total` is therefore the size of the methodology shift itself, with
         # hardware, seeds, and net held fixed.
-        res = _run_ppo_update(cfg, net_fwd, opt, rollout, gae_fn, mk(), _EventTimer())
-        if sink is not None:
+        res = _run_ppo_update(cfg, nets[name], opts[name], rollout, fns[name],
+                              mk(), _EventTimer())
+        if record:
             for k, v in res.items():
-                sink[k].append(v)
+                samples[name][k].append(v)
 
     for i in range(N_WARMUP):
         rollout = _make_rollout(cfg, seed=1000 + i, device=device)
-        run(net_a_fwd, opt_a, compute_gae, rollout, None)
-        run(net_b_fwd, opt_b, gae_baseline, rollout, None)
+        for name in arms:
+            run(name, rollout, record=False)
         del rollout
 
     for i in range(cfg.n_iters):
         rollout = _make_rollout(cfg, seed=2000 + i, device=device)
-        if i % 2 == 0:
-            run(net_a_fwd, opt_a, compute_gae, rollout, samples_a)
-            run(net_b_fwd, opt_b, gae_baseline, rollout, samples_b)
-        else:
-            run(net_b_fwd, opt_b, gae_baseline, rollout, samples_b)
-            run(net_a_fwd, opt_a, compute_gae, rollout, samples_a)
+        order = arms[i % len(arms):] + arms[:i % len(arms)]  # rotate
+        for name in order:
+            run(name, rollout, record=True)
         del rollout
 
-    return samples_a, samples_b
+    return samples
 
 
 def _probe_launch_bound(cfg, device="cuda"):
@@ -587,30 +616,31 @@ def build_grid(which):
     }[which]
 
 
-def _row(cfg, samples_a, samples_b):
-    """Collapse one config's samples into the numbers the report prints."""
-    tot_a, tot_a_iqr = _agg(samples_a["_total"])
-    tot_b, tot_b_iqr = _agg(samples_b["_total"])
-    gae_a, _ = _agg(samples_a["gae"])
-    gae_b, _ = _agg(samples_b["gae"])
-    dev_a, _ = _agg(samples_a["_gae_device"])
-    dev_b, _ = _agg(samples_b["_gae_device"])
-    sum_a = sum(_agg(samples_a[s])[0] for s in STAGES)
-    sum_b = sum(_agg(samples_b[s])[0] for s in STAGES)
-    # per-iteration speedup ratios -> a real noise band on the headline number
-    ratios = [b / a for a, b in zip(samples_a["_total"], samples_b["_total"]) if a > 0]
-    sp, sp_iqr = _agg(ratios)
-    return {
-        "total_a": tot_a, "total_a_iqr": tot_a_iqr,
-        "total_b": tot_b, "total_b_iqr": tot_b_iqr,
-        "sum_a": sum_a, "sum_b": sum_b,
-        "resid_a": sum_a - tot_a, "resid_b": sum_b - tot_b,
-        "gae_a": gae_a, "gae_b": gae_b,
-        "dev_a": dev_a, "dev_b": dev_b,
-        "share_a": gae_a / tot_a * 100 if tot_a else 0.0,
-        "share_b": gae_b / tot_b * 100 if tot_b else 0.0,
-        "speedup": sp, "speedup_iqr": sp_iqr,
-    }
+def _row(cfg, samples, arms, ref="triton"):
+    """Collapse one config's samples into per-arm numbers.
+
+    Speedup is reported as (this arm's total) / (ref arm's total) computed
+    PER ITERATION and then aggregated, so the IQR is a real noise band on the
+    ratio rather than a ratio of two independently-noisy medians.
+    """
+    out = {}
+    for name in arms:
+        s = samples[name]
+        tot, tot_iqr = _agg(s["_total"])
+        gae, _ = _agg(s["gae"])
+        dev, _ = _agg(s["_gae_device"])
+        stage_sum = sum(_agg(s[st])[0] for st in STAGES)
+        # this_arm / ref: >1 means the ref arm (Triton) finished the step faster.
+        ratios = [t / r for t, r in zip(s["_total"], samples[ref]["_total"]) if r > 0]
+        sp, sp_iqr = _agg(ratios)
+        out[name] = {
+            "total": tot, "total_iqr": tot_iqr,
+            "sum": stage_sum, "resid": stage_sum - tot,
+            "gae": gae, "dev": dev,
+            "share": gae / tot * 100 if tot else 0.0,
+            "speedup": sp, "speedup_iqr": sp_iqr,
+        }
+    return out
 
 
 def main():
@@ -624,7 +654,18 @@ def main():
                         help="measure whether small nets are launch-bound rather than "
                              "compute-bound (see METHODOLOGY NOTE 4).")
     parser.add_argument("--iters", type=int, default=None)
+    parser.add_argument("--arms", default=",".join(DEFAULT_ARMS),
+                        help=f"comma-separated GAE arms from {sorted(_ARMS)}. "
+                             "'triton' must be present -- it is the speedup reference. "
+                             "Drop 'loop' at long seq_len if runtime becomes a problem.")
     args = parser.parse_args()
+
+    arms = tuple(a.strip() for a in args.arms.split(",") if a.strip())
+    unknown = [a for a in arms if a not in _ARMS]
+    if unknown:
+        parser.error(f"unknown arm(s) {unknown}; choose from {sorted(_ARMS)}")
+    if "triton" not in arms:
+        parser.error("'triton' must be among --arms (it is the speedup reference)")
 
     if not torch.cuda.is_available():
         print("CUDA not available -- skipping.")
@@ -647,17 +688,19 @@ def main():
         "ONE-OFF measurement for the paper's evaluation section, not a recurring benchmark table.",
         f"GPU: {gpu} · torch {torch.__version__}",
         f"Grid `{args.grid}` ({len(grid)} configs), timing mode `{args.timing}`, "
-        f"interleaved A/B, median (IQR) across iterations.",
+        f"arms `{','.join(arms)}`, interleaved with rotating arm order, "
+        f"median (IQR) across iterations.",
         "",
         "GAE share and end-to-end speedup are computed against the **true measured total** "
         "(a single CUDA-event pair around the entire update), not the sum of per-stage "
-        "timers. `resid` = sum-of-stages minus true total, i.e. residual instrumentation "
-        "overhead; a large resid means per-stage numbers are inflated relative to the total.",
+        "timers. `resid` = sum-of-stages minus true total; it should be small and slightly "
+        "positive. A clearly negative resid means real work is still untimed and per-stage "
+        "percentages should not be trusted.",
         "",
-        "The two arms do not do identical work: the Triton arm takes its no-truncation "
-        "path, while the baseline allocates two extra [num_envs, seq_len] tensors and runs "
-        "the truncation-aware scan regardless. `dev` columns give GAE device time alone so "
-        "this asymmetry is visible rather than argued.",
+        "The arms do not do identical work: the Triton arm takes its no-truncation path, "
+        "while `scan` allocates two extra [num_envs, seq_len] tensors and runs the "
+        "truncation-aware scan regardless. `GAE dev` gives GAE device time alone so this "
+        "asymmetry is visible rather than argued.",
         "",
     ]
 
@@ -667,21 +710,21 @@ def main():
         per_timing = {}
         for tm in timings:
             try:
-                sa, sb = measure(cfg, timing=tm)
+                samples = measure(cfg, timing=tm, arms=arms)
             except torch.cuda.OutOfMemoryError:
                 print(f"    OOM at {cfg.label} (timing={tm}) -- skipped, shape NOT rescaled.")
                 torch.cuda.empty_cache()
                 per_timing[tm] = None
                 continue
-            r = _row(cfg, sa, sb)
+            r = _row(cfg, samples, arms)
             per_timing[tm] = r
-            print(f"  [{tm:5s}] total {r['total_a']:.3f}ms (IQR {r['total_a_iqr']:.3f}) triton"
-                  f" / {r['total_b']:.3f}ms (IQR {r['total_b_iqr']:.3f}) baseline"
-                  f"  resid {r['resid_a']:+.3f}/{r['resid_b']:+.3f}ms")
-            print(f"          GAE {r['gae_a']:.4f}ms (dev {r['dev_a']:.4f}) / "
-                  f"{r['gae_b']:.4f}ms (dev {r['dev_b']:.4f})")
-            print(f"          share {r['share_a']:.3f}% / {r['share_b']:.3f}%   "
-                  f"speedup {r['speedup']:.4f}x (IQR {r['speedup_iqr']:.4f})")
+            for name in arms:
+                a = r[name]
+                print(f"  [{tm:5s}] {name:<14} total {a['total']:>9.3f}ms "
+                      f"(IQR {a['total_iqr']:.3f})  GAE {a['gae']:.4f}ms "
+                      f"(dev {a['dev']:.4f})  share {a['share']:.3f}%  "
+                      f"vs-triton {a['speedup']:.4f}x (IQR {a['speedup_iqr']:.4f})  "
+                      f"resid {a['resid']:+.3f}")
         results.append((cfg, per_timing))
         if args.probe_launch_bound:
             e, g = _probe_launch_bound(cfg)
@@ -691,31 +734,37 @@ def main():
         print()
 
     report += [
-        "| config | ladder | timing | total triton | total baseline | GAE share (T) | "
-        "GAE share (B) | GAE dev (T/B) | speedup | resid (T/B) |",
+        "| config | ladder | timing | arm | total | GAE | GAE dev | share | "
+        "vs-triton | resid |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for cfg, per_timing in results:
         for tm, r in per_timing.items():
             if r is None:
                 report.append(f"| {cfg.label} | {cfg.ladder or '-'} | {tm} | "
-                              "OOM | OOM | - | - | - | - | - |")
+                              "OOM | - | - | - | - | - | - |")
                 continue
-            report.append(
-                f"| {cfg.label} | {cfg.ladder or '-'} | {tm} | "
-                f"{r['total_a']:.3f} ({r['total_a_iqr']:.3f}) | "
-                f"{r['total_b']:.3f} ({r['total_b_iqr']:.3f}) | "
-                f"{r['share_a']:.3f}% | {r['share_b']:.3f}% | "
-                f"{r['dev_a']:.4f}/{r['dev_b']:.4f} | "
-                f"{r['speedup']:.4f} ({r['speedup_iqr']:.4f}) | "
-                f"{r['resid_a']:+.3f}/{r['resid_b']:+.3f} |"
-            )
+            for name in arms:
+                a = r[name]
+                report.append(
+                    f"| {cfg.label} | {cfg.ladder or '-'} | {tm} | {name} | "
+                    f"{a['total']:.3f} ({a['total_iqr']:.3f}) | "
+                    f"{a['gae']:.4f} | {a['dev']:.4f} | {a['share']:.3f}% | "
+                    f"{a['speedup']:.4f} ({a['speedup_iqr']:.4f}) | "
+                    f"{a['resid']:+.3f} |"
+                )
 
     report += [
         "",
-        "All times in ms, median with IQR in parentheses. `speedup` is the median of "
-        "per-iteration total_baseline/total_triton ratios; its IQR is the noise band. "
-        "A speedup whose IQR spans 1.0 is not distinguishable from no difference.",
+        "All times in ms, median with IQR in parentheses. `vs-triton` is the median of "
+        "per-iteration (this arm's total / Triton arm's total); >1 means the Triton arm "
+        "finished the step faster. Its IQR is the noise band -- a ratio whose IQR spans "
+        "1.0 is not distinguishable from no difference.",
+        "",
+        "Arms: `triton` = rl-triton kernel; `scan` = torch.compile'd vectorized "
+        "doubling scan (the strong baseline); `loop` = the sequential backward Python "
+        "loop most RL libraries ship (vectorized over envs, O(T) kernel launches); "
+        "`loop_compiled` = the same loop under torch.compile.",
         "",
     ]
 

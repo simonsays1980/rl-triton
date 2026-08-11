@@ -127,11 +127,19 @@ Usage:
 """
 import argparse
 import datetime
+import os
 import statistics
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
+
+# Silence torch.compile/dynamo symbolic-shapes warnings (e.g. "q1 is not in
+# var_ranges, defaulting to unknown range") that otherwise spam stdout on
+# every torch.compile call in this sweep -- same setting, same reason as
+# tests/bench_release.py. setdefault, so an explicit caller override still
+# wins. Must be set before `import torch`.
+os.environ.setdefault("TORCH_LOGS", "-dynamic")
 
 import torch
 import torch.nn as nn

@@ -176,11 +176,21 @@ N_ITERS = 30
 SEED = 0
 
 # "gather" is the per-minibatch advanced-indexing copy (flat_obs[idx] etc.)
-# plus the randperm. It is real step cost and was previously untimed, which
-# made sum-of-stages fall BELOW the true total (negative `resid`). It is
-# broken out rather than folded into "forward" because at long seq_len it
+# plus the reshape/detach bookkeeping; "perm" is the per-epoch
+# torch.randperm(batch_size), which at batch_size=524288 is a real sort
+# kernel run once per epoch. Both were untimed originally, which made
+# sum-of-stages fall BELOW the true total (negative `resid` -- the fix was
+# staged: adding "gather" alone closed only about half the gap, because
+# randperm sits per-EPOCH, outside the per-minibatch loop). They are broken
+# out rather than folded into "forward" because at long seq_len the gather
 # materializes ~1GB per minibatch and becomes a story of its own.
-STAGES = ("forward", "gather", "gae", "loss", "backward", "optimizer")
+#
+# `resid` (sum-of-stages minus true total) is the correctness check on this
+# accounting: it should be small and slightly POSITIVE (stages nest inside
+# the total and each carries a little event overhead). A clearly negative
+# resid means some real work is still untimed -- do not trust per-stage
+# percentages until it is near zero.
+STAGES = ("forward", "gather", "perm", "gae", "loss", "backward", "optimizer")
 
 
 @dataclass(frozen=True)
@@ -349,10 +359,12 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
     advantages, returns, gae_events = _do_gae()
     pending_gae_events = [gae_events]
 
+    timer.start("gather")
     flat_actions = actions.reshape(-1, ACTION_DIM)
     flat_old_log_probs = old_log_probs.reshape(-1)
     flat_advantages = advantages.reshape(-1).detach()
     flat_returns = returns.reshape(-1).detach()
+    timer.stop()
     batch_size = n * t
     minibatch_size = batch_size // cfg.n_minibatches
 
@@ -361,15 +373,21 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
         # This is a real PPO variant (values drift as the net updates), and it
         # is the third mechanism by which GAE's addressable share rises.
         if cfg.recompute_gae_per_epoch and epoch > 0:
+            timer.start("forward")
             with torch.no_grad():
                 _, _, v_flat = net(flat_obs)
                 values = v_flat.reshape(n, t)
+            timer.stop()
             advantages, returns, ev = _do_gae()
             pending_gae_events.append(ev)
+            timer.start("gather")
             flat_advantages = advantages.reshape(-1).detach()
             flat_returns = returns.reshape(-1).detach()
+            timer.stop()
 
+        timer.start("perm")
         perm = torch.randperm(batch_size, device=obs.device)
+        timer.stop()
         for mb in range(cfg.n_minibatches):
             timer.start("gather")
             idx = perm[mb * minibatch_size:(mb + 1) * minibatch_size]

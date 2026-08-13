@@ -676,20 +676,44 @@ def _row(cfg, samples, arms, ref="triton"):
     Speedup is reported as (this arm's total) / (ref arm's total) computed
     PER ITERATION and then aggregated, so the IQR is a real noise band on the
     ratio rather than a ratio of two independently-noisy medians.
+
+    METHODOLOGY NOTE 6 -- resid and nongae_vs_ref must follow the same rule
+    (fixed here). They used to be computed as differences/ratios of
+    ALREADY-AGGREGATED per-stage medians (`stage_sum = sum of per-stage
+    medians`, `resid = stage_sum - median(total)`), a different quantity from
+    "how well do stages account for the total, per iteration" whenever
+    iteration-to-iteration variance is large -- medians of marginals do not
+    sum the way medians of a joint distribution do. MEASURED (2026-08-13) at
+    envs=16384/seq=128/hidden=(128,128): per-iteration totals ranged
+    69-116ms (real run-to-run variance), the old aggregate-first resid came
+    out -0.96 to -2.15ms and was unstable across reruns of the identical
+    config, while the per-iteration resid (this iteration's stage sum minus
+    this iteration's own total, THEN aggregated) was a stable -0.3 to -0.4ms
+    with stdev ~0.1 -- under 1% of total and consistent run to run. Same
+    story for nongae_vs_ref: computing it per iteration (like `speedup`
+    already did) rather than as a ratio of two aggregate sums answers "are
+    the arms comparable on this iteration's draw", and is far less sensitive
+    to iteration-to-iteration swings that are common-mode across arms (same
+    rollout, interleaved) and mostly cancel per-iteration but do NOT cancel
+    in a ratio of independently-aggregated medians.
     """
+    n_iters = len(samples[ref]["_total"])
     out = {}
     for name in arms:
         s = samples[name]
         tot, tot_iqr = _agg(s["_total"])
         gae, _ = _agg(s["gae"])
         dev, _ = _agg(s["_gae_device"])
-        stage_sum = sum(_agg(s[st])[0] for st in STAGES)
+        per_iter_resid = [sum(s[st][i] for st in STAGES) - s["_total"][i]
+                           for i in range(n_iters)]
+        resid, resid_iqr = _agg(per_iter_resid)
         # this_arm / ref: >1 means the ref arm (Triton) finished the step faster.
         ratios = [t / r for t, r in zip(s["_total"], samples[ref]["_total"]) if r > 0]
         sp, sp_iqr = _agg(ratios)
         out[name] = {
             "total": tot, "total_iqr": tot_iqr,
-            "sum": stage_sum, "resid": stage_sum - tot,
+            "sum": sum(_agg(s[st])[0] for st in STAGES),
+            "resid": resid, "resid_iqr": resid_iqr,
             "gae": gae, "dev": dev,
             "share": gae / tot * 100 if tot else 0.0,
             "speedup": sp, "speedup_iqr": sp_iqr,
@@ -704,13 +728,22 @@ def _row(cfg, samples, arms, ref="triton"):
     # showed loop_compiled finishing the whole step ~2.5ms FASTER than the
     # Triton arm at (256,256) -- 100x more than GAE's entire 0.019ms budget,
     # so it cannot have come from the GAE call.
-    # `nongae_vs_ref` is (this arm's non-GAE time) / (ref's non-GAE time);
-    # anything more than ~1% from 1.0 means the comparison is contaminated.
-    ref_nongae = sum(out[ref]["stages"][st] for st in STAGES if st != "gae")
+    # `nongae_vs_ref` is (this arm's non-GAE time) / (ref's non-GAE time),
+    # computed PER ITERATION then aggregated (NOTE 6) -- anything more than
+    # ~1% from 1.0 means the comparison is contaminated.
+    ref_s = samples[ref]
     for name in arms:
-        nongae = sum(out[name]["stages"][st] for st in STAGES if st != "gae")
+        s = samples[name]
+        per_iter_nongae = [sum(s[st][i] for st in STAGES if st != "gae")
+                            for i in range(n_iters)]
+        per_iter_ref_nongae = [sum(ref_s[st][i] for st in STAGES if st != "gae")
+                                for i in range(n_iters)]
+        nongae, _ = _agg(per_iter_nongae)
+        nongae_ratios = [a / b for a, b in zip(per_iter_nongae, per_iter_ref_nongae) if b > 0]
+        nongae_vs_ref, nongae_vs_ref_iqr = _agg(nongae_ratios)
         out[name]["nongae"] = nongae
-        out[name]["nongae_vs_ref"] = nongae / ref_nongae if ref_nongae else 0.0
+        out[name]["nongae_vs_ref"] = nongae_vs_ref
+        out[name]["nongae_vs_ref_iqr"] = nongae_vs_ref_iqr
     return out
 
 

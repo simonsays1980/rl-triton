@@ -207,6 +207,7 @@ class Config:
     recompute_gae_per_epoch: bool = False
     ladder: str = ""          # "budget" / "envs" / "" -- kept distinct in output
     n_iters: int = N_ITERS
+    n_warmup: int = N_WARMUP  # override for configs that need longer clock/allocator ramp-up
 
     @property
     def label(self):
@@ -266,20 +267,48 @@ class _EventTimer:
     """Per-stage timing via CUDA events. Records stream markers during the
     step and resolves them to milliseconds only after ONE synchronize() at the
     end of the iteration -- so the measured region does not include a device
-    drain per stage (see METHODOLOGY NOTE 2)."""
+    drain per stage (see METHODOLOGY NOTE 2).
+
+    METHODOLOGY NOTE 5 -- event pooling (fixed here). At (128,128)/16384/128
+    there are ~84 start/stop transitions per iteration (4 epochs x (1 perm +
+    4 minibatches x 5 stages)), and the old version called
+    `torch.cuda.Event(enable_timing=True)` fresh for every single one -- a
+    real cudaEventCreate per transition, ~5000 of them across one 30-iteration
+    run. Each creation is CPU-side work that happens between two GPU-recorded
+    markers; if the GPU drains its queue waiting on it (plausible when the net
+    is small enough that kernels finish faster than the CPU can issue the
+    next one), that gap lands in neither adjacent stage's pair -- only the
+    whole-step total sees it, which is exactly a negative `resid`. Fix:
+    preallocate events once and reuse them (re-`record()`, not re-create)
+    across iterations by keeping the timer instance alive across the
+    measurement loop instead of rebuilding it every iteration -- see
+    `measure()`. This does not change what is measured, only how much CPU
+    overhead the measurement itself injects into the gaps it's trying to
+    account for."""
 
     def __init__(self):
         self._pairs = []   # (stage, start_event, end_event)
         self._open = None
+        self._pool = []    # reused across resolve() calls -- see NOTE 5
+        self._pool_idx = 0
+
+    def _get_event(self):
+        if self._pool_idx < len(self._pool):
+            ev = self._pool[self._pool_idx]
+        else:
+            ev = torch.cuda.Event(enable_timing=True)
+            self._pool.append(ev)
+        self._pool_idx += 1
+        return ev
 
     def start(self, stage):
-        ev = torch.cuda.Event(enable_timing=True)
+        ev = self._get_event()
         ev.record()
         self._open = (stage, ev)
 
     def stop(self):
         stage, start_ev = self._open
-        end_ev = torch.cuda.Event(enable_timing=True)
+        end_ev = self._get_event()
         end_ev.record()
         self._pairs.append((stage, start_ev, end_ev))
         self._open = None
@@ -292,6 +321,7 @@ class _EventTimer:
         for stage, a, b in self._pairs:
             out[stage] = out.get(stage, 0.0) + a.elapsed_time(b)
         self._pairs.clear()
+        self._pool_idx = 0  # keep the Event objects, just rewind the cursor
         return out
 
 
@@ -549,6 +579,13 @@ def measure(cfg, timing="event", arms=DEFAULT_ARMS, device="cuda"):
     mk = _EventTimer if timing == "event" else _SyncTimer
     samples = {n: {k: [] for k in (*STAGES, "_total", "_gae_device")} for n in arms}
 
+    # Timer instances are built ONCE per arm and reused across every warmup
+    # and measured iteration -- NOT rebuilt per call -- so an _EventTimer's
+    # event pool (METHODOLOGY NOTE 5) actually gets reused instead of being
+    # thrown away with the rest of a fresh instance every iteration.
+    stage_timers = {name: mk() for name in arms}
+    total_timers = {name: _EventTimer() for name in arms}
+
     def run(name, rollout, record):
         # The true-total wrapper is ALWAYS an _EventTimer, even under
         # --timing sync, so the total is measured the same way in both modes
@@ -561,12 +598,26 @@ def measure(cfg, timing="event", arms=DEFAULT_ARMS, device="cuda"):
         # `_total` is therefore the size of the methodology shift itself, with
         # hardware, seeds, and net held fixed.
         res = _run_ppo_update(cfg, nets[name], opts[name], rollout, fns[name],
-                              mk(), _EventTimer())
+                              stage_timers[name], total_timers[name])
         if record:
             for k, v in res.items():
                 samples[name][k].append(v)
+        # METHODOLOGY NOTE 7 -- allocator state carries across arms within an
+        # iteration (fixed here). MEASURED (2026-08-13) at
+        # envs=16384/seq=128/hidden=(128,128): without this, the two-arm
+        # eager combination -- otherwise the cleanest -- still tripped the
+        # 1% non-GAE contamination gate in 4 of 5 identical reruns (drift
+        # 1.8%-5.4%). A sync + empty_cache after EVERY arm's step, not just
+        # at iteration boundaries, made it 4/4 clean (drift <1%) across
+        # reruns, combined with a longer per-config warmup (`cfg.n_warmup`,
+        # see Config) -- neither alone was sufficient (allocator fix alone
+        # with the old 10-iter warmup was still 0/2 clean). Cost is a device
+        # sync per arm per iteration, paid only during measurement, not
+        # inside the timed region.
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
-    for i in range(N_WARMUP):
+    for i in range(cfg.n_warmup):
         rollout = _make_rollout(cfg, seed=1000 + i, device=device)
         for name in arms:
             run(name, rollout, record=False)
@@ -595,7 +646,7 @@ def _probe_launch_bound(cfg, device="cuda"):
     """
     torch.manual_seed(SEED)
     net = ActorCritic(cfg.hidden).to(device)
-    opt = torch.optim.Adam(net.parameters(), lr=3e-4)
+    opt = torch.optim.Adam(net.parameters(), lr=3e-4, capturable=True)
     mb = (cfg.num_envs * cfg.seq_len) // cfg.n_minibatches
     obs = torch.randn(mb, OBS_DIM, device=device)
     tgt = torch.randn(mb, device=device)
@@ -840,8 +891,10 @@ def main():
         if args.probe_launch_bound:
             e, g = _probe_launch_bound(cfg)
             ratio = e / g if g == g and g > 0 else float("nan")
+            verdict = "inconclusive (graph capture failed)" if ratio != ratio else (
+                "launch-bound" if ratio > 1.3 else "compute-bound")
             print(f"  [launch] eager {e:.4f}ms vs graph-replay {g:.4f}ms -> {ratio:.2f}x "
-                  f"({'launch-bound' if ratio > 1.3 else 'compute-bound'})")
+                  f"({verdict})")
         print()
 
     report += [

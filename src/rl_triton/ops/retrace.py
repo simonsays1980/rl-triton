@@ -5,17 +5,23 @@ from rl_triton.ops.retrace_fused import compute_retrace_fused
 
 # retrace_fused_kernel reads the [num_envs, seq_len, num_actions] action-prob
 # tensors per timestep; at long seq_len this pins ptxas at 128 regs/thread and
-# spills to local memory (confirmed 132 spills/thread, 25% occupancy at
-# seq_len=4096). A fix that shifts the already-loaded pi(a_t|s_t) through a
-# small scratch buffer instead of re-reading the shifted 3D tensor for c[t+1]
-# cuts spills to 100/thread, but ptxas still saturates the SM register file at
-# num_warps=16 (128*512=65536=full register file), so occupancy stays pinned
-# at 25% and the kernel remains SLOWER than torch.compile from seq_len=4096
-# onward (measured 0.63-0.73x at 4096, 0.16-0.24x at 8192 -- worse, not
-# better, as seq_len grows further). num_warps of 4/8/16/32 were all swept
-# empirically before settling on 16 -- 32 warps cuts spills further (to 90/
-# thread) but is slower anyway, from added cross-warp communication cost in
-# the reduction tree; there is no untried num_warps value that fixes this.
+# spills to local memory (pre-fix: 528-byte per-thread stack frame, 25%
+# occupancy at seq_len=4096; num_envs=512, num_actions=4). A fix that shifts
+# the already-loaded pi(a_t|s_t) through a small scratch buffer instead of
+# re-reading the shifted 3D tensor for c[t+1] cuts that to a 400-byte stack
+# frame (456 bytes each of spill stores and spill loads), but ptxas still
+# saturates the SM register file at num_warps=16 (128*512=65536=full register
+# file), so occupancy stays pinned at 25% and the kernel remains SLOWER than
+# torch.compile from seq_len=4096 onward (measured 0.63-0.73x at 4096,
+# 0.16-0.24x at 8192 -- worse, not better, as seq_len grows further).
+# num_warps of 4/8/16/32 were all swept empirically before settling on 16 --
+# 32 warps cuts the stack frame further (to 360 bytes) but is slower anyway,
+# from added cross-warp communication cost in the reduction tree; there is no
+# untried num_warps value that fixes this.
+# Spill figures are ptxas byte counts, not register counts; Triton's n_spills
+# field reports the same stack frame divided into 4-byte words (400B -> 100).
+# Measured with Triton 3.0.0 / ptxas 12.4.99, sm_90a; register allocation is
+# compiler-version dependent. See benchmarks/measure_retrace_register_pressure.py.
 # Below this ceiling the fused kernel is a confirmed, measured win
 # (>=1.08x at seq_len=2048 across tested env counts).
 #

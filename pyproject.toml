@@ -29,6 +29,12 @@ Documentation = "https://simonsays1980.github.io/rl-triton"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "numpy"]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.7",
+    "mkdocs-include-markdown-plugin>=7.3",
+    "mkdocstrings[python]>=1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

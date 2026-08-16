@@ -184,6 +184,10 @@ paper/*.toc
 # Also cover any stray LaTeX artefacts in docs/ from earlier build work
 docs/paper.tex
 docs/paper.bib
+# Markdown export/mirror of the paper -- not linked from mkdocs.yml's nav,
+# not meant to be part of the published docs site (contains a personal
+# email address in plaintext).
+docs/paper.md
 docs/arxiv.sty
 docs/paper.aux
 docs/paper.bbl
@@ -252,3 +256,13 @@ __marimo__/
 # script. Kept on disk for reference, no longer tracked.
 benchmarks/compare_pufferlib.py
 benchmarks/pufferlib.md
+
+# One-off PPO end-to-end result files -- paper-specific output of
+# ppo_e2e_measurement.py, not reproducible from the script as committed
+# (ppo-e2e-measurement-2026-07-25.md predates the script's current report
+# format and is superseded by design; ppo-e2e-single-puffer-op-point-*.md
+# wraps hand-written debugging/repeatability analysis the script itself
+# doesn't generate). The script stays tracked; its dated .md output does
+# not. Kept on disk for reference.
+benchmarks/ppo-e2e-measurement-*.md
+benchmarks/ppo-e2e-single-puffer-op-point-*.md

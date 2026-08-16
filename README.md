@@ -3,6 +3,10 @@
 
 High-performance [Triton](https://github.com/openai/triton) GPU kernels for common reinforcement learning computations.
 
+[![GPU Tests](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml/badge.svg)](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
+
 ## Kernels
 
 <!-- KERNELS_START -->
@@ -33,11 +37,43 @@ benchmark methodology is available:
 
 ## Installation
 
+### Requirements
+
+- Linux with a CUDA-capable GPU (Triton compiles and runs GPU kernels; there is no
+  CPU fallback).
+- Python >=3.10 (tested on 3.10, 3.11).
+- PyTorch >=2.2, Triton >=2.3 (installed automatically as dependencies).
+
+### Install
+
+**Use it in your project:**
+
+```bash
+pip install git+https://github.com/simonsays1980/rl-triton
+```
+
+**From source, editable (for modifying the kernels):**
+
 <!-- INSTALL_START -->
+```bash
+git clone https://github.com/simonsays1980/rl-triton
+cd rl-triton
+pip install -e .
+```
+
+**Contributors (adds test/dev tooling):**
+
 ```bash
 pip install -e ".[dev]"
 ```
 <!-- INSTALL_END -->
+
+The package installs as `rl-triton` but imports as `rl_triton` (Python identifiers
+can't contain hyphens):
+
+```python
+from rl_triton import compute_gae
+```
 
 ## Usage
 

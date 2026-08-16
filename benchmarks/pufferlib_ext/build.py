@@ -33,6 +33,13 @@ of that.
 
 If PufferLib happens to be fully installed already, we prefer its prebuilt
 `_C` extension instead of rebuilding, since it is the same code either way.
+
+`torch.utils.cpp_extension.load` caches its build under `TORCH_EXTENSIONS_DIR`
+(or `~/.cache/torch_extensions/` if unset), keyed by a hash of the source
+files and build flags -- so the JIT compile below only actually runs on a
+cold cache (first run, a changed source/flag, or a cleared cache directory);
+every subsequent call in the same environment returns the cached `.so`
+almost immediately.
 """
 import os
 
@@ -59,6 +66,10 @@ def load_puff_advantage():
 
     from torch.utils.cpp_extension import load
 
+    print(
+        "[pufferlib_ext] Building PufferLib's vendored CUDA extension "
+        "(first run only -- cached under TORCH_EXTENSIONS_DIR after this)..."
+    )
     load(
         name="_C",
         sources=[

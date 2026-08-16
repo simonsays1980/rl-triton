@@ -1,5 +1,17 @@
 """Standalone benchmark: rl-triton's fused GAE kernel vs. PufferLib's advantage kernel.
 
+THIS SCRIPT'S OUTPUT IS WHAT THE PAPER'S PUFFERLIB FIGURES ARE BUILT FROM
+(docs/paper.tex, Figure~\\ref{fig:pufferlib-classic} and
+Figure~\\ref{fig:pufferlib-mps}, via docs/figures/plot_pufferlib_production.py
+and docs/figures/plot_pufferlib_crossover.py, which hardcode
+gae_vs_pufferlib-2026-08-05.md's tables). This script uses the vendored,
+sha256-pinned JIT build in pufferlib_ext/ (see that directory's NOTICE.md),
+not a pip-installed PufferLib -- see benchmarks/README.md's results index for
+where this script's output is tracked.
+Each run of main() writes a dated gae_vs_pufferlib-YYYY-MM-DD.md report
+(repo root) with the GPU/torch/triton/PufferLib-source provenance stamped
+in automatically -- see report_lines in main().
+
 Pure hardware micro-benchmark, isolated from env stepping and network forward
 passes. Two independent, genuinely-fast kernels are compared:
 
@@ -121,6 +133,7 @@ TWO REGIMES
 Usage: python benchmarks/benchmark_gae_vs_pufferlib.py
 ================================================================================
 """
+import datetime
 import sys
 from pathlib import Path
 
@@ -432,25 +445,35 @@ def run_sweep(op, num_envs_list, seq_lens, label, device="cuda"):
 # ------------------------------------------------------------------------
 
 def print_markdown_table(results, num_envs_list, seq_lens):
-    print("=" * 88)
-    print("MARKDOWN TABLE")
-    print("=" * 88)
+    """Prints the table to stdout AND returns it as a markdown string (for
+    writing to a results file -- see main()'s report_lines)."""
+    lines = []
     header = ("| num_envs | seq_len | triton (ms) | puffer (ms) | speedup | dev speedup | "
               "triton amort (ms) | puffer amort (ms) | triton GB/s (%peak) | puffer GB/s (%peak) | "
               "triton dev (us) | puffer dev (us) | triton launches | puffer launches |")
     sep = "|" + "---|" * 14
-    print(header)
-    print(sep)
+    lines.append(header)
+    lines.append(sep)
     for num_envs in num_envs_list:
         for seq_len in seq_lens:
             r = results[(num_envs, seq_len)]
-            print(f"| {num_envs} | {seq_len} | {r['triton_ms']:.4f} | {r['puffer_ms']:.4f} | "
-                  f"{r['speedup']:.2f}x | {r['dev_speedup']:.2f}x | "
-                  f"{r['triton_ms_amort']:.4f} | {r['puffer_ms_amort']:.4f} | "
-                  f"{r['triton_gbps']:.1f} ({r['triton_pct_peak']:.2f}%) | "
-                  f"{r['puffer_gbps']:.1f} ({r['puffer_pct_peak']:.2f}%) | "
-                  f"{r['triton_dev_us']:.2f} | {r['puffer_dev_us']:.2f} | "
-                  f"{r['triton_launches']:.1f} | {r['puffer_launches']:.1f} |")
+            lines.append(
+                f"| {num_envs} | {seq_len} | {r['triton_ms']:.4f} | {r['puffer_ms']:.4f} | "
+                f"{r['speedup']:.2f}x | {r['dev_speedup']:.2f}x | "
+                f"{r['triton_ms_amort']:.4f} | {r['puffer_ms_amort']:.4f} | "
+                f"{r['triton_gbps']:.1f} ({r['triton_pct_peak']:.2f}%) | "
+                f"{r['puffer_gbps']:.1f} ({r['puffer_pct_peak']:.2f}%) | "
+                f"{r['triton_dev_us']:.2f} | {r['puffer_dev_us']:.2f} | "
+                f"{r['triton_launches']:.1f} | {r['puffer_launches']:.1f} |"
+            )
+
+    print("=" * 88)
+    print("MARKDOWN TABLE")
+    print("=" * 88)
+    for line in lines:
+        print(line)
+
+    return "\n".join(lines)
     print()
 
 
@@ -675,10 +698,29 @@ def main():
 
     run_equivalence_gate(op, device)
 
+    report_date = datetime.date.today().isoformat()
+    report_lines = [
+        f"# rl-triton GAE vs. PufferLib advantage kernel -- {report_date}",
+        "",
+        "ONE-OFF deep-dive study (equivalence proof, launch counts, bandwidth, crossover "
+        "plots) -- not part of the release cycle, not regenerated automatically. See "
+        "benchmarks/README.md for how this differs from compare_pufferlib.py's official, "
+        "pip-only comparison (benchmarks/pufferlib.md).",
+        "",
+        f"GPU: {gpu_name} · torch {torch.__version__} (cuda {torch.version.cuda}) · "
+        f"triton {triton.__version__} · PufferLib source: {puffer_source}",
+        f"dtype float32 · gamma={GAMMA} · lambda={LAMBDA} · termination_prob={TERM_PROB}",
+        "",
+        "Equivalence gate passed (see console output) -- both kernels verified to compute "
+        "the same recurrence on the overlapping regime before any timing number below is "
+        "trusted.",
+        "",
+    ]
+
     # -- Regime 1: production (moderate-to-long rollouts) --------------------
     results = run_sweep(op, NUM_ENVS_LIST, SEQ_LENS, "PRODUCTION REGIME", device)
     report_monotonicity(results, NUM_ENVS_LIST, SEQ_LENS, "production regime")
-    print_markdown_table(results, NUM_ENVS_LIST, SEQ_LENS)
+    table_md = print_markdown_table(results, NUM_ENVS_LIST, SEQ_LENS)
     find_crossovers(results, NUM_ENVS_LIST, SEQ_LENS, "production regime")
 
     fig_path = Path(__file__).parent.parent / "gae_performance_crossover.png"
@@ -692,19 +734,33 @@ def main():
     print("=" * 88)
     triton_wins = sum(1 for r in results.values() if r["speedup"] >= 1.0)
     puffer_wins = len(results) - triton_wins
-    print(f"  Triton faster in {triton_wins}/{len(results)} cells; "
-          f"PufferLib faster in {puffer_wins}/{len(results)} cells.")
+    verdict_line = (f"Triton faster in {triton_wins}/{len(results)} cells; "
+                     f"PufferLib faster in {puffer_wins}/{len(results)} cells.")
+    print(f"  {verdict_line}")
     print("  See the crossover analysis above and bandwidth/launch-count columns in "
           "the table for the bandwidth-bound vs. launch-bound mechanism read "
           f"(H100 SXM5 peak HBM3 bandwidth: {H100_PEAK_GBPS:.0f} GB/s datasheet).")
     print()
+
+    report_lines += [
+        "## Production regime",
+        "",
+        f"seq_len in {SEQ_LENS}, num_envs in {NUM_ENVS_LIST}.",
+        "",
+        table_md,
+        "",
+        f"**Verdict:** {verdict_line}",
+        "",
+        f"![production regime crossover]({fig_path.name})",
+        "",
+    ]
 
     # -- Regime 2: massively-parallel-sim (short horizon, high env count) ----
     results_short = run_sweep(op, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
                                "MASSIVELY-PARALLEL-SIM REGIME", device)
     report_monotonicity(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
                          "massively-parallel-sim regime")
-    print_markdown_table(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT)
+    table_md_short = print_markdown_table(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT)
     find_crossovers(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
                      "massively-parallel-sim regime")
 
@@ -722,13 +778,37 @@ def main():
     print("=" * 88)
     triton_wins_short = sum(1 for r in results_short.values() if r["speedup"] >= 1.0)
     puffer_wins_short = len(results_short) - triton_wins_short
-    print(f"  Triton faster (wall-clock) in {triton_wins_short}/{len(results_short)} cells; "
-          f"PufferLib faster in {puffer_wins_short}/{len(results_short)} cells.")
+    verdict_line_short = (
+        f"Triton faster (wall-clock) in {triton_wins_short}/{len(results_short)} cells; "
+        f"PufferLib faster in {puffer_wins_short}/{len(results_short)} cells."
+    )
+    print(f"  {verdict_line_short}")
     triton_dev_wins_short = sum(1 for r in results_short.values() if r["dev_speedup"] >= 1.0)
-    print(f"  Triton faster (device-only) in {triton_dev_wins_short}/{len(results_short)} cells; "
-          f"PufferLib faster (device-only) in {len(results_short) - triton_dev_wins_short}/"
-          f"{len(results_short)} cells.")
+    verdict_line_short_dev = (
+        f"Triton faster (device-only) in {triton_dev_wins_short}/{len(results_short)} cells; "
+        f"PufferLib faster (device-only) in {len(results_short) - triton_dev_wins_short}/"
+        f"{len(results_short)} cells."
+    )
+    print(f"  {verdict_line_short_dev}")
     print("  See the Q1-Q3 analysis above for the mechanism read.")
+
+    report_lines += [
+        "## Massively-parallel-sim regime (short horizon, high env count)",
+        "",
+        f"seq_len in {SEQ_LENS_SHORT}, num_envs in {NUM_ENVS_LIST_LARGE}.",
+        "",
+        table_md_short,
+        "",
+        f"**Verdict:** {verdict_line_short} {verdict_line_short_dev}",
+        "",
+        f"![short-horizon regime crossover]({fig_path_short.name})",
+        "",
+    ]
+
+    report_path = Path(__file__).parent.parent / f"gae_vs_pufferlib-{report_date}.md"
+    report_path.write_text("\n".join(report_lines))
+    print(f"\nWrote {report_path} (tables + verdicts, reference only -- not part of "
+          f"benchmarks.md/README's recurring tables; run-on-demand, review before committing).")
 
 
 if __name__ == "__main__":

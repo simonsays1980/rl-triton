@@ -243,3 +243,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Superseded PufferLib comparison -- benchmark_gae_vs_pufferlib.py /
+# gae_vs_pufferlib-*.md is the comparison the paper cites (see
+# benchmarks/README.md). compare_pufferlib.py depends on the real pip
+# `pufferlib` package (not the vendored JIT build) and its output
+# (pufferlib.md) documents itself as not reproducible from the committed
+# script. Kept on disk for reference, no longer tracked.
+benchmarks/compare_pufferlib.py
+benchmarks/pufferlib.md

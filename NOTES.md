@@ -1096,7 +1096,7 @@ highest-env-count corner of massively-parallel simulation (Isaac Gym/Isaac
 Lab style, tens of thousands of envs at single-digit-to-low-double-digit
 horizons). This is a genuine per-workload tradeoff, not a defect to fix --
 but it means "rl-triton is faster than PufferLib" is not a universal claim;
-see `benchmarks/pufferlib.md` for where each kernel wins.
+see `benchmarks/gae_vs_pufferlib-2026-08-05.md` for where each kernel wins.
 
 ---
 

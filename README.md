@@ -5,6 +5,7 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 
 ## Kernels
 
+<!-- KERNELS_START -->
 | Function | Algorithm | Description |
 |---|---|---|
 | `compute_gae` | GAE | Generalized Advantage Estimation – backward scan over `δ + γλ·A` |
@@ -14,6 +15,12 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for comm
 | `compute_discounted_returns` | Returns | Discounted reward-to-go |
 | `compute_eligibility_traces` | Elig. traces | Accumulating forward traces `e[t] = x[t] + γλ(1-d[t-1])e[t-1]` |
 | `compute_episodic_prefix_sum` | Prefix sum | Episodic cumulative sum with done-mask resets |
+<!-- KERNELS_END -->
+
+## Documentation
+
+Full docs (kernel tutorials, GPU-concepts background, getting-started guide,
+API reference): **[simonsays1980.github.io/rl-triton](https://simonsays1980.github.io/rl-triton)**
 
 ## Paper
 
@@ -26,12 +33,15 @@ benchmark methodology is available:
 
 ## Installation
 
+<!-- INSTALL_START -->
 ```bash
 pip install -e ".[dev]"
 ```
+<!-- INSTALL_END -->
 
 ## Usage
 
+<!-- USAGE_START -->
 ```python
 import torch
 from rl_triton import compute_gae
@@ -41,9 +51,11 @@ values      = torch.randn(64, 512, device="cuda")
 terminateds = torch.zeros(64, 512, device="cuda")
 advantages  = compute_gae(rewards, values, terminateds, gamma=0.99, lambda_=0.95)
 ```
+<!-- USAGE_END -->
 
 ## Testing
 
+<!-- TESTING_START -->
 ```bash
 # Correctness tests
 pytest tests/ -v
@@ -54,6 +66,7 @@ pytest -m perf -v
 # Full slow benchmark suite (all configs, requires CUDA)
 pytest -m slow -v
 ```
+<!-- TESTING_END -->
 
 ## Benchmarking
 

@@ -70,8 +70,11 @@ def retrace_fused_kernel(
     second time (overlapping the window already loaded for pi_all), which
     forced both copies to be simultaneously register-resident and was the
     direct cause of spilling to local memory at long seq_len (measured 128
-    regs/thread, 132 spills/thread, 25% occupancy at seq_len=4096). Only one
-    [BLOCK_SIZE, ACTION_BLOCK] tensor (pi_all) needs to be live now.
+    regs/thread, 528-byte per-thread stack frame, 25% occupancy at
+    seq_len=4096 with num_envs=512, num_actions=4). Only one
+    [BLOCK_SIZE, ACTION_BLOCK] tensor (pi_all) needs to be live now, which
+    cuts the stack frame to 400 bytes; see ops/retrace.py for the full
+    account and the measurement toolchain.
 
     Advantage computation
     ---------------------

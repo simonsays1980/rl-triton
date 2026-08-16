@@ -992,8 +992,11 @@ show up end-to-end once a real policy network shares the step.
 | realistic (1024,1024) | 0.07% – 0.6% | **~1.00x -- no measurable difference** |
 
 Full per-stage breakdown (4 configs, all four pipeline stages) is in
-`docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md`; this section is
-the condensed takeaway, not a replacement for it. The larger hidden size is
+`benchmarks/ppo-e2e-measurement-2026-07-25.md` (paper-specific output, gitignored --
+see `benchmarks/README.md`); this section is the condensed takeaway, not a
+replacement for it. That file's own header also flags its GPU attribution as disputed
+and superseded by a later re-measurement -- see `ppo_e2e_measurement.py`'s docstring.
+The larger hidden size is
 the realistic case in both measurements -- backward
 pass dominates the step (60-66% of total time) at that size, and GAE's
 isolated ~1.9x device-level kernel speedup becomes invisible in full
@@ -1096,7 +1099,7 @@ highest-env-count corner of massively-parallel simulation (Isaac Gym/Isaac
 Lab style, tens of thousands of envs at single-digit-to-low-double-digit
 horizons). This is a genuine per-workload tradeoff, not a defect to fix --
 but it means "rl-triton is faster than PufferLib" is not a universal claim;
-see `benchmarks/pufferlib.md` for where each kernel wins.
+see `benchmarks/gae_vs_pufferlib-2026-08-05.md` for where each kernel wins.
 
 ---
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rl-triton"
-version = "0.1.2"
+version = "0.1.3"
 description = "High-performance Triton GPU kernels for reinforcement learning"
 requires-python = ">=3.10"
 keywords = ["reinforcement learning", "triton", "gpu", "cuda", "kernels", "gae", "vtrace"]
@@ -29,6 +29,12 @@ Documentation = "https://simonsays1980.github.io/rl-triton"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-benchmark", "numpy"]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.7",
+    "mkdocs-include-markdown-plugin>=7.3",
+    "mkdocstrings[python]>=1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

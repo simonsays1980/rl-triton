@@ -297,7 +297,7 @@ This contrasts with GAE ($A_t = \Delta_t + V(s_t)$) and Retrace ($Q^{ret}_t = \D
 ## 6. Applications
 
 **Discounted Returns in Policy Gradient Methods**
-Discounted returns form the direct reward signal in REINFORCE and its variants. In group-relative policy optimization (GRPO), reward-to-go is used as the advantage signal across a group of sampled responses, providing variance reduction without a learned critic (Shao et al., 2024).
+Discounted returns form the direct reward signal in REINFORCE and its variants, where the return-to-go at each step is the credit assigned to the action taken there. Note that critic-free methods for LLM post-training do not generally use this recurrence: GRPO (Shao et al., 2024) computes a group-normalized scalar per sampled response and broadcasts it across every token, so there is no per-timestep discounted accumulation to scan.
 
 **TD(λ) Returns in On-Policy Actor-Critic**
 λ-returns provide a unified interpolation between the high-bias/low-variance one-step TD target and the low-bias/high-variance Monte Carlo return. PPO implementations often use λ-returns (which are numerically equivalent to GAE targets when the value function is used as the baseline) to balance this tradeoff during policy updates (Schulman et al., 2017).

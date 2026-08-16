@@ -4,8 +4,8 @@ Every backward-scan op in this library (GAE, V-Trace, lambda-returns, discounted
 and Retrace via its own reroute) shares `_run_scan`'s auto-dispatch: the flat single-block
 kernel for seq_len <= _FLAT_MAX_SEQ_LEN (131072), a separate chunked kernel above that. That
 threshold has never been exercised by bench_release.py's sweep (which tops out at seq_len=4096)
-or by benchmarks/compare_pufferlib.py -- this script fills that gap. Not part of bench_release.py,
-CI, or the test suite; run on demand.
+or by benchmarks/benchmark_gae_vs_pufferlib.py -- this script fills that gap. Not part of
+bench_release.py, CI, or the test suite; run on demand.
 
 (There IS a pre-existing internal-only test, tests/test_scan_chunked.py::test_scan_performance,
 `@pytest.mark.slow`, that times the flat/chunked dispatch at these sizes -- but it explicitly

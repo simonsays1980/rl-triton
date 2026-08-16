@@ -1,0 +1,38 @@
+name: Deploy docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "benchmarks.md"
+      - "NOTES.md"
+      - "mkdocs.yml"
+      - "assets/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # mkdocs gh-deploy pushes straight to the gh-pages branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install docs dependencies
+        run: pip install -e ".[docs]"
+
+      - name: Configure git for gh-deploy
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Build and deploy
+        run: mkdocs gh-deploy --force --clean

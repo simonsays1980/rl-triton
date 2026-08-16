@@ -4,6 +4,50 @@ All notable changes to rl-triton are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 Versioning: [Semantic Versioning](https://semver.org/)
 
+## [0.1.3] - 2026-08-16
+
+### Added
+- Root `LICENSE` (MIT) and `benchmarks/pufferlib_ext/LICENSE-PufferLib`, so the
+  vendored, verbatim-copied PufferLib CUDA source (`pufferlib.cpp`/`pufferlib.cu`)
+  carries its own copyright notice as MIT requires. `pyproject.toml` already
+  declared the MIT classifier without a corresponding file.
+- GitHub Pages publication for the mkdocs site: a `docs.yml` workflow
+  (`mkdocs gh-deploy` on push to `main`, plus manual `workflow_dispatch`) and a
+  `docs` extra in `pyproject.toml` for the mkdocs toolchain.
+- A "Directory layout" section in `benchmarks/README.md` clarifying the four
+  locations benchmark results can live in and who writes each, plus a stated
+  rule for one-off study write-ups: hand-run scripts' output lives in
+  `benchmarks/`, `bench_release.py`-written output lives in
+  `docs/benchmark-history/`.
+
+### Changed
+- Moved the two PPO end-to-end study files (`ppo-e2e-measurement-2026-07-25.md`,
+  `ppo-e2e-single-puffer-op-point-2026-08-13.md`) from `docs/benchmark-history/`
+  to `benchmarks/` to match the new one-off-study placement rule -- both were
+  hand-run and explicitly disclaimed membership in the release cycle in their
+  own headers. Neither matches `ppo_e2e_measurement.py`'s current report
+  format closely enough to keep tracked as-is, so both are now gitignored
+  (kept on disk for reference); the script itself remains tracked.
+- `docs/index.md`'s Kernels, Installation, Usage, and Testing sections are now
+  pulled live from `README.md` via `include-markdown`, instead of being
+  hand-duplicated copies that had already drifted (the docs copy of the
+  kernels table had gained a column the README didn't have).
+- `mkdocs.yml`: added `Home: index.md` as the first nav entry so the homepage
+  is reachable from the site navigation; added `exclude_docs` so
+  `mkdocs build`/`gh-deploy` never pick up non-doc files that happen to be
+  sitting in `docs/` on disk, regardless of git tracking state.
+
+### Removed
+- `benchmarks/compare_pufferlib.py` and its output `benchmarks/pufferlib.md`
+  are no longer tracked (kept on disk, gitignored). Superseded by
+  `benchmark_gae_vs_pufferlib.py` / `gae_vs_pufferlib-2026-08-05.md`, which is
+  what the paper's PufferLib figures actually cite; `pufferlib.md`'s own
+  header already documented its numbers as not reproducible from the
+  committed script.
+- `docs/paper.md`, a markdown mirror of the paper that was tracked but unlinked
+  from `mkdocs.yml`'s nav and contained a personal email address in plaintext.
+  No longer tracked (kept on disk, gitignored).
+
 ## [0.1.2] - 2026-08-05
 
 ### Fixed

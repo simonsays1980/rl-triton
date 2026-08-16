@@ -4,6 +4,24 @@ site_url: https://simonsays1980.github.io/rl-triton
 repo_url: https://github.com/simonsays1980/rl-triton
 repo_name: simonsays1980/rl-triton
 
+# Not part of the published site -- excluded so local builds/deploys never
+# pick these up regardless of what's sitting on disk.
+exclude_docs: |
+  figures/
+  paper.tex
+  paper.bib
+  paper.pdf
+  paper.md
+  paper.aux
+  paper.bbl
+  paper.blg
+  paper.log
+  paper.out
+  arxiv.sty
+  missfont.log
+  q.log
+  *.synctex.gz
+
 theme:
   name: material
   logo: assets/icon.svg
@@ -38,6 +56,7 @@ plugins:
             docstring_style: google
 
 nav:
+  - Home: index.md
   - Getting Started: getting-started.md
   - Kernels:
     - Overview: kernels/index.md

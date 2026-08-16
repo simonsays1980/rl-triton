@@ -11,6 +11,8 @@ files it points to.
 | README summary table draft (human applies manually) | [`readme_table_draft.md`](readme_table_draft.md) | `tests/bench_release.py` |
 | PufferLib comparison (GAE + V-Trace, both regimes) | [`gae_vs_pufferlib-2026-08-05.md`](gae_vs_pufferlib-2026-08-05.md) | `benchmark_gae_vs_pufferlib.py` -- this script's output is what the paper's PufferLib figures are built from |
 | Chunked-vs-flat dispatch robustness study (long seq_len, out of target regime) | [`chunked_scan.md`](chunked_scan.md) | `compare_chunked.py` |
+| `HAS_BOOTSTRAP=False` scalar-allocation skip, isolated | [`bootstrap_skip.md`](bootstrap_skip.md) | `measure_bootstrap_skip.py` |
+| Retrace register-pressure study (the `seq_len<=2048` dispatch ceiling) | [`retrace_register_pressure.md`](retrace_register_pressure.md) | `measure_retrace_register_pressure.py` |
 | PPO end-to-end measurement (GAE's share of a real training step) | [`../docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md`](../docs/benchmark-history/ppo-e2e-measurement-2026-07-25.md) | `ppo_e2e_measurement.py` |
 | Prior release history (archived on each new release) | [`../docs/benchmark-history/`](../docs/benchmark-history/) | `tests/bench_release.py` (archives the outgoing section automatically) |
 | Why the code is the way it is (root causes, correctness bugs, design tradeoffs found while benchmarking) | [`../NOTES.md`](../NOTES.md) | hand-maintained |
@@ -78,6 +80,6 @@ Four rules govern where a benchmark result is allowed to land, and when:
    job opens a PR; promotion is a manual commit a human makes deliberately).
 
 One-off studies in this directory (`gae_vs_pufferlib-*.md`, `chunked_scan.md`,
-`ppo-e2e-measurement-*.md`) are outside this cycle entirely: they stay dated to when they were
-run and are **not** regenerated as part of a release -- rerun the relevant script by hand if you
-need fresh numbers for one of them.
+`bootstrap_skip.md`, `retrace_register_pressure.md`, `ppo-e2e-measurement-*.md`) are outside
+this cycle entirely: they stay dated to when they were run and are **not** regenerated as part
+of a release -- rerun the relevant script by hand if you need fresh numbers for one of them.

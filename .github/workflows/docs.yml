@@ -27,7 +27,17 @@ jobs:
           python-version: "3.11"
 
       - name: Install docs dependencies
-        run: pip install -e ".[docs]"
+        # mkdocstrings (docs/kernels/index.md's `::: rl_triton...` blocks)
+        # imports rl_triton to read docstrings/signatures, so torch and
+        # triton must be importable -- but never executed, so the CPU-only
+        # torch wheel is enough and avoids the multi-GB CUDA download a
+        # plain `pip install -e ".[docs]"` would otherwise trigger.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install triton
+          pip install -e ".[docs]" --no-deps
+          pip install mkdocs>=1.6 mkdocs-material>=9.7 \
+            mkdocs-include-markdown-plugin>=7.3 "mkdocstrings[python]>=1.0"
 
       - name: Configure git for gh-deploy
         run: |

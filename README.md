@@ -3,6 +3,10 @@
 
 High-performance [Triton](https://github.com/openai/triton) GPU kernels for common reinforcement learning computations.
 
+[![GPU Tests](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml/badge.svg)](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
+
 ## Kernels
 
 <!-- KERNELS_START -->

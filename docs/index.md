@@ -65,7 +65,7 @@ Use `--no-update` to print results without staging anything. A staged candidate 
 the published `benchmarks.md` only when explicitly promoted with a version tag:
 
 ```bash
-python tests/bench_release.py --promote --version v0.1.2
+python tests/bench_release.py --promote --version <new-release-tag>   # e.g. v0.1.4
 ```
 
 ## Performance

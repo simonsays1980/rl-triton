@@ -102,15 +102,31 @@ jobs:
       - name: Post speedup table as PR comment
         if: always()   # comment even on failure so regressions are visible
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           STATUS="${{ steps.bench.outcome }}"
           ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
           BODY=$(printf '%s Safeguard benchmarks -- %s\n\n```\n%s\n```' \
             "$ICON" "$STATUS" "$(grep -E 'PASSED|FAILED|speedup|triton=' /tmp/pytest-safeguard.txt || cat /tmp/pytest-safeguard.txt)")
-          gh pr comment "${{ github.event.pull_request.number }}" \
-            --repo "${{ github.repository }}" \
-            --body "$BODY"
+
+          # Best-effort: this step is cosmetic reporting, not a merge gate
+          # (tests/bench_safeguard.py's own exit code is what gates the job).
+          # Retry on transient GitHub API failures, but never fail the job
+          # over a comment that couldn't be posted.
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            if gh pr comment "${{ github.event.pull_request.number }}" \
+              --repo "${{ github.repository }}" \
+              --body "$BODY"; then
+              exit 0
+            fi
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS failed to post PR comment."
+            ATTEMPT=$((ATTEMPT + 1))
+            [ $ATTEMPT -le $MAX_ATTEMPTS ] && sleep $((2 ** ATTEMPT))
+          done
+          echo "::warning::Could not post safeguard PR comment after $MAX_ATTEMPTS attempts (benchmark outcome: $STATUS). Check the job log above for results."
+          exit 0
 
   # ---------------------------------------------------------------------------
   # Release-CANDIDATE benchmarks -- manual dispatch only. Stages a full sweep
@@ -177,7 +193,7 @@ jobs:
             --parent-sweep
       - name: Open a PR with the staged candidate
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -1,4 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 from rl_triton.ops.gae import compute_gae
 from rl_triton.ops.retrace import compute_retrace

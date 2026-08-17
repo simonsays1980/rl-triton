@@ -33,8 +33,6 @@ benchmark methodology is available:
 [paper/rl-triton.pdf](paper/rl-triton.pdf)
 (preprint -- arXiv version forthcoming).
 
-<!-- TODO: swap to arXiv link + add BibTeX + CITATION.cff once posted -->
-
 ## Installation
 
 ### Requirements
@@ -126,20 +124,20 @@ PufferLib/Gigaflow-default rollout size), measured on two GPUs spanning a wide
 performance range. The Triton-vs-`torch.compile` margin is shape-dependent and does not
 move consistently in one direction between these two cards across the full config grid --
 see `NOTES.md` for the open investigation; no cross-GPU trend is asserted here. Sourced
-directly from `benchmarks.md`'s v0.1.2 production-regime and with-truncations tables at
+directly from `benchmarks.md`'s v0.1.3 production-regime and with-truncations tables at
 this exact (num_envs, seq_len).
 
 ### NVIDIA H100 80GB HBM3
 
 | algorithm | speedup vs torch.compile (full-call) |
 |:---|:---:|
-| GAE | 2.5× |
-| V-Trace | 2.6× |
-| Retrace | 1.9× |
-| lambda-returns | 3.1× |
-| discounted-returns | 2.6× |
-| eligibility-traces | 2.3× |
-| prefix-sum | 2.4× |
+| GAE | 2.36× |
+| V-Trace | 2.78× |
+| Retrace | 1.91× |
+| lambda-returns | 2.85× |
+| discounted-returns | 2.70× |
+| eligibility-traces | 2.48× |
+| prefix-sum | 2.39× |
 
 With truncations (terminations + time-limit truncations + bootstrap values), same config.
 Eligibility-traces and episodic-prefix-sum have no row here, for a structural reason, not an
@@ -160,32 +158,32 @@ representative of truncation-heavy workloads.
 
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|
-| GAE | 1.6× |
-| V-Trace | 2.6× |
-| Retrace | 1.8× |
-| lambda-returns | 2.5× |
-| discounted-returns | 2.5× |
+| GAE | 1.7× |
+| V-Trace | 2.7× |
+| Retrace | 1.9× |
+| lambda-returns | 2.6× |
+| discounted-returns | 2.6× |
 
 ### NVIDIA RTX 2000 Ada Generation
 
 | algorithm | speedup vs torch.compile (full-call) |
 |:---|:---:|
-| GAE | 2.4× |
-| V-Trace | 2.7× |
-| Retrace | 1.6× |
-| lambda-returns | 3.6× |
-| discounted-returns | 3.7× |
-| eligibility-traces | 2.2× |
-| prefix-sum | 2.2× |
+| GAE | 2.57× |
+| V-Trace | 3.46× |
+| Retrace | 1.62× |
+| lambda-returns | 5.14× |
+| discounted-returns | 5.70× |
+| eligibility-traces | 2.28× |
+| prefix-sum | 2.25× |
 
 With truncations, same config and the same structural omissions as above:
 
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|
-| GAE | 1.4× |
-| V-Trace | 2.5× |
+| GAE | 1.6× |
+| V-Trace | 3.3× |
 | Retrace | 1.6× |
-| lambda-returns | 3.2× |
-| discounted-returns | 3.3× |
+| lambda-returns | 4.4× |
+| discounted-returns | 4.6× |
 
 <!-- BENCH_END -->

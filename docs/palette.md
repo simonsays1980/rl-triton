@@ -1,7 +1,7 @@
 # Color Palette
 
 The palette used across the mkdocs site (`mkdocs.yml`, `docs/stylesheets/extra.css`), the
-SVG assets (`assets/`), and the benchmark figures (`docs/figures/`).
+SVG assets (`assets/`), and the paper figures.
 
 ## Backgrounds
 

@@ -4,22 +4,12 @@ site_url: https://simonsays1980.github.io/rl-triton
 repo_url: https://github.com/simonsays1980/rl-triton
 repo_name: simonsays1980/rl-triton
 
-# Not part of the published site -- excluded so local builds/deploys never
-# pick these up regardless of what's sitting on disk.
+# Build artefacts are never part of the published site. mkdocs copies any
+# unrecognised file in docs/ into the built site verbatim, so anything landing
+# here that should not be published needs an entry.
 exclude_docs: |
-  figures/
-  paper.tex
-  paper.bib
-  paper.pdf
-  paper.md
-  paper.aux
-  paper.bbl
-  paper.blg
-  paper.log
-  paper.out
-  arxiv.sty
-  missfont.log
-  q.log
+  palette.md
+  *.log
   *.synctex.gz
 
 theme:

@@ -1,25 +1,11 @@
-<!-- README_BENCH_DRAFT: NOT auto-applied. Prepared 2026-08-08 on NVIDIA H100 80GB HBM3. -->
+<!-- README_BENCH_DRAFT: no candidate currently drafted. -->
 
-All rows at num_envs=4096, seq_len=128 (PufferLib/Gigaflow-default rollout size) for a genuine apples-to-apples comparison across algorithms.
+No draft staged. This file holds the most recent sweep's README summary table,
+regenerated wholesale by `tests/bench_release.py` on every run; it resets to
+this stub once its numbers have been pasted into `README.md` at release time.
 
-| algorithm | speedup vs torch.compile (full-call) |
-|:---|:---:|
-| GAE | 2.4× |
-| V-Trace | 2.8× |
-| Retrace | 1.9× |
-| lambda-returns | 2.8× |
-| discounted-returns | 2.7× |
-| eligibility-traces | 2.5× |
-| prefix-sum | 2.4× |
-
-With truncations (terminations + time-limit truncations + bootstrap values), same config. Eligibility-traces and episodic-prefix-sum have no row here, for a structural reason, not an unwired gap: both kernels take only a single `dones` flag with no terminated/truncated distinction and no bootstrap values, so there is no truncation-path baseline to compare against for either. Every other algorithm, including Retrace (terminated/truncated are both mandatory, distinct arguments, and no separate bootstrap_values parameter -- the continuation value is folded into next_q_values_all every step, see docs/kernels/retrace.md §4), has a row below.
-
-| algorithm | speedup vs torch.compile, with truncations (full-call) |
-|:---|:---:|
-| GAE | 1.6× |
-| V-Trace | 2.5× |
-| Retrace | 1.9× |
-| lambda-returns | 2.6× |
-| discounted-returns | 2.8× |
-
-See [benchmarks.md](benchmarks.md) for the full sweep, methodology, and truncation-path results.
+Do not paste from a stale draft: if this file carries numbers, confirm its
+header GPU and date match the sweep you are releasing, and cross-check against
+`benchmarks.md`'s current tables before editing `README.md`. The v0.1.3 release
+found this file holding pre-correction H100-only numbers that disagreed with
+the promoted `benchmarks.md` tables.

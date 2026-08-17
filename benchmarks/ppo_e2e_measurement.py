@@ -516,9 +516,9 @@ def correctness_gate(cfg, arms, device="cuda"):
     identical inputs, before any timing from this config is trusted.
 
     Every other benchmark in this paper's evaluation is correctness-gated
-    against an independent reference before its timings are reported (see
-    docs/paper.tex sec:results-pufferlib); this script was the one place
-    arms were timed without that check. Raises AssertionError on mismatch --
+    against an independent reference before its timings are reported (see the
+    paper's PufferLib comparison section); this script was the one place arms
+    were timed without that check. Raises AssertionError on mismatch --
     a timing number for an arm that does not compute GAE is not a GAE
     benchmark.
     """

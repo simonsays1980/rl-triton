@@ -4,7 +4,7 @@ All notable changes to rl-triton are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 Versioning: [Semantic Versioning](https://semver.org/)
 
-## [0.1.3] - 2026-08-16
+## [0.1.3] - 2026-08-17
 
 ### Added
 - Root `LICENSE` (MIT) and `benchmarks/pufferlib_ext/LICENSE-PufferLib`, so the

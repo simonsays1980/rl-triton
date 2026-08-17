@@ -10,9 +10,9 @@ compatibility with production training infrastructure.
 
 ## Why this order: the paper's Amdahl result
 
-The project's paper (`docs/paper.tex`) measures GAE end-to-end inside a
-synthetic PPO update (Isaac-Gym-Ant-like actor-critic, 4096 envs, seq_len=128,
-4 epochs x 4 minibatches), not just as an isolated kernel call. At a realistic
+The project's paper measures GAE end-to-end inside a synthetic PPO update
+(Isaac-Gym-Ant-like actor-critic, 4096 envs, seq_len=128, 4 epochs x 4
+minibatches), not just as an isolated kernel call. At a realistic
 policy size (hidden 1024x1024), GAE is **≤0.13% of total step time** on
 either the Triton or `torch.compile` arm, and end-to-end speedup from GAE's
 kernel alone is **within noise of 1x** (0.983-0.998x measured across sizes
@@ -128,6 +128,16 @@ isolated-ratio-only improvements.
       invisible end-to-end at realistic policy sizes (GAE ≤0.13% of step
       time) -- worth doing, but ranked below work with a demonstrated or
       plausible end-to-end effect.
+- [ ] **Multi-turn / observation-skip masking (verl-style).** A distinct
+      boundary mode alongside today's termination/truncation/bootstrap
+      handling: masked tokens pass the recurrence through unchanged
+      (`beta_t = 1`, `alpha_t = 0`) instead of resetting it, so credit
+      propagates across observation spans in multi-turn / tool-use LLM-RL
+      rollouts. GAE also needs a `nextvalue` carry across the skip so the
+      next valid token's TD-error uses the pre-skip value. Generalises
+      per-token `beta` to `{gamma*lambda, 0, 1}`. Reference: verl's
+      `compute_gae_advantage_return`. REINFORCE++ (SkyRL, verl) doesn't
+      need this -- plain reset already covers it.
 
 ---
 

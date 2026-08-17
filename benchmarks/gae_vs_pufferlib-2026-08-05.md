@@ -2,7 +2,7 @@
 
 ONE-OFF deep-dive study (equivalence proof, launch counts, bandwidth, crossover plots) -- not part of the release cycle, not regenerated automatically. See benchmarks/README.md for how this differs from compare_pufferlib.py's official, pip-only comparison (benchmarks/pufferlib.md).
 
-**This is the data source for the paper.** `docs/figures/plot_pufferlib_production.py` and `docs/figures/plot_pufferlib_crossover.py` hardcode the production-regime and massively-parallel-sim-regime tables below into `Figure~\ref{fig:pufferlib-classic}` / `Figure~\ref{fig:pufferlib-mps}` in `docs/paper.tex`. Produced by `benchmarks/benchmark_gae_vs_pufferlib.py` (n_trials=11, not compare_pufferlib.py's n_trials=5 -- see that script's own docstring for the difference).
+**This is the data source for the paper.** The production-regime and massively-parallel-sim-regime tables below are what the paper's two PufferLib comparison figures are built from. Produced by `benchmarks/benchmark_gae_vs_pufferlib.py` (n_trials=11, not compare_pufferlib.py's n_trials=5 -- see that script's own docstring for the difference).
 
 GPU: NVIDIA H100 80GB HBM3 · torch 2.4.1+cu124 (cuda 12.4) · triton 3.0.0 · PufferLib source: vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled
 dtype float32 · gamma=0.99 · lambda=0.95 · termination_prob=0.05

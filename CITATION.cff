@@ -24,21 +24,19 @@ keywords:
   - kernels
   - gae
   - vtrace
+doi: "10.5281/zenodo.21984504"
 
 # ---------------------------------------------------------------------------
 # ARXIV DOI -- ADD AFTER SUBMISSION. Nothing below exists yet; do not fill in
 # a DOI until the arXiv ID is assigned.
 #
-# 1. Add the software DOI (Zenodo, if used) as a top-level key:
-# doi: "10.5281/zenodo.XXXXXXX"
-#
-# 2. Add the arXiv identifier for the paper:
+# 1. Add the arXiv identifier for the paper:
 # identifiers:
 #   - type: other
 #     value: "arXiv:XXXX.XXXXX"
 #     description: The arXiv preprint of the accompanying paper.
 #
-# 3. Point citations at the paper rather than the software:
+# 2. Point citations at the paper rather than the software:
 # preferred-citation:
 #   type: article
 #   title: "rl-triton: High-Performance Triton GPU Kernels for Reinforcement Learning Credit Assignment"

@@ -8,6 +8,7 @@ repo_name: simonsays1980/rl-triton
 # unrecognised file in docs/ into the built site verbatim, so anything landing
 # here that should not be published needs an entry.
 exclude_docs: |
+  palette.md
   *.log
   *.synctex.gz
 

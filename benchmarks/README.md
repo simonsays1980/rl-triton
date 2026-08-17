@@ -74,6 +74,13 @@ Four rules govern where a benchmark result is allowed to land, and when:
    not-yet-promoted candidate at a time (one section per GPU staged, upserted by GPU label --
    never appended to as an unbounded log). `README.md` is untouched by `--promote` -- pasting from
    `readme_table_draft.md` is always a manual, human step (see rule 2's link to that file).
+   **This paste is a required part of the release, not an optional follow-up:** `--promote`
+   moves the numbers into `benchmarks.md` and stops there, so skipping the paste leaves
+   `README.md` advertising the previous release's speedups with a provenance line citing a
+   version section that no longer exists in `benchmarks.md`. This happened at v0.1.3.
+   Verify the draft's header GPU and date match the release before pasting, and confirm every
+   figure against `benchmarks.md`'s promoted tables -- the draft is regenerated per sweep and
+   can be older than what was promoted.
 4. **`main` is never written to between releases.** Nothing in this policy pushes directly to
    `main` outside of a human merging a PR (the safeguard job comments only; the release-bench
    job opens a PR; promotion is a manual commit a human makes deliberately).

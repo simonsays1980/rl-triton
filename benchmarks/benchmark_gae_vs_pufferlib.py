@@ -1,9 +1,7 @@
 """Standalone benchmark: rl-triton's fused GAE kernel vs. PufferLib's advantage kernel.
 
 THIS SCRIPT'S OUTPUT IS WHAT THE PAPER'S PUFFERLIB FIGURES ARE BUILT FROM
-(docs/paper.tex, Figure~\\ref{fig:pufferlib-classic} and
-Figure~\\ref{fig:pufferlib-mps}, via docs/figures/plot_pufferlib_production.py
-and docs/figures/plot_pufferlib_crossover.py, which hardcode
+(the paper's two PufferLib comparison figures hardcode
 gae_vs_pufferlib-2026-08-05.md's tables). This script uses the vendored,
 sha256-pinned JIT build in pufferlib_ext/ (see that directory's NOTICE.md),
 not a pip-installed PufferLib -- see benchmarks/README.md's results index for

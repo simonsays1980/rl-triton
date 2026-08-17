@@ -85,7 +85,7 @@ ipython_config.py
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+.python-version
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
@@ -181,21 +181,6 @@ paper/*.synctex.gz
 paper/*.fls
 paper/*.fdb_latexmk
 paper/*.toc
-# Also cover any stray LaTeX artefacts in docs/ from earlier build work
-docs/paper.tex
-docs/paper.bib
-# Markdown export/mirror of the paper -- not linked from mkdocs.yml's nav,
-# not meant to be part of the published docs site (contains a personal
-# email address in plaintext).
-docs/paper.md
-docs/arxiv.sty
-docs/paper.aux
-docs/paper.bbl
-docs/paper.blg
-docs/paper.log
-docs/paper.out
-docs/paper_body.tex
-docs/*.synctex.gz
 paper_body.tex
 
 # mypy

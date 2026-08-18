@@ -17,8 +17,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    "torch>=2.2",
-    "triton>=2.3",
+    "torch>=2.4.1",
+    "triton>=3.0.0",
 ]
 
 [project.urls]

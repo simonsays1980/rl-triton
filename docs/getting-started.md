@@ -5,9 +5,24 @@ title: Getting Started
 ## Requirements
 
 - Python ≥ 3.10
-- PyTorch ≥ 2.2
-- Triton ≥ 2.3
+- PyTorch ≥ 2.4.1
+- Triton ≥ 3.0.0
 - A CUDA-capable GPU
+
+Tested combination: PyTorch 2.4.1+cu124, Triton 3.0.0, CUDA 12.4. This is the
+only combination the correctness and benchmark suites have actually been run
+against; the version floors above are pinned to it rather than to an
+independently-verified lower bound. CI installs the package with `--no-deps`
+against whatever torch/triton the runner image provides, and prints the exact
+versions at the start of each run (see the correctness job log) rather than
+pinning them in the workflow itself.
+
+If you upgrade PyTorch, note that the benchmark suite's `torch.compile`
+comparison baselines (not `rl_triton`'s own kernels) have known Inductor/Dynamo
+correctness issues on this codebase -- silently wrong output, not a crash --
+documented in `NOTES.md`. They are mitigated for the tested combination above;
+re-run `pytest tests/ -v` after upgrading before trusting any new benchmark
+numbers.
 
 ## Installation
 

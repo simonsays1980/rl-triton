@@ -41,7 +41,9 @@ benchmark methodology is available:
 - Linux with a CUDA-capable GPU (Triton compiles and runs GPU kernels; there is no
   CPU fallback).
 - Python >=3.10 (tested on 3.10, 3.11).
-- PyTorch >=2.2, Triton >=2.3 (installed automatically as dependencies).
+- PyTorch >=2.4.1, Triton >=3.0.0 (installed automatically as dependencies).
+  Tested combination: PyTorch 2.4.1+cu124, Triton 3.0.0, CUDA 12.4 -- see
+  [Getting Started](docs/getting-started.md#requirements) for detail.
 
 ### Install
 

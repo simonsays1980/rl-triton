@@ -26,15 +26,11 @@ numbers.
 
 ## Installation
 
-Clone the repository and install in editable mode:
-
-```bash
-git clone https://github.com/simonsays1980/rl-triton.git
-cd rl-triton
-pip install -e ".[dev]"
-```
-
-The `[dev]` extra pulls in `pytest`, `pytest-benchmark`, and `numpy` for running tests and benchmarks.
+{%
+  include-markdown "../README.md"
+  start="<!-- INSTALL_START -->"
+  end="<!-- INSTALL_END -->"
+%}
 
 ## Quick Start
 

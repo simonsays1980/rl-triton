@@ -45,6 +45,7 @@ benchmark methodology is available:
 
 ### Install
 
+<!-- INSTALL_START -->
 **Use it in your project:**
 
 ```bash
@@ -53,7 +54,6 @@ pip install git+https://github.com/simonsays1980/rl-triton
 
 **From source, editable (for modifying the kernels):**
 
-<!-- INSTALL_START -->
 ```bash
 git clone https://github.com/simonsays1980/rl-triton
 cd rl-triton

@@ -1,7 +1,7 @@
 ![rl-triton banner](assets/banner_dark.svg)
 
 
-High-performance [Triton](https://github.com/openai/triton) GPU kernels for common reinforcement learning computations.
+High-performance [Triton](https://github.com/openai/triton) GPU kernels for reinforcement-learning credit assignment and return estimation.
 
 [![GPU Tests](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml/badge.svg)](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -105,28 +105,21 @@ pytest -m slow -v
 
 ## Benchmarking
 
-The release benchmark runs all algorithms across multiple (num_envs, seq_len) configs.
-Publishing results is a two-step, human-reviewed process: a sweep stages its output in
-`docs/benchmark-history/unreleased.md` (never written directly to `benchmarks.md`), and
-`--promote <version>` moves a reviewed staging candidate into `benchmarks.md` at release
-time. See [benchmarks/README.md](benchmarks/README.md) for the full placement policy.
+Run the full release benchmark suite with:
 
 ```bash
 python tests/bench_release.py --gpu "NVIDIA H100 80GB HBM3" --parent-sweep
 ```
+
+See [benchmarks/README.md](benchmarks/README.md) for methodology and release procedures.
 
 <!-- BENCH_START -->
 ## Performance
 
 *Full sweep, methodology, and truncation-path results: [benchmarks.md](benchmarks.md).*
 
-Headline production-regime numbers below (num_envs=4096, seq_len=128 -- the
-PufferLib/Gigaflow-default rollout size), measured on two GPUs spanning a wide
-performance range. The Triton-vs-`torch.compile` margin is shape-dependent and does not
-move consistently in one direction between these two cards across the full config grid --
-see `NOTES.md` for the open investigation; no cross-GPU trend is asserted here. Sourced
-directly from `benchmarks.md`'s v0.1.3 production-regime and with-truncations tables at
-this exact (num_envs, seq_len).
+Representative benchmark results at `num_envs=4096, seq_len=128`. Numbers report full-call
+speedup over `torch.compile`.
 
 ### NVIDIA H100 80GB HBM3
 
@@ -140,22 +133,7 @@ this exact (num_envs, seq_len).
 | eligibility-traces | 2.48× |
 | prefix-sum | 2.39× |
 
-With truncations (terminations + time-limit truncations + bootstrap values), same config.
-Eligibility-traces and episodic-prefix-sum have no row here, for a structural reason, not an
-unwired gap: both kernels take only a single `dones` flag with no terminated/truncated
-distinction and no bootstrap values, so there is no truncation-path baseline to compare
-against for either. Every other algorithm, including Retrace (terminated/truncated are both
-mandatory, distinct arguments, and no separate bootstrap_values parameter -- the continuation
-value is folded into `next_q_values_all` every step, see `docs/kernels/retrace.md` §4), has a
-row below.
-
-The with-truncations margin is smaller than the plain margin for GAE, V-Trace, and
-lambda-returns -- not because truncations make the `torch.compile` baseline slower (it runs the
-same compiled graph either way), but because the Triton kernel has a `HAS_TRUNCATIONS`
-compile-time fast path that skips the truncateds array and the 2D bootstrap-values tensor
-entirely when there are no truncations, making the plain-path kernel faster in absolute terms
-than the truncation-path kernel. The plain-path headline above should not be read as
-representative of truncation-heavy workloads.
+**With truncations, same configuration:**
 
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|
@@ -177,7 +155,7 @@ representative of truncation-heavy workloads.
 | eligibility-traces | 2.28× |
 | prefix-sum | 2.25× |
 
-With truncations, same config and the same structural omissions as above:
+**With truncations, same configuration:**
 
 | algorithm | speedup vs torch.compile, with truncations (full-call) |
 |:---|:---:|

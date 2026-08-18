@@ -48,6 +48,19 @@ jobs:
       # invisibly has cost real debugging time -- always show what happened.
       - name: Install package (editable, no deps)
         run: pip install --no-deps -e .
+      # torch/triton come from whatever the runner image provides (--no-deps
+      # above skips installing them) -- print the actual versions so a CI log
+      # is evidence of what was tested, not just that "tests passed" against
+      # an unrecorded version. See docs/getting-started.md's Requirements
+      # section for the one combination this has been verified against.
+      - name: Print environment versions
+        run: |
+          python -c "
+          import torch, triton
+          print(f'torch:  {torch.__version__} (cuda {torch.version.cuda})')
+          print(f'triton: {triton.__version__}')
+          print(f'GPU:    {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"none\"}')
+          "
       - name: Run correctness tests
         env:
           PYTHONUNBUFFERED: "1"

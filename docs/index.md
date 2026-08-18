@@ -13,7 +13,7 @@ hide:
   <img src="assets/banner_dark.svg" alt="rl-triton" width="100%"/>
 </p>
 
-High-performance [Triton](https://github.com/openai/triton) GPU kernels for common reinforcement learning computations.
+High-performance [Triton](https://github.com/openai/triton) GPU kernels for reinforcement-learning credit assignment and return estimation.
 
 ## Kernels
 
@@ -53,20 +53,13 @@ For the `seq_len > 131072` fallback behavior of each kernel, see
 
 ## Benchmarking
 
-The release benchmark runs all algorithms across multiple (num_envs, seq_len) configs
-and stages the results to `docs/benchmark-history/unreleased.md` for review -- it never
-writes `benchmarks.md` directly:
+Run the full release benchmark suite with:
 
 ```bash
 python tests/bench_release.py --parent-sweep --gpu "RTX 2000 Ada"
 ```
 
-Use `--no-update` to print results without staging anything. A staged candidate becomes
-the published `benchmarks.md` only when explicitly promoted with a version tag:
-
-```bash
-python tests/bench_release.py --promote --version <new-release-tag>   # e.g. v0.1.4
-```
+See [Benchmarks](benchmarks.md) for methodology, full results, and benchmark details.
 
 ## Performance
 
@@ -74,6 +67,6 @@ Full sweep, methodology, and truncation-path results: [Benchmarks](benchmarks.md
 
 {%
   include-markdown "../README.md"
-  start="benchmarks.md).*"
+  start="num_envs=4096, seq_len=128"
   end="<!-- BENCH_END -->"
 %}

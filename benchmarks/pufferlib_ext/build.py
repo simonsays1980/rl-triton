@@ -40,6 +40,27 @@ files and build flags -- so the JIT compile below only actually runs on a
 cold cache (first run, a changed source/flag, or a cleared cache directory);
 every subsequent call in the same environment returns the cached `.so`
 almost immediately.
+
+================================================================================
+PufferLib 5.0 addendum (load_puff_advantage_5_0, below)
+================================================================================
+
+PufferLib does not publish version releases to PyPI beyond 3.0.0, and does
+not tag versions in git -- each version lives as a same-named branch
+(`refs/heads/4.0`, `refs/heads/5.0`, ...) on
+https://github.com/PufferAI/PufferLib. `pip install pufferlib==5.0.0` does
+not work; there is no such artifact. As of the `5.0` branch, PufferLib is
+also "0 python" (its own author's description) -- the advantage kernel
+(`puff_advantage` in `src/algo.cu`) is called only from a C/CUDA training
+loop (`src/pufferl.cu`) with no `TORCH_LIBRARY`/Python binding at all.
+
+`pufferlib_5_0.cu` therefore vendors just the kernel body (verbatim, marked
+inline) plus a hand-written torch::Tensor binding modeled on this file's own
+3.0.0 binding pattern -- see that file's module comment for the exact
+provenance (commit, line range, sha256) and for what changed vs. 3.0.0
+(vectorized 16B load/store, extra `returns` output, `ADV_THREADS=64` launch
+config). Float32 only, matching PufferLib's `-DPRECISION_FLOAT` build option
+and this repo's own benchmarking regime -- the bf16 path is not vendored.
 """
 import os
 
@@ -83,4 +104,41 @@ def load_puff_advantage():
     return (
         torch.ops.pufferlib.compute_puff_advantage,
         "vendored pufferlib==3.0.0 pufferlib.cpp/pufferlib.cu, JIT-compiled",
+    )
+
+
+def load_puff_advantage_5_0():
+    """Returns torch.ops.pufferlib_5_0.compute_puff_advantage_5_0, building it if
+    needed. PufferLib 5.0 has no Python bindings at all (it is "0 python" -- see
+    pufferlib_5_0.cu's module docstring), so there is no installed-package
+    fast path here (unlike load_puff_advantage() above): this always JIT-builds
+    the vendored kernel plus hand-written torch binding glue.
+
+    Returns:
+        (op, source_desc): op is the callable
+        `torch.ops.pufferlib_5_0.compute_puff_advantage_5_0(values, rewards,
+        dones, importance, advantages, returns, gamma, lambda, rho_clip,
+        c_clip) -> None` (mutates `advantages` and `returns` in place, float32
+        only -- see pufferlib_5_0.cu). source_desc is a short provenance string.
+    """
+    from torch.utils.cpp_extension import load
+
+    print(
+        "[pufferlib_ext] Building PufferLib 5.0's vendored CUDA extension "
+        "(first run only -- cached under TORCH_EXTENSIONS_DIR after this)..."
+    )
+    load(
+        name="_C_5_0",
+        sources=[
+            os.path.join(_EXT_DIR, "pufferlib_5_0.cpp"),
+            os.path.join(_EXT_DIR, "pufferlib_5_0.cu"),
+        ],
+        extra_cflags=["-O3"],
+        extra_cuda_cflags=["-O3"],
+        verbose=False,
+    )
+    return (
+        torch.ops.pufferlib_5_0.compute_puff_advantage_5_0,
+        "vendored pufferlib branch 5.0 @ 355e0be1 (2026-08-17) src/algo.cu "
+        "puff_advantage, JIT-compiled, float32 only",
     )

@@ -8,8 +8,9 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - "assets/**"
-      # NOT paper/rl-triton.pdf: binary, changes only alongside real releases,
-      # cheap to leave triggering CI rather than special-case a non-source file.
+      - ".gitignore"
+      - "CITATION.cff"
+      - "LICENSE"
   pull_request:
     branches: [main]          # safeguard benchmarks gate the merge
     paths-ignore: *docs-only-paths

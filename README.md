@@ -130,6 +130,7 @@ See [benchmarks/README.md](benchmarks/README.md) for methodology and release pro
 
 *Full sweep, methodology, and truncation-path results: [benchmarks.md](benchmarks.md).*
 
+<!-- PERF_HEADLINE_START -->
 Representative benchmark results at `num_envs=4096, seq_len=128`. Numbers report full-call
 speedup over `torch.compile`.
 

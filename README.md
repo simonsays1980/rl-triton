@@ -32,8 +32,7 @@ API reference): **[simonsays1980.github.io/rl-triton](https://simonsays1980.gith
 
 A preprint describing the kernels, the associative-scan formulation, and the
 benchmark methodology is available on arXiv:
-[arXiv:2608.17641](https://arxiv.org/abs/2608.17641)
-([local PDF](paper/rl-triton.pdf)).
+[arXiv:2608.17641](https://arxiv.org/abs/2608.17641).
 
 ```bibtex
 @article{zehnder2026rltriton,

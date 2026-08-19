@@ -1,0 +1,1575 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Triton GPU kernels for reinforcement learning">
+      
+      
+      
+        <link rel="canonical" href="https://simonsays1980.github.io/rl-triton/kernels/gae/">
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../vtrace/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/icon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>GAE - rl-triton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#technical-deep-dive-into-the-gae-triton-kernel" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rl-triton" class="md-header__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rl-triton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              GAE
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Kernels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../benchmarks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rl-triton" class="md-nav__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    rl-triton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Kernels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GAE
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GAE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-sequential-dependency-in-gae" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The Sequential Dependency in GAE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-associative-scan-via-function-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Associative Scan via Function Composition
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup-step-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup (Step 0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-1-parallel-pairs-distance-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 1: Parallel Pairs (Distance = 1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-2-tree-merge-distance-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 2: Tree Merge (Distance = 2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-it-is-olog-n-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why it is O(log N) Order
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-how-threads-end-up-with-the-advantage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. How Threads End Up With the Advantage
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. How Threads End Up With the Advantage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#t1-end-of-episode-base-case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        T=1 (End of Episode) Base Case
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#t4-final-state-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        T=4 Final State and Verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-the-hardware-reality-what-triton-actually-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. The Hardware Reality: What Triton Actually Does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vtrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    V-Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../retrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../returns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Returns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../prefix_sum/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Episodic Prefix Sum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gpu-concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-sequential-dependency-in-gae" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The Sequential Dependency in GAE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-associative-scan-via-function-composition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Associative Scan via Function Composition
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup-step-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup (Step 0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-1-parallel-pairs-distance-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 1: Parallel Pairs (Distance = 1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-2-tree-merge-distance-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 2: Tree Merge (Distance = 2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-it-is-olog-n-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why it is O(log N) Order
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-how-threads-end-up-with-the-advantage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. How Threads End Up With the Advantage
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. How Threads End Up With the Advantage">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#t1-end-of-episode-base-case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        T=1 (End of Episode) Base Case
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#t4-final-state-and-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        T=4 Final State and Verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-the-hardware-reality-what-triton-actually-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. The Hardware Reality: What Triton Actually Does
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="technical-deep-dive-into-the-gae-triton-kernel">Technical Deep Dive into the GAE Triton Kernel</h1>
+<h2 id="introduction">Introduction</h2>
+<p>Generalized Advantage Estimation (GAE; Schulman et al., 2016) is a first-order linear recurrence: each timestep depends on the next. This sequential dependency prevents straightforward parallelization on GPUs, which are designed to execute the same operation across many independent elements simultaneously.</p>
+<p>For typical PPO (Schulman et al., 2017) rollout sizes (a few hundred to a few thousand steps), a well-written PyTorch loop is already fast and the overhead of a custom kernel can offset much of the gain. The Triton kernel described here targets workloads where sequence length or batch size is large enough that the parallel reduction pays off - for example, very long trajectories, continuous control tasks with fine time resolution, or research into scalable RL infrastructure.</p>
+<p>This tutorial provides a precise, technical walkthrough of how this kernel uses a <strong>Parallel Associative Scan</strong> to restructure the <span class="arithmatex">\(O(N)\)</span> sequential recurrence into an <span class="arithmatex">\(O(\log N)\)</span> parallel tree reduction, and explains exactly when and why that matters. Readers unfamiliar with how Triton kernels map onto GPU hardware (memory layout, strides, BLOCK_SIZE, masking) may find the <a href="../gpu-concepts/">GPU Concepts</a> reference page useful alongside this tutorial.</p>
+<hr />
+<h2 id="1-the-sequential-dependency-in-gae">1. The Sequential Dependency in GAE</h2>
+<p>The definition of GAE (Schulman et al., 2016) computes the advantage at timestep <span class="arithmatex">\(t\)</span> from the TD error and all future advantages within the same episode:</p>
+<div class="arithmatex">\[\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)\]</div>
+<div class="arithmatex">\[A_t = \sum_{k=0}^{\infty} (\gamma\lambda)^k \delta_{t+k} = \delta_t + \gamma\lambda \cdot A_{t+1}\]</div>
+<p>This is a pure mathematical recurrence with no done flags. The sum naturally terminates at the episode end because <span class="arithmatex">\(\delta_t = 0\)</span> and <span class="arithmatex">\(A_t = 0\)</span> for all <span class="arithmatex">\(t\)</span> beyond termination.</p>
+<p>In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent advantages from summing across episode boundaries, the kernel replaces the pure mathematical <span class="arithmatex">\(\delta_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> with masked versions that depend on two mutually exclusive flags, <span class="arithmatex">\(d_t^{\text{term}}\)</span> and <span class="arithmatex">\(d_t^{\text{trunc}}\)</span>:</p>
+<div class="arithmatex">\[\delta_t = r_t + \gamma\,(1 - d_t^{\text{term}})\,V(s_{t+1}) - V(s_t)\]</div>
+<div class="arithmatex">\[\beta_t = \gamma\lambda(1 - d_t), \quad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}\]</div>
+<p>Here <span class="arithmatex">\(V(s_{t+1})\)</span> is taken from <code>values[t+1]</code> at continuing steps and from <code>bootstrap_values[env, t]</code> at truncated steps; <span class="arithmatex">\(d_t^{\text{term}}\)</span> zeros it entirely at termination. Section 5 details what this means for the caller.</p>
+<p>Throughout this document <span class="arithmatex">\(T\)</span> denotes the <strong>sequence length</strong> (the number of steps in the rollout buffer), not necessarily an episode termination.</p>
+<hr />
+<h2 id="2-associative-scan-via-function-composition">2. Associative Scan via Function Composition</h2>
+<p>The recurrence <span class="arithmatex">\(A_t = \delta_t + \beta_t A_{t+1}\)</span> creates a strict sequential dependency chain: timestep 100 cannot be computed until timestep 101 finishes, which waited for 102, all the way to 1024. GPU cores that could be working on independent data are instead stalled waiting on this chain. Additionally, a naive loop issues a separate HBM read/write per step rather than loading the whole sequence once.</p>
+<p>We can solve this linear recurrence in parallel by rethinking the math not as calculating <em>numbers</em> sequentially, but as composing linear <em>functions</em> simultaneously.</p>
+<p>Any timestep <span class="arithmatex">\(t\)</span> in GAE is a linear transformation: <span class="arithmatex">\(f_t(x) = \delta_t + \beta_t x\)</span> (where <span class="arithmatex">\(\beta_t = \gamma\lambda\)</span> mathematically, and <span class="arithmatex">\(\beta_t = \gamma\lambda(1-d_t)\)</span> is the kernel implementation to stop propagation at episode boundaries).</p>
+<p>If we want to find the accumulated advantage over two adjacent steps, <span class="arithmatex">\(A\)</span> and <span class="arithmatex">\(B\)</span>, we don't need the final starting number. We can just compose the two linear functions algebraically:</p>
+<div class="arithmatex">\[f_B(f_A(x)) = \delta_B + \beta_B(\delta_A + \beta_A x) = (\delta_B + \beta_B \delta_A) + (\beta_B \beta_A)x\]</div>
+<p>This algebraic composition defines a custom <strong>associative operator (<span class="arithmatex">\(\oplus\)</span>)</strong> that operates on tuples of <span class="arithmatex">\((\alpha, \beta)\)</span>, where <span class="arithmatex">\(\alpha_t = \delta_t\)</span> and <span class="arithmatex">\(\beta_t = \gamma\lambda(1-d_t)\)</span> (the implementation value, as defined in Section 1):</p>
+<div class="arithmatex">\[(\alpha_B, \beta_B) \oplus (\alpha_A, \beta_A) = (\alpha_B + \beta_B \alpha_A, \,\, \beta_A \beta_B)\]</div>
+<ul>
+<li><strong>TD accumulation:</strong> New error is the later error <span class="arithmatex">\(\alpha_B\)</span> plus the weighted earlier error <span class="arithmatex">\(\beta_B \alpha_A\)</span>.</li>
+<li><strong>Decay product:</strong> The decay terms just multiply.</li>
+</ul>
+<p><strong>Why this works:</strong> Function composition is associative: <span class="arithmatex">\((C \circ B) \circ A = C \circ (B \circ A)\)</span>. Since the grouping doesn't matter, we don't have to compute them strictly left-to-right (sequentially). We can group them as chunks and snap the chunks together.</p>
+<p><strong>This is why we can operate <em>only</em> on the TD errors and decays and do not need the numerical advantage of the higher timestep (<span class="arithmatex">\(A_{t+1}\)</span>) inside the reduction tree.</strong> The tree is accumulating <em>functions</em>, not numbers. The tuples represent the state of function composition, not the final advantage value yet.</p>
+<hr />
+<h2 id="3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree">3. The Mechanism: Detailed Trace of a 4-Step Reduction Tree</h2>
+<p>The following trace covers exactly what happens inside the GPU SRAM using a minimal sequence of 4 timesteps. Because GAE is a backward recurrence, the array is reversed before processing.</p>
+<p>Let <span class="arithmatex">\(T_1\)</span> sit at array index <span class="arithmatex">\(1\)</span>, representing the end of the episode (<span class="arithmatex">\(t=3\)</span>).
+Let <span class="arithmatex">\(T_4\)</span> sit at array index <span class="arithmatex">\(4\)</span>, representing the start of the episode (<span class="arithmatex">\(t=0\)</span>).</p>
+<p>This trace uses the standard scan algorithm where threads pull data from their 'left'. In this context, 'left' simply means a lower array index. Because our array is reversed, looking to a lower index correctly means pulling data from a chronologically later timestep.</p>
+<h3 id="setup-step-0">Setup (Step 0)</h3>
+<p>The entire trajectory is loaded once into the Streaming Multiprocessor's (SM) Shared Memory (SRAM). We assign one GPU Thread (<span class="arithmatex">\(Ti\)</span>) to each timestep index <span class="arithmatex">\(i\)</span>. Each thread prepares its initial associative tuple <span class="arithmatex">\((\alpha_i, \beta_i)\)</span> sitting in local registers:</p>
+<ul>
+<li><span class="arithmatex">\(T1\)</span> holds: <span class="arithmatex">\(T_1 = (\alpha_1, \beta_1)\)</span></li>
+<li><span class="arithmatex">\(T2\)</span> holds: <span class="arithmatex">\(T_2 = (\alpha_2, \beta_2)\)</span></li>
+<li><span class="arithmatex">\(T3\)</span> holds: <span class="arithmatex">\(T_3 = (\alpha_3, \beta_3)\)</span></li>
+<li><span class="arithmatex">\(T4\)</span> holds: <span class="arithmatex">\(T_4 = (\alpha_4, \beta_4)\)</span></li>
+</ul>
+<h3 id="hardware-loop-1-parallel-pairs-distance-1">Hardware Loop 1: Parallel Pairs (Distance = 1)</h3>
+<p>In the first cycle, the hardware tells <em>every</em> thread simultaneously: "Look at the neighbor exactly <strong>1</strong> step to your 'left'. Combine their tuple with yours using <span class="arithmatex">\(\oplus\)</span>."</p>
+<ul>
+<li>Thread 1: No left neighbor. Keeps <span class="arithmatex">\(T_1\)</span>.</li>
+<li>Thread 2: Grabs <span class="arithmatex">\(T_1\)</span> from Thread 1. Computes <span class="arithmatex">\(T_{1..2} = T_2 \oplus T_1\)</span>. (Using the formula from Section 2).</li>
+<li>Thread 3: Grabs <span class="arithmatex">\(T_2\)</span> from Thread 2. Computes <span class="arithmatex">\(T_{2..3} = T_3 \oplus T_2\)</span>.</li>
+<li>Thread 4: Grabs <span class="arithmatex">\(T_3\)</span> from Thread 3. Computes <span class="arithmatex">\(T_{3..4} = T_4 \oplus T_3\)</span>.</li>
+</ul>
+<h3 id="hardware-loop-2-tree-merge-distance-2">Hardware Loop 2: Tree Merge (Distance = 2)</h3>
+<p>In the second cycle, the hardware tells <em>every</em> thread simultaneously: "Look at the neighbor exactly <strong>2</strong> steps to your 'left'. Take the chunk they are currently holding and combine it with yours."</p>
+<ul>
+<li>Thread 1: No neighbor at distance 2. Keeps <span class="arithmatex">\(T_1\)</span>.</li>
+<li>Thread 2: No neighbor at distance 2. Keeps <span class="arithmatex">\(T_{1..2}\)</span>.</li>
+<li>Thread 3: Grabs <span class="arithmatex">\(T_1\)</span> from Thread 1. Combines with its current chunk: <span class="arithmatex">\(T_{2..3} \oplus T_1 = T_{1..3}\)</span>.</li>
+<li><strong>Thread 4:</strong> Grabs the current tuple from Thread 2. <em>Thread 2 is holding <span class="arithmatex">\(T_{1..2}\)</span>!</em> Thread 4 performs the combination: <span class="arithmatex">\(T_{3..4} \oplus T_{1..2} = T_{1..4}\)</span>.</li>
+</ul>
+<h3 id="why-it-is-olog-n-order">Why it is O(log N) Order</h3>
+<p>The tree structure is defined by the distance threads look to their "left" (lower index) to acquire data.</p>
+<ol>
+<li>Loop 1: Threads look distance 1.</li>
+<li>Loop 2: Threads look distance 2.</li>
+<li>Loop 3: Threads look distance 4...</li>
+</ol>
+<p>The distance doubles every single hardware cycle. If you had 1,024 timesteps, standard GAE takes 1,024 sequential steps. The doubling behavior means Triton covers that entire 1024-step sequence in exactly <span class="arithmatex">\(\log_2(1024) = 10\)</span> parallel reduction cycles. This is the <span class="arithmatex">\(O(\log N)\)</span> parallel advantage.</p>
+<hr />
+<h2 id="4-how-threads-end-up-with-the-advantage">4. How Threads End Up With the Advantage</h2>
+<p>The associative scan produces intermediate cumulative results for <em>every single index simultaneously</em> in SRAM, not just one number at the end. After the <span class="arithmatex">\(\log_2 N\)</span> loops complete, we look at the final state of the SRAM registers:</p>
+<h3 id="t1-end-of-episode-base-case">T=1 (End of Episode) Base Case</h3>
+<p>Thread 1 holds tuple <span class="arithmatex">\(T_1\)</span>. For GAE, we assume the base case: the advantage after the end of an episode (step <span class="arithmatex">\(t+1=0\)</span>) is <span class="arithmatex">\(0.0\)</span>.
+If we apply our linear function <span class="arithmatex">\(f(x) = \delta + \beta x\)</span> to <span class="arithmatex">\(x=0\)</span>, we get <span class="arithmatex">\(\alpha + \beta(0) = \alpha\)</span>.</p>
+<ul>
+<li>Thread 1 advantage: Just the <span class="arithmatex">\(\alpha\)</span> term of <span class="arithmatex">\(T_1\)</span>. This is <span class="arithmatex">\(\delta_1\)</span>. Correct.</li>
+</ul>
+<h3 id="t4-final-state-and-verification">T=4 Final State and Verification</h3>
+<p>Thread 4 is holding the final composed tuple <span class="arithmatex">\(T_{1..4}\)</span>. Its advantage is just the <span class="arithmatex">\(\alpha\)</span> term of that tuple: <span class="arithmatex">\(\alpha_{1..4}\)</span>.</p>
+<p>Let's verify <span class="arithmatex">\(\alpha_{1..4}\)</span> against sequential GAE, substituting back <span class="arithmatex">\(\alpha_i = \delta_i\)</span> and <span class="arithmatex">\(\beta_i = \gamma\lambda(1-d_i)\)</span>. Sequential PPO calculates:</p>
+<ul>
+<li><span class="arithmatex">\(A_1 = \alpha_1\)</span></li>
+<li><span class="arithmatex">\(A_2 = \alpha_2 + \beta_2 A_1 = \alpha_2 + \beta_2 \alpha_1\)</span></li>
+<li><span class="arithmatex">\(A_3 = \alpha_3 + \beta_3 A_2 = \alpha_3 + \beta_3 \alpha_2 + \beta_3 \beta_2 \alpha_1\)</span></li>
+<li><span class="arithmatex">\(A_4 = \alpha_4 + \beta_4 A_3 = \mathbf{\alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1}\)</span></li>
+</ul>
+<p>The algebra from the composition of chunks in Loop 2 (T4 grabbing <span class="arithmatex">\(T_{1..2}\)</span> and combining with <span class="arithmatex">\(T_{3..4}\)</span>):</p>
+<div class="arithmatex">\[\alpha_{1..4} = \alpha_{3..4} + \beta_{3..4}\,\alpha_{1..2}\]</div>
+<div class="arithmatex">\[\alpha_{1..4} = (\alpha_4 + \beta_4 \alpha_3) + (\beta_3 \beta_4)(\alpha_2 + \beta_2 \alpha_1)\]</div>
+<div class="arithmatex">\[\alpha_{1..4} = \mathbf{\alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1}\]</div>
+<p><strong>The polynomial sitting in Thread 4's SRAM register is identical to the sequential calculation.</strong> Thread 4 did not wait linearly for Thread 3. It built its own mini-chunk <span class="arithmatex">\(T_{3..4}\)</span> simultaneously while Thread 2 built <span class="arithmatex">\(T_{1..2}\)</span>.</p>
+<p>Every thread knows its full history by snapping pre-computed chunks together logarithmically, touching HBM only twice: once to load all <span class="arithmatex">\((\alpha, \beta)\)</span> pairs and once to write all advantages.</p>
+<hr />
+<h2 id="5-handling-episode-boundaries-and-the-window-bootstrap">5. Handling Episode Boundaries and the Window Bootstrap</h2>
+<p>During the scan, the GPU only calculates the <span class="arithmatex">\(\alpha\)</span> and <span class="arithmatex">\(\beta\)</span> terms of the function <span class="arithmatex">\(f_i(x)=\alpha_i+\beta_i x\)</span>. It does not need to know the starting base case (<span class="arithmatex">\(x\)</span>) to build the tree. The equations for <span class="arithmatex">\(\delta_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> were established in Section 1; this section describes the caller's responsibility for preparing the input arrays correctly.</p>
+<p>The kernel consumes <code>values</code>, <code>terminateds</code>, <code>truncateds</code>, and <code>bootstrap_values</code>, all of shape <code>[num_envs, seq_len]</code>. It never sees observations. The three step types from Section 1 translate directly into array requirements.</p>
+<h4 id="terminated-steps">Terminated steps</h4>
+<p>At a terminated step <span class="arithmatex">\(t\)</span>, <code>terminateds[t] = 1</code> zeros <span class="arithmatex">\(\gamma V(s_{t+1})\)</span> inside <span class="arithmatex">\(\delta_t\)</span> and sets <span class="arithmatex">\(\beta_t = 0\)</span>, stopping advantage propagation into the previous episode. <code>values[t+1]</code> belongs to the next episode but is harmless: the carry is already severed. No entry in <code>bootstrap_values</code> is needed at terminated steps; the kernel ignores it there.</p>
+<h4 id="truncated-steps">Truncated steps</h4>
+<p>At a truncated step <span class="arithmatex">\(t\)</span>, the episode continues, so <span class="arithmatex">\(\delta_t\)</span> still needs the true continuation value <span class="arithmatex">\(V(s_{t+1})\)</span>. The stored <code>values[t+1]</code> belongs to a different episode and must not be used. The caller supplies the correct value as <code>bootstrap_values[env, t]</code>, which the Section 1 bracket selects automatically. The carry is still severed (<span class="arithmatex">\(\beta_t = 0\)</span>) so no advantage propagates across the boundary.</p>
+<h4 id="window-boundary-at-t-t-1">Window boundary at <span class="arithmatex">\(t = T-1\)</span></h4>
+<p>At the last step of the window, <span class="arithmatex">\(V(s_T)\)</span> lies one step past the end of the <code>values</code> tensor. The caller supplies it as <code>bootstrap_values[env, T-1]</code> when the episode continues past the window, or leaves it zero if the episode terminated at <span class="arithmatex">\(T-1\)</span>.</p>
+<p>This value enters <span class="arithmatex">\(\delta_{T-1}\)</span> as the ordinary next-state value that completes the one-step TD residual: <span class="arithmatex">\(\delta_{T-1} = r_{T-1} + \gamma V(s_T) - V(s_{T-1})\)</span>. The scan's boundary carry is always <span class="arithmatex">\(A_T = 0\)</span>:</p>
+<div class="arithmatex">\[A_t = (\text{local scan result})_t + (\text{decay product})_t \cdot 0 = (\text{local scan result})_t\]</div>
+<p>An advantage carry would represent trace mass from steps <em>past</em> the buffer, and there is none to represent: <code>bootstrap_values[env, T-1]</code> already prices <span class="arithmatex">\(V(s_T)\)</span> into <span class="arithmatex">\(\delta_{T-1}\)</span> at weight 1, exactly as the infinite-horizon recurrence in Section 1 requires. This is genuinely different from the <a href="../returns/">λ-returns kernel</a>, where the analogous carry legitimately contributes a nonzero term at weight <span class="arithmatex">\(\gamma\lambda\)</span> -- there <span class="arithmatex">\(\alpha_t\)</span> only carries <span class="arithmatex">\(\gamma(1-\lambda)V(s_{t+1})\)</span>, so the two weights sum to <span class="arithmatex">\(1\)</span> rather than overlapping.</p>
+<h4 id="the-unifying-rule">The unifying rule</h4>
+<p><code>bootstrap_values</code> holds the true continuation value <span class="arithmatex">\(V(s_{t+1})\)</span> at exactly those positions where <code>values[t+1]</code> is invalid -- truncated steps and the final column -- and zero everywhere else. Its shape is <code>[num_envs, seq_len]</code>. Setting <code>RL_TRITON_CORRECTNESS_WARNINGS=1</code> activates a debug assertion that catches stray nonzero entries.</p>
+<p>For the common case where no interior truncations occur, the <code>last_value</code> argument (shape <code>[num_envs]</code>) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates <code>bootstrap_values[:, -1]</code> automatically. <code>last_value</code> and <code>bootstrap_values</code> are mutually exclusive.</p>
+<p><strong>Long sequences (chunked path):</strong> For sequences longer than the flat kernel's limit, <code>compute_gae</code> dispatches to a chunked scan kernel instead of the fused one, but the boundary carry is unaffected by this -- it is still always <span class="arithmatex">\(0\)</span> at <span class="arithmatex">\(t=T\)</span>, computed by that same single kernel call over the whole sequence, not stitched together from separately-called chunks.</p>
+<h4 id="boundary-summary">Boundary summary</h4>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th><span class="arithmatex">\(d_t\)</span></th>
+<th><span class="arithmatex">\(d_t^{\text{term}}\)</span></th>
+<th>Bootstrap <span class="arithmatex">\(V(s_{t+1})\)</span> in <span class="arithmatex">\(\delta_t\)</span></th>
+<th>Decay <span class="arithmatex">\(\beta_t\)</span></th>
+<th>Scan carry <span class="arithmatex">\(A_T\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Terminated</strong></td>
+<td>1</td>
+<td>1</td>
+<td>Zeroed by <span class="arithmatex">\((1-d_t^{\text{term}})\)</span>; <code>bootstrap_values</code> ignored</td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span></td>
+</tr>
+<tr>
+<td><strong>Truncated</strong></td>
+<td>1</td>
+<td>0</td>
+<td>Kept; caller supplies <code>bootstrap_values[env, t]</code></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span></td>
+</tr>
+<tr>
+<td><strong>Window end</strong></td>
+<td>0</td>
+<td>0</td>
+<td>Kept; caller supplies <code>bootstrap_values[env, T-1]</code></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span> (always -- never seeded from the bootstrap)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-the-hardware-reality-what-triton-actually-does">6. The Hardware Reality: What Triton Actually Does</h2>
+<p>The ultimate performance gain comes from eliminating trips to the slow High Bandwidth Memory (HBM). Here is the precise lifecycle of the kernel:</p>
+<p><strong>The Single Load (HBM <span class="arithmatex">\(\rightarrow\)</span> SRAM):</strong> The GPU issues one coalesced read instruction. All raw TD errors and decays are pulled from main HBM into the Streaming Multiprocessor's (SM) ultra-fast Shared Memory (SRAM).</p>
+<p><strong>Thread Allocation (SRAM <span class="arithmatex">\(\rightarrow\)</span> Registers):</strong> Each thread reads its specific timestep data from SRAM into its local Arithmetic Logic Unit (ALU) registers.</p>
+<p><strong>The Scan Execution (Registers <span class="arithmatex">\(\rightarrow\)</span> SRAM):</strong> The <span class="arithmatex">\(O(\log N)\)</span> reduction occurs. Threads communicate intermediate tuples via direct warp shuffles or extremely fast SRAM exchanges.</p>
+<p><strong>The Carry-Over Application (Registers):</strong> Every thread incorporates the carry-over advantage entirely in its local registers in a single clock cycle.</p>
+<p><strong>The Single Store (Registers <span class="arithmatex">\(\rightarrow\)</span> HBM):</strong> In one massive, synchronized write instruction (<code>tl.store</code>), all threads flush their final advantages directly back to HBM.</p>
+<p>By trapping the entire reduction loop inside Registers and SRAM, Triton completely bypasses the memory thrashing that plagues standard PyTorch implementations.</p>
+<hr />
+<h2 id="7-applications">7. Applications</h2>
+<p>GAE was introduced as the advantage estimator for Proximal Policy Optimization (Schulman et al., 2017), where low-variance advantage estimates are critical for stable policy gradient updates under the clipped surrogate objective. It remains the default advantage estimator in virtually all modern on-policy deep RL algorithms, including implementations of PPO for large-scale training such as those used in reinforcement learning from human feedback (RLHF) pipelines for language model alignment. The <span class="arithmatex">\(\lambda\)</span> parameter gives practitioners direct control over the bias–variance tradeoff: <span class="arithmatex">\(\lambda = 0\)</span> reduces GAE to a one-step TD advantage with low variance but high bias, while <span class="arithmatex">\(\lambda = 1\)</span> recovers the full Monte Carlo return with low bias but high variance. This flexibility, combined with the <span class="arithmatex">\(O(\log N)\)</span> parallel scan that makes it efficient at large sequence lengths, makes GAE the natural choice wherever long rollouts or many parallel environments are required.</p>
+<hr />
+<h2 id="references">References</h2>
+<ul>
+<li>Schulman, J., Moritz, P., Levine, S., Jordan, M., &amp; Abbeel, P. (2016). <em>High-Dimensional Continuous Control Using Generalized Advantage Estimation.</em> ICLR 2016. arXiv:1506.02438.</li>
+<li>Schulman, J., Wolski, F., Dhariwal, P., Radford, A., &amp; Klimov, O. (2017). <em>Proximal Policy Optimization Algorithms.</em> arXiv:1707.06347.</li>
+<li>Schulman, J., Wolski, F., Dhariwal, P., Radford, A., &amp; Klimov, O. (2017). <em>Proximal Policy Optimization Algorithms.</em> arXiv:1707.06347.</li>
+</ul>
+<h2 id="further-reading">Further Reading</h2>
+<ul>
+<li><a href="https://pseudo-rnd-thoughts.github.io/blog/visualising-gae/">Visualising GAE</a> -- A visual walkthrough of GAE's recurrence structure and how advantages accumulate across timesteps.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

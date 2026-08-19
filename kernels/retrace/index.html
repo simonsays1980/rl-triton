@@ -1,0 +1,1417 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Triton GPU kernels for reinforcement learning">
+      
+      
+      
+        <link rel="canonical" href="https://simonsays1980.github.io/rl-triton/kernels/retrace/">
+      
+      
+        <link rel="prev" href="../vtrace/">
+      
+      
+        <link rel="next" href="../returns/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/icon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Retrace - rl-triton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#retrace-with-triton-associative-scans" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rl-triton" class="md-header__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rl-triton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Retrace
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Kernels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../benchmarks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rl-triton" class="md-nav__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    rl-triton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Kernels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gae/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GAE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vtrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    V-Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrace
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-retrace-target-accumulating-td-errors-over-q-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The Retrace Target: Accumulating TD Errors Over Q-Values
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-deriving-the-backward-recurrence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Deriving the Backward Recurrence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-core-difference-the-index-shift-c_t1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Core Difference: The Index Shift (\(c_{t+1}\))
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-mapping-to-the-associative-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Mapping to the Associative Scan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Mapping to the Associative Scan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verification-via-the-reduction-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification via the reduction tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-reconstructing-the-q-value-target-and-advantages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Reconstructing the Q-Value Target and Advantages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-retrace-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Retrace Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../returns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Returns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../prefix_sum/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Episodic Prefix Sum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gpu-concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-retrace-target-accumulating-td-errors-over-q-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The Retrace Target: Accumulating TD Errors Over Q-Values
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-deriving-the-backward-recurrence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Deriving the Backward Recurrence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-core-difference-the-index-shift-c_t1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Core Difference: The Index Shift (\(c_{t+1}\))
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-mapping-to-the-associative-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Mapping to the Associative Scan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Mapping to the Associative Scan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verification-via-the-reduction-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification via the reduction tree
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-reconstructing-the-q-value-target-and-advantages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Reconstructing the Q-Value Target and Advantages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-retrace-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Retrace Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="retrace-with-triton-associative-scans">Retrace(λ) with Triton Associative Scans</h1>
+<h2 id="introduction">Introduction</h2>
+<p>Having successfully accelerated both Generalized Advantage Estimation (GAE) and V-Trace, we can now adapt our <span class="arithmatex">\(O(\log N)\)</span> parallel associative scan to evaluate action-values using <strong>Retrace(<span class="arithmatex">\(\lambda\)</span>)</strong>.</p>
+<p>Retrace(<span class="arithmatex">\(\lambda\)</span>) (Munos et al., 2016) is a foundational off-policy algorithm that shares the same recursive DNA as V-Trace, but is designed for Q-learning rather than Actor-Critic state values. Because the underlying first-order recurrence remains identical, the Triton kernel requires no changes -- only the PyTorch inputs need adjustment to account for an essential <strong>index shift</strong> in the importance sampling weights.</p>
+<hr />
+<h2 id="1-the-retrace-target-accumulating-td-errors-over-q-values">1. The Retrace Target: Accumulating TD Errors Over Q-Values</h2>
+<p>Before mapping Retrace to our hardware, it is worth asking the same question we asked for V-Trace: <em>Why does Retrace accumulate TD errors rather than raw discounted rewards?</em></p>
+<p>The answer is again a <strong>Telescoping Sum</strong>, but this time applied to the action-value <span class="arithmatex">\(Q(s_t, a_t)\)</span> instead of the state value <span class="arithmatex">\(V(s_t)\)</span>.</p>
+<p>Recall the Retrace TD error for a single step:</p>
+<div class="arithmatex">\[\delta_t = r_t + \gamma\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)\]</div>
+<p>Adding this error to the baseline <span class="arithmatex">\(Q(s_t, a_t)\)</span> gives:</p>
+<div class="arithmatex">\[Q(s_t, a_t) + \delta_t = Q(s_t, a_t) + \left[ r_t + \gamma\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t) \right]\]</div>
+<p>The <span class="arithmatex">\(Q(s_t, a_t)\)</span> terms cancel instantly, leaving the 1-step return:</p>
+<div class="arithmatex">\[= r_t + \gamma\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)]\]</div>
+<p>Extending this to two steps:</p>
+<div class="arithmatex">\[Q(s_t, a_t) + \delta_t + \gamma \delta_{t+1} = r_t + \gamma r_{t+1} + \gamma^2 \mathbb{E}_{a \sim \pi}[Q(s_{t+2}, a)]\]</div>
+<p>The intermediate <span class="arithmatex">\(Q\)</span> estimates telescope and collapse into a clean <span class="arithmatex">\(n\)</span>-step return. This telescoping property is what makes the TD-error format algebraically natural for Retrace: we can attach the per-step importance weights <span class="arithmatex">\(c_{t+1}\)</span> to each individual error term rather than trying to untangle them from a block of summed rewards.</p>
+<hr />
+<h2 id="2-deriving-the-backward-recurrence">2. Deriving the Backward Recurrence</h2>
+<p>The full Retrace target for state-action pair <span class="arithmatex">\((s_t, a_t)\)</span> is defined in the paper (Munos et al., 2016) as an infinite-horizon sum over all future steps in the trajectory:</p>
+<div class="arithmatex">\[Q^{ret}_t = Q(s_t, a_t) + \sum_{k \geq t} \gamma^{k-t} \left( \prod_{i=t+1}^{k} c_i \right) \delta_k\]</div>
+<p>where the empty product for <span class="arithmatex">\(k=t\)</span> is defined as <span class="arithmatex">\(1\)</span>. The <strong>target delta</strong> is defined as:</p>
+<div class="arithmatex">\[\Delta_t = Q^{ret}_t - Q(s_t, a_t) = \sum_{k \geq t} \gamma^{k-t} \left( \prod_{i=t+1}^{k} c_i \right) \delta_k\]</div>
+<p>The windowed implementation truncates this sum at <span class="arithmatex">\(k = T-1\)</span>, the last step available in the rollout buffer. This introduces a truncation bias equal to the dropped tail <span class="arithmatex">\(\sum_{k \geq T} \gamma^{k-t}\left(\prod_{i=t+1}^{k} c_i\right)\delta_k\)</span>, which is geometric in window depth and suppressed by trace clipping (<span class="arithmatex">\(c_i \leq \lambda \leq 1\)</span>), vanishing when the critic is exact at the boundary.</p>
+<p>Unrolling the first two terms makes the structure explicit:</p>
+<div class="arithmatex">\[\Delta_t = \delta_t + \gamma c_{t+1} \delta_{t+1} + \gamma^2 c_{t+1} c_{t+2} \delta_{t+2} + \dots\]</div>
+<p>Factoring <span class="arithmatex">\(\gamma c_{t+1}\)</span> from every term after the first:</p>
+<div class="arithmatex">\[\Delta_t = \delta_t + \gamma c_{t+1} \left( \delta_{t+1} + \gamma c_{t+2} \delta_{t+2} + \dots \right)\]</div>
+<p>The expression in parentheses is exactly <span class="arithmatex">\(\Delta_{t+1}\)</span>, which yields the <strong>first-order backward recurrence</strong>:</p>
+<div class="arithmatex">\[\Delta_t = \delta_t + \gamma c_{t+1} \cdot \Delta_{t+1}\]</div>
+<p>This is the mathematically exact recurrence within a single episode. No done flags appear -- the sum in the Retrace definition naturally terminates at the episode boundary.</p>
+<p>In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent accumulation from crossing episode boundaries, the kernel introduces masked versions of <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> that depend on two mutually exclusive flags, <span class="arithmatex">\(d_t^{\text{term}}\)</span> and <span class="arithmatex">\(d_t^{\text{trunc}}\)</span>:</p>
+<div class="arithmatex">\[\alpha_t = \delta_t = r_t + \gamma\,(1 - d_t^{\text{term}})\,\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)\]</div>
+<div class="arithmatex">\[\beta_t = \gamma c_{t+1}(1 - d_t), \quad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}\]</div>
+<p>Section 4 details what this means for the caller.</p>
+<p>Notice the critical difference from V-Trace: the decay coefficient multiplying <span class="arithmatex">\(\Delta_{t+1}\)</span> is <span class="arithmatex">\(\gamma c_{t+1}\)</span> (next-step weight), not <span class="arithmatex">\(\gamma c_t\)</span> (current-step weight). This is examined in detail in the next section.</p>
+<p>Throughout this document <span class="arithmatex">\(T\)</span> denotes the <strong>sequence length</strong> (the number of steps in the rollout buffer), not necessarily an episode termination.</p>
+<hr />
+<h2 id="3-the-core-difference-the-index-shift-c_t1">3. The Core Difference: The Index Shift (<span class="arithmatex">\(c_{t+1}\)</span>)</h2>
+<p>If you look closely at the backward recurrence derived above, the trace weight applied to <span class="arithmatex">\(\Delta_{t+1}\)</span> is <strong><span class="arithmatex">\(c_{t+1}\)</span></strong>, whereas in V-Trace the corresponding weight was <strong><span class="arithmatex">\(c_t\)</span></strong>.</p>
+<p>This index shift follows directly from what each algorithm estimates:</p>
+<ul>
+<li><strong>V-Trace</strong> evaluates a state <span class="arithmatex">\(s_t\)</span>. It must correct for the very first action <span class="arithmatex">\(a_t\)</span> taken from that state, so it applies importance sampling immediately (<span class="arithmatex">\(c_t\)</span>).</li>
+<li><strong>Retrace</strong> evaluates a state-action pair <span class="arithmatex">\((s_t, a_t)\)</span>. Because the action <span class="arithmatex">\(a_t\)</span> is already fixed as the subject of our evaluation, we do not reject or correct it. We only begin correcting for off-policy divergence on the <em>next</em> action taken in the trajectory (<span class="arithmatex">\(a_{t+1}\)</span>).</li>
+</ul>
+<p>The importance weight <span class="arithmatex">\(c_t\)</span> itself uses a <span class="arithmatex">\(\lambda\)</span>-scaled clip at <span class="arithmatex">\(1\)</span> rather than V-Trace's <span class="arithmatex">\(\bar{c}\)</span> clip:</p>
+<div class="arithmatex">\[c_t = \lambda \min\left(1, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)\]</div>
+<p>Setting <span class="arithmatex">\(\lambda = 1\)</span> recovers the full importance sampling weight; setting <span class="arithmatex">\(\lambda &lt; 1\)</span> increases the bias–variance trade-off toward lower variance.</p>
+<hr />
+<h2 id="4-handling-episode-boundaries-and-the-window-bootstrap">4. Handling Episode Boundaries and the Window Bootstrap</h2>
+<p>The kernel consumes <code>q_values</code>, <code>next_q_values_all</code>, <code>terminateds</code>, and <code>truncateds</code>. It never sees observations. The equations for <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> were established in Section 2; this section describes the caller's responsibility for preparing the input arrays correctly.</p>
+<p>Retrace differs structurally from GAE and V-Trace in one important respect: it requires no <code>bootstrap_values</code> argument. The continuation value <span class="arithmatex">\(\mathbb{E}_\pi[Q(s_{t+1},\cdot)]\)</span> is embedded directly in <span class="arithmatex">\(\alpha_t\)</span> via <code>next_q_values_all</code>, which the caller must supply for every step including the final column. This means the scan carry <span class="arithmatex">\(\Delta_T\)</span> is always zero -- all boundary information is already encoded in <span class="arithmatex">\(\alpha\)</span> before the scan runs.</p>
+<h3 id="terminated-steps">Terminated steps</h3>
+<p>At a terminated step <span class="arithmatex">\(t\)</span>, <span class="arithmatex">\((1 - d_t^{\text{term}})\)</span> zeros <span class="arithmatex">\(\mathbb{E}_\pi[Q(s_{t+1},\cdot)]\)</span> inside <span class="arithmatex">\(\alpha_t\)</span> -- correct, a terminal state has no continuation value. <span class="arithmatex">\((1 - d_t)\)</span> zeros <span class="arithmatex">\(\beta_t\)</span>, stopping trace propagation into the previous episode.</p>
+<h3 id="truncated-steps">Truncated steps</h3>
+<p>At a truncated step <span class="arithmatex">\(t\)</span>, the episode continues, so the bootstrap <span class="arithmatex">\(\mathbb{E}_\pi[Q(s_{t+1},\cdot)]\)</span> is kept in <span class="arithmatex">\(\alpha_t\)</span> -- <code>next_q_values_all[env, t, :]</code> holds the correct continuation values and is used directly. <span class="arithmatex">\((1 - d_t)\)</span> zeros <span class="arithmatex">\(\beta_t\)</span> so no accumulation propagates across the boundary.</p>
+<h3 id="window-boundary-at-t-t-1">Window boundary at <span class="arithmatex">\(t = T-1\)</span></h3>
+<p>At the last step of the window, <code>next_q_values_all[env, T-1, :]</code> must hold <span class="arithmatex">\(Q(s_T, \cdot)\)</span> -- the action-values at the state one step past the buffer. The caller supplies this from a fresh critic forward pass when the episode continues past the window, or passes zeros if the episode terminated at <span class="arithmatex">\(T-1\)</span> (in which case <span class="arithmatex">\(d_{T-1}^{\text{term}} = 1\)</span> zeros it anyway).</p>
+<p>The scan carry <span class="arithmatex">\(\Delta_T = 0\)</span> is correct in both cases: all future information at the boundary is already encoded in <span class="arithmatex">\(\alpha_{T-1}\)</span> via <code>next_q_values_all</code>. Additionally, the decay coefficient that would propagate a nonzero carry into <span class="arithmatex">\(\Delta_{T-1}\)</span> is <span class="arithmatex">\(\beta_{T-1} = \gamma c_T (1 - d_{T-1})\)</span>, where <span class="arithmatex">\(c_T\)</span> requires the action <span class="arithmatex">\(a_T\)</span> drawn by the behavior policy at <span class="arithmatex">\(s_T\)</span> -- an action that was never sampled and is not in the rollout buffer. The kernel hardcodes <span class="arithmatex">\(c_T = 0\)</span>, making <span class="arithmatex">\(\beta_{T-1} = 0\)</span> regardless of <span class="arithmatex">\(\Delta_T\)</span>.</p>
+<h3 id="the-unifying-rule">The unifying rule</h3>
+<p>The caller supplies <code>terminateds[env, t] = 1</code> at true episode endings and <code>truncateds[env, t] = 1</code> at time-limit boundaries. The kernel derives <span class="arithmatex">\(d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}\)</span> internally to sever the trace at any boundary, while using <code>terminateds</code> alone to gate the bootstrap in <span class="arithmatex">\(\alpha_t\)</span>. The two flags are mutually exclusive: a step cannot be both.</p>
+<h3 id="boundary-summary">Boundary summary</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th><span class="arithmatex">\(d_t\)</span></th>
+<th><span class="arithmatex">\(d_t^{\text{term}}\)</span></th>
+<th>Bootstrap in <span class="arithmatex">\(\alpha_t\)</span></th>
+<th>Trace decay <span class="arithmatex">\(\beta_t\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Terminated</strong></td>
+<td>1</td>
+<td>1</td>
+<td>Zeroed: <span class="arithmatex">\(r_t - Q_t\)</span></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+</tr>
+<tr>
+<td><strong>Truncated</strong></td>
+<td>1</td>
+<td>0</td>
+<td>Kept: <span class="arithmatex">\(r_t + \gamma\mathbb{E}_\pi[Q(s_{t+1},\cdot)] - Q_t\)</span></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+</tr>
+<tr>
+<td><strong>Window end</strong></td>
+<td>0</td>
+<td>0</td>
+<td>Kept: <span class="arithmatex">\(r_{T-1} + \gamma\mathbb{E}_\pi[Q(s_T,\cdot)] - Q_{T-1}\)</span></td>
+<td><span class="arithmatex">\(0\)</span> -- <span class="arithmatex">\(c_T\)</span> undefined</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Performance note.</strong> Unlike GAE/V-Trace, <code>retrace_fused_kernel</code> has no <code>HAS_TRUNCATIONS</code>-style compile-time specialization -- it unconditionally loads both <code>terminated_ptr</code> and <code>truncated_ptr</code> on every call. Measured directly (H200 SXM, num_envs=4096, seq_len=128): full-call and device time are identical whether <code>truncateds</code> is all-zero or has real truncations mixed in (0.0114ms device either way, full-call within noise across repeated runs). Truncation support costs zero marginal runtime here.</p>
+<hr />
+<h2 id="5-mapping-to-the-associative-scan">5. Mapping to the Associative Scan</h2>
+<p>Despite the index shift, the mathematical structure is still a perfect first-order recurrence conforming to our kernel's expected <span class="arithmatex">\(f(x) = \alpha + \beta x\)</span> transformation.</p>
+<p>The inputs map to hardware tuples <span class="arithmatex">\((\alpha, \beta)\)</span> as follows:</p>
+<ul>
+<li><strong>TD accumulation (<span class="arithmatex">\(\alpha_t\)</span>):</strong> <span class="arithmatex">\(\alpha_t = \delta_t = r_t + \gamma(1-d_t^{\text{term}})\mathbb{E}_{a \sim \pi}[Q(s_{t+1}, a)] - Q(s_t, a_t)\)</span></li>
+<li><strong>Trace decay coefficient (<span class="arithmatex">\(\beta_t\)</span>):</strong> <span class="arithmatex">\(\beta_t = \gamma c_{t+1}(1-d_t)\)</span></li>
+</ul>
+<p>Because <span class="arithmatex">\(c_{t+1}\)</span> requires looking one step into the future, the fused kernel reads the action probabilities at <span class="arithmatex">\(t+1\)</span> directly into registers for each timestep rather than pre-shifting the array in PyTorch before the kernel launches.</p>
+<h3 id="verification-via-the-reduction-tree">Verification via the reduction tree</h3>
+<p>The reduction tree mechanics are identical to those described in the <a href="../gae/#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree">GAE tutorial</a>. The following verifies only what is specific to Retrace: how the index shift manifests in the accumulated polynomial. As with GAE and V-Trace, the array is reversed so that threads look "left" to reach chronologically later data.</p>
+<p>After the <span class="arithmatex">\(O(\log N)\)</span> scan, Thread 4 (at reversed index 4, chronological <span class="arithmatex">\(t=1\)</span>) holds the accumulated result <span class="arithmatex">\(\alpha_{1..4}\)</span>. Applying the <span class="arithmatex">\(\oplus\)</span> operator:</p>
+<div class="arithmatex">\[\alpha_{1..4} = \alpha_4 + \beta_4 \alpha_3 + \beta_4 \beta_3 \alpha_2 + \beta_4 \beta_3 \beta_2 \alpha_1\]</div>
+<p>Substituting our chronological Retrace definitions (reversed index <span class="arithmatex">\(k\)</span> maps to time <span class="arithmatex">\(t = k\)</span>):</p>
+<div class="arithmatex">\[\alpha_{1..4} = \delta_1 + (\gamma c_2)\delta_2 + (\gamma c_2)(\gamma c_3)\delta_3 + (\gamma c_2)(\gamma c_3)(\gamma c_4)\delta_4\]</div>
+<p>Notice that <span class="arithmatex">\(c_1\)</span> does not appear anywhere in this polynomial. This is the index shift in action. The Retrace definition assigns each <span class="arithmatex">\(\delta_k\)</span> a weight equal to <span class="arithmatex">\(\prod_{i=t+1}^{k} c_i\)</span>: the product starts one step ahead of the base step <span class="arithmatex">\(t\)</span>, so the base term <span class="arithmatex">\(\delta_1\)</span> (where <span class="arithmatex">\(k=t=1\)</span>) carries the empty product and enters unscaled. The first IS correction, <span class="arithmatex">\(c_2\)</span>, only appears on <span class="arithmatex">\(\delta_2\)</span> -- reflecting that Retrace treats the action <span class="arithmatex">\(a_1\)</span> being evaluated as fixed and begins correcting for off-policy divergence only from <span class="arithmatex">\(a_2\)</span> onward.</p>
+<p>This is exactly <span class="arithmatex">\(\Delta_1\)</span> from the unrolled recurrence above: each TD error <span class="arithmatex">\(\delta_k\)</span> is multiplied by the product of <span class="arithmatex">\(c\)</span> weights starting at index <span class="arithmatex">\(k\)</span> (one step ahead of the originating state), precisely matching the <span class="arithmatex">\(\prod_{i=t+1}^{k} c_i\)</span> product in the Retrace target.</p>
+<hr />
+<h2 id="6-reconstructing-the-q-value-target-and-advantages">6. Reconstructing the Q-Value Target and Advantages</h2>
+<p>Once the <span class="arithmatex">\(O(\log N)\)</span> scan finishes, the fused kernel computes the Q-value target and the actor advantage in the same Triton program before returning to the host. This mirrors the V-Trace fused kernel exactly.</p>
+<p><strong>Step 3 -- Q-value targets.</strong> The scan result <span class="arithmatex">\(\Delta_t\)</span> is added to <span class="arithmatex">\(Q(s_t, a_t)\)</span> in registers before the final write to HBM, avoiding a separate round-trip:</p>
+<div class="arithmatex">\[Q^{ret}_t = \Delta_t + Q(s_t, a_t)\]</div>
+<p><strong>Step 4 -- Advantages.</strong> After a synchronisation barrier, each thread reloads <span class="arithmatex">\(Q^{ret}_{t+1}\)</span> from HBM and computes:</p>
+<div class="arithmatex">\[A_t = \rho_t \left( r_t + \gamma\,(1 - d_t^{\text{term}})\,Q^{ret}_{t+1} - Q(s_t, a_t) \right)\]</div>
+<p>where <span class="arithmatex">\(\rho_t = \min\!\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)\)</span> is the clipped importance weight for the actor update. At <span class="arithmatex">\(t = T-1\)</span>, <span class="arithmatex">\(Q^{ret}_T\)</span> is out-of-bounds and treated as <span class="arithmatex">\(0\)</span> -- the one-step bootstrap is already inside <span class="arithmatex">\(\delta_{T-1}\)</span> via <code>next_q_values_all</code>, so the advantage reflects only the immediate TD correction at the window boundary.</p>
+<p>For sequences exceeding the flat kernel limit, the chunked path performs both additions in PyTorch after the scan.</p>
+<hr />
+<h2 id="7-retrace-applications">7. Retrace Applications</h2>
+<p>Retrace(<span class="arithmatex">\(\lambda\)</span>) was introduced by DeepMind to solve the variance explosion problem inherent in standard importance sampling, allowing algorithms to safely utilize off-policy data without discarding multi-step returns (Munos et al., 2016). Its ability to process off-policy trajectories from experience replay buffers made it a cornerstone of sample-efficient reinforcement learning. Specifically, Retrace was combined with trust region optimization to create the Actor-Critic with Experience Replay (ACER) algorithm, which demonstrated strong sample efficiency in both discrete and continuous control environments (Wang et al., 2017).</p>
+<hr />
+<h2 id="references">References</h2>
+<ul>
+<li>Munos, R., Stepleton, T., Harutyunyan, A., &amp; Bellemare, M. G. (2016). <em>Safe and Efficient Off-Policy Reinforcement Learning.</em> Advances in Neural Information Processing Systems.</li>
+<li>Wang, Z., Bapst, V., Heess, N., Mnih, V., Munos, R., Kavukcuoglu, K., &amp; de Freitas, N. (2017). <em>Sample Efficient Actor-Critic with Experience Replay.</em> arXiv:1611.01224.</li>
+</ul>
+<h2 id="further-reading">Further Reading</h2>
+<ul>
+<li><a href="https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/">Off-Policy Correction</a> -- A visual explanation of off-policy correction methods, covering the importance sampling rationale behind Retrace and related algorithms.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

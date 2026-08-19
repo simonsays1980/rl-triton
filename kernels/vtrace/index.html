@@ -1,0 +1,1531 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Triton GPU kernels for reinforcement learning">
+      
+      
+      
+        <link rel="canonical" href="https://simonsays1980.github.io/rl-triton/kernels/vtrace/">
+      
+      
+        <link rel="prev" href="../gae/">
+      
+      
+        <link rel="next" href="../retrace/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/icon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>V-Trace - rl-triton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#v-trace-with-triton-associative-scans" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rl-triton" class="md-header__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rl-triton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              V-Trace
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Kernels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../benchmarks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rl-triton" class="md-nav__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    rl-triton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Kernels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gae/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GAE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    V-Trace
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    V-Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-v-trace-architecture-and-the-off-policy-bottleneck" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The V-Trace Architecture and the Off-Policy Bottleneck
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-why-accumulate-td-errors-the-telescoping-sum" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Why Accumulate TD Errors? The Telescoping Sum
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-mathematical-bridge-reshaping-to-the-associative-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Mathematical Bridge: Reshaping to the Associative Scan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-thread-level-execution-computing-v-trace-in-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Thread-Level Execution: Computing V-Trace in Hardware
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Thread-Level Execution: Computing V-Trace in Hardware">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup-step-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup (Step 0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-1-parallel-pairs-distance-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 1: Parallel Pairs (Distance = 1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-2-tree-merge-distance-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 2: Tree Merge (Distance = 2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-reconstructing-targets-and-advantages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Reconstructing Targets and Advantages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-hardware-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Hardware Execution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-v-trace-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. V-Trace Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../retrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../returns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Returns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../prefix_sum/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Episodic Prefix Sum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gpu-concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-the-v-trace-architecture-and-the-off-policy-bottleneck" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. The V-Trace Architecture and the Off-Policy Bottleneck
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-why-accumulate-td-errors-the-telescoping-sum" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Why Accumulate TD Errors? The Telescoping Sum
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-mathematical-bridge-reshaping-to-the-associative-scan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The Mathematical Bridge: Reshaping to the Associative Scan
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-thread-level-execution-computing-v-trace-in-hardware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Thread-Level Execution: Computing V-Trace in Hardware
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Thread-Level Execution: Computing V-Trace in Hardware">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#setup-step-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Setup (Step 0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-1-parallel-pairs-distance-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 1: Parallel Pairs (Distance = 1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hardware-loop-2-tree-merge-distance-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware Loop 2: Tree Merge (Distance = 2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-handling-episode-boundaries-and-the-window-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Handling Episode Boundaries and the Window Bootstrap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Handling Episode Boundaries and the Window Bootstrap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#terminated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Terminated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#truncated-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Truncated steps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#window-boundary-at-t-t-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Window boundary at \(t = T-1\)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-unifying-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The unifying rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boundary-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-reconstructing-targets-and-advantages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Reconstructing Targets and Advantages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-hardware-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Hardware Execution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-v-trace-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. V-Trace Applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="v-trace-with-triton-associative-scans">V-Trace with Triton Associative Scans</h1>
+<h2 id="introduction">Introduction</h2>
+<p>The <a href="../gae/">GAE tutorial</a> established how a Parallel Associative Scan restructures a first-order linear recurrence into an <span class="arithmatex">\(O(\log N)\)</span> parallel tree reduction. This tutorial applies the same technique to <strong>V-Trace</strong> (the off-policy target correction algorithm introduced in IMPALA; Espeholt et al., 2018).</p>
+<p>Because V-Trace relies on the exact same recurrence structure as GAE, no new hardware algorithm is needed. Instead, we algebraically redefine the mathematical inputs, reuse the same associative operator, and execute the identical Triton reduction tree.</p>
+<hr />
+<h2 id="1-the-v-trace-architecture-and-the-off-policy-bottleneck">1. The V-Trace Architecture and the Off-Policy Bottleneck</h2>
+<p>Unlike GAE, which assumes data is strictly on-policy, V-Trace allows agents to learn from off-policy trajectories. This was originally designed for the IMPALA distributed architecture (Espeholt et al., 2018), where dozens of "Actor" CPUs collect data for a single "Learner" GPU. Because the Learner continuously updates the network, the policy that generated the data (the <strong>behavior policy, <span class="arithmatex">\(\mu\)</span></strong>) is often older than the policy being trained (the <strong>target policy, <span class="arithmatex">\(\pi\)</span></strong>).</p>
+<p>If we apply standard on-policy math to off-policy data, the value estimates diverge. V-Trace corrects this "policy lag" by introducing two clipped importance sampling weights at each timestep <span class="arithmatex">\(t\)</span>:</p>
+<ul>
+<li>
+<p><strong><span class="arithmatex">\(\rho_t\)</span> (rho):</strong> Used to scale the immediate Temporal Difference (TD) error. It answers the question, <em>"How likely was the current policy to take this action compared to the old policy?"</em></p>
+<div class="arithmatex">\[\rho_t = \min\left(\bar{\rho}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)\]</div>
+</li>
+<li>
+<p><strong><span class="arithmatex">\(c_t\)</span>:</strong> Used to cut or scale the trace decay parameter for future steps. It is the importance sampling ratio clipped at <span class="arithmatex">\(\bar{c}\)</span>: large when <span class="arithmatex">\(\pi\)</span> and <span class="arithmatex">\(\mu\)</span> agree, small when they diverge, and <span class="arithmatex">\(0\)</span> only when <span class="arithmatex">\(\pi(a_t|s_t) = 0\)</span>.</p>
+<div class="arithmatex">\[c_t = \min\left(\bar{c}, \frac{\pi(a_t|s_t)}{\mu(a_t|s_t)}\right)\]</div>
+</li>
+</ul>
+<p>The standard V-Trace formula calculates the corrected <span class="arithmatex">\(n\)</span>-step value target (<span class="arithmatex">\(v_s\)</span>) for a state <span class="arithmatex">\(s\)</span>:</p>
+<div class="arithmatex">\[v_s = V(s_s) + \sum_{t=s}^{s+n-1} \gamma^{t-s} \left( \prod_{i=s}^{t-1} c_i \right) \delta_t^V\]</div>
+<p>Where the TD error for the value function is scaled by <span class="arithmatex">\(\rho\)</span>:</p>
+<div class="arithmatex">\[\delta_t^V = \rho_t(r_t + \gamma(1 - d_t^{\text{term}}) V(s_{t+1}) - V(s_t))\]</div>
+<hr />
+<h2 id="2-why-accumulate-td-errors-the-telescoping-sum">2. Why Accumulate TD Errors? The Telescoping Sum</h2>
+<p>Looking at the V-Trace summation formula above, a common question arises: <em>Why does V-Trace accumulate future TD errors instead of simply accumulating discounted rewards?</em> Standard <span class="arithmatex">\(n\)</span>-step returns sum up rewards and bootstrap at the end.</p>
+<p>The answer lies in a mathematical property called a <strong>Telescoping Sum</strong>. Adding a sum of discounted TD errors to a baseline value estimate perfectly reconstructs the <span class="arithmatex">\(n\)</span>-step reward return because the intermediate value estimates cancel each other out.</p>
+<p>Observe what happens if we add just the 1-step uncorrected TD error to our baseline prediction:</p>
+<div class="arithmatex">\[V(s_t) + \delta_t = V(s_t) + \left[ r_t + \gamma V(s_{t+1}) - V(s_t) \right]\]</div>
+<p>The positive <span class="arithmatex">\(V(s_t)\)</span> and negative <span class="arithmatex">\(V(s_t)\)</span> instantly cancel, leaving:</p>
+<div class="arithmatex">\[= r_t + \gamma V(s_{t+1})\]</div>
+<p>If we expand this to two steps:</p>
+<div class="arithmatex">\[V(s_t) + \delta_t + \gamma \delta_{t+1} = V(s_t) + \left[ r_t + \gamma V(s_{t+1}) - V(s_t) \right] + \gamma \left[ r_{t+1} + \gamma V(s_{t+2}) - V(s_{t+1}) \right]\]</div>
+<p>The intermediate terms telescope and collapse, leaving exactly the 2-step reward return:</p>
+<div class="arithmatex">\[= r_t + \gamma r_{t+1} + \gamma^2 V(s_{t+2})\]</div>
+<p>V-Trace explicitly uses this TD-error format for two reasons:
+1. <strong>Importance Sampling:</strong> Correcting a raw <span class="arithmatex">\(n\)</span>-step reward sum for off-policy data requires multiplying by the full trajectory ratio <span class="arithmatex">\(\prod_{i=t}^{t+n-1} \frac{\pi(a_i|s_i)}{\mu(a_i|s_i)}\)</span>, which grows or shrinks exponentially with <span class="arithmatex">\(n\)</span> and causes severe variance. The telescoping structure of TD errors allows a separate clipped weight <span class="arithmatex">\(c_t\)</span> to be applied at each step independently, keeping variance bounded regardless of trace length.
+2. <strong>Recursion:</strong> It creates a perfect recursive loop that maps flawlessly to hardware acceleration.</p>
+<hr />
+<h2 id="3-the-mathematical-bridge-reshaping-to-the-associative-scan">3. The Mathematical Bridge: Reshaping to the Associative Scan</h2>
+<p>The foundational Triton kernel solves any sequence conforming to the linear transformation <span class="arithmatex">\(f(x)=a+bx\)</span>. To align the V-Trace sum-of-products formula with this structure, isolate the summation by defining a new variable <strong><span class="arithmatex">\(\Delta_t\)</span></strong> (the value delta), representing the sum of all future trace-decayed TD errors:</p>
+<div class="arithmatex">\[\Delta_t = v_t - V(s_t)\]</div>
+<p>If we unroll the summation for <span class="arithmatex">\(\Delta_t\)</span>, we get:</p>
+<div class="arithmatex">\[\Delta_t = \delta_t^V + \gamma c_t \delta_{t+1}^V + \gamma^2 c_t c_{t+1} \delta_{t+2}^V + \dots\]</div>
+<p>Factoring out <span class="arithmatex">\(\gamma c_t\)</span> from the second term onward reveals the first-order backward recurrence:</p>
+<div class="arithmatex">\[\Delta_t = \delta_t^V + \gamma c_t \cdot \Delta_{t+1}\]</div>
+<p>This is the mathematically exact recurrence within a single episode. No done flags appear -- the sum in the original V-Trace definition naturally terminates at the episode boundary.</p>
+<p>In a rollout buffer a single sequence may contain multiple complete episodes or end mid-episode at a truncation boundary. To prevent accumulation from crossing episode boundaries, the kernel introduces masked versions of <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> that depend on two mutually exclusive flags, <span class="arithmatex">\(d_t^{\text{term}}\)</span> and <span class="arithmatex">\(d_t^{\text{trunc}}\)</span>:</p>
+<div class="arithmatex">\[\alpha_t = \delta_t^V = \rho_t\!\left(r_t + \gamma\,(1 - d_t^{\text{term}})\,V(s_{t+1}) - V(s_t)\right)\]</div>
+<div class="arithmatex">\[\beta_t = \gamma c_t(1 - d_t), \quad d_t = d_t^{\text{term}} \vee d_t^{\text{trunc}}\]</div>
+<p>Because <code>terminated</code> and <code>truncated</code> are mutually exclusive, <span class="arithmatex">\((1 - d_t^{\text{term}})\)</span> zeros <span class="arithmatex">\(V(s_{t+1})\)</span> in <span class="arithmatex">\(\alpha_t\)</span> at termination, and <span class="arithmatex">\((1 - d_t)\)</span> zeros <span class="arithmatex">\(\beta_t\)</span> at any boundary. Section 5 details what this means for the caller.</p>
+<p>Throughout this document <span class="arithmatex">\(T\)</span> denotes the <strong>sequence length</strong> (the number of steps in the rollout buffer), not necessarily an episode termination.</p>
+<hr />
+<h2 id="4-thread-level-execution-computing-v-trace-in-hardware">4. Thread-Level Execution: Computing V-Trace in Hardware</h2>
+<p>Because the mathematical structure is mapped to the same recurrence, the GPU threads execute the same associative combination using our operator <span class="arithmatex">\(\oplus\)</span>:</p>
+<div class="arithmatex">\[(\alpha_B,\beta_B)\oplus(\alpha_A,\beta_A)=(\alpha_B+\beta_B \alpha_A,\beta_A \beta_B)\]</div>
+<p>The following trace mirrors the <a href="../gae/#3-the-mechanism-detailed-trace-of-a-4-step-reduction-tree">GAE reduction tree</a> exactly -- only the definition of <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> differs. The array is reversed in memory so threads look to their "left" (lower index) to pull chronologically later data.</p>
+<h3 id="setup-step-0">Setup (Step 0)</h3>
+<p>Each thread loads its initial tuple <span class="arithmatex">\((\alpha_i, \beta_i)\)</span> into local registers:</p>
+<ul>
+<li><strong>T1</strong> (index 1, <span class="arithmatex">\(t=3\)</span>): holds <span class="arithmatex">\(T_1=(\alpha_1, \beta_1)\)</span></li>
+<li><strong>T2</strong> (index 2, <span class="arithmatex">\(t=2\)</span>): holds <span class="arithmatex">\(T_2=(\alpha_2, \beta_2)\)</span></li>
+<li><strong>T3</strong> (index 3, <span class="arithmatex">\(t=1\)</span>): holds <span class="arithmatex">\(T_3=(\alpha_3, \beta_3)\)</span></li>
+<li><strong>T4</strong> (index 4, <span class="arithmatex">\(t=0\)</span>): holds <span class="arithmatex">\(T_4=(\alpha_4, \beta_4)\)</span></li>
+</ul>
+<h3 id="hardware-loop-1-parallel-pairs-distance-1">Hardware Loop 1: Parallel Pairs (Distance = 1)</h3>
+<p>Every thread simultaneously looks 1 step to their "left" and combines using <span class="arithmatex">\(\oplus\)</span>:</p>
+<ul>
+<li><strong>T1</strong>: no left neighbor, keeps <span class="arithmatex">\(T_1\)</span>.</li>
+<li><strong>T2</strong>: grabs <span class="arithmatex">\(T_1\)</span>, computes <span class="arithmatex">\(T_{1..2}=T_2\oplus T_1\)</span>.</li>
+<li><strong>T3</strong>: grabs <span class="arithmatex">\(T_2\)</span>, computes <span class="arithmatex">\(T_{2..3}=T_3\oplus T_2\)</span>.</li>
+<li><strong>T4</strong>: grabs <span class="arithmatex">\(T_3\)</span>, computes <span class="arithmatex">\(T_{3..4}=T_4\oplus T_3\)</span>.</li>
+</ul>
+<h3 id="hardware-loop-2-tree-merge-distance-2">Hardware Loop 2: Tree Merge (Distance = 2)</h3>
+<p>Every thread simultaneously looks 2 steps to their "left":</p>
+<ul>
+<li><strong>T1</strong>: no neighbor at distance 2, keeps <span class="arithmatex">\(T_1\)</span>.</li>
+<li><strong>T2</strong>: no neighbor at distance 2, keeps <span class="arithmatex">\(T_{1..2}\)</span>.</li>
+<li><strong>T3</strong>: grabs <span class="arithmatex">\(T_1\)</span> from T1, computes <span class="arithmatex">\(T_{1..3}=T_{2..3}\oplus T_1\)</span>.</li>
+<li><strong>T4</strong>: grabs <span class="arithmatex">\(T_{1..2}\)</span> from T2, computes <span class="arithmatex">\(T_{1..4}=T_{3..4}\oplus T_{1..2}\)</span>.</li>
+</ul>
+<h3 id="verification">Verification</h3>
+<p>The accumulated <span class="arithmatex">\(\alpha\)</span> value in T4's register after the scan:</p>
+<div class="arithmatex">\[\alpha_{1..4}=(\alpha_4+\beta_4 \alpha_3)+(\beta_3 \beta_4)(\alpha_2+\beta_2 \alpha_1)\]</div>
+<div class="arithmatex">\[\alpha_{1..4}=\alpha_4+\beta_4 \alpha_3+\beta_4 \beta_3 \alpha_2+\beta_4 \beta_3 \beta_2 \alpha_1\]</div>
+<p>Substituting back the V-Trace definitions (<span class="arithmatex">\(\alpha_i = \delta_i^V\)</span>, <span class="arithmatex">\(\beta_i = \gamma c_i\)</span>) and remembering the reversed index mapping (<span class="arithmatex">\(\alpha_4\)</span> is chronological <span class="arithmatex">\(t=1\)</span>, etc.):</p>
+<div class="arithmatex">\[\alpha_{1..4} = \delta_1^V + (\gamma c_1)\delta_2^V + (\gamma c_1)(\gamma c_2)\delta_3^V + (\gamma c_1)(\gamma c_2)(\gamma c_3)\delta_4^V\]</div>
+<p>This matches the V-Trace sum exactly. Thread 4 built its chunk <span class="arithmatex">\(T_{3..4}\)</span> in parallel with Thread 2 building <span class="arithmatex">\(T_{1..2}\)</span>, with no sequential wait between them.</p>
+<hr />
+<h2 id="5-handling-episode-boundaries-and-the-window-bootstrap">5. Handling Episode Boundaries and the Window Bootstrap</h2>
+<p>The kernel consumes <code>values</code>, <code>terminateds</code>, <code>truncateds</code>, and <code>bootstrap_values</code>, all of shape <code>[num_envs, seq_len]</code>. It never sees observations. The equations for <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> were established in Section 3; this section describes the caller's responsibility for preparing the input arrays correctly.</p>
+<h3 id="terminated-steps">Terminated steps</h3>
+<p>At a terminated step <span class="arithmatex">\(t\)</span>, <code>terminateds[t] = 1</code> zeros <span class="arithmatex">\(\gamma V(s_{t+1})\)</span> inside <span class="arithmatex">\(\alpha_t\)</span> and sets <span class="arithmatex">\(\beta_t = 0\)</span>, stopping trace propagation into the previous episode. <code>values[t+1]</code> belongs to the next episode but is harmless: the carry is already severed. No entry in <code>bootstrap_values</code> is needed at terminated steps; the kernel ignores it there.</p>
+<h3 id="truncated-steps">Truncated steps</h3>
+<p>At a truncated step <span class="arithmatex">\(t\)</span>, the episode continues, so <span class="arithmatex">\(\alpha_t\)</span> still needs the true continuation value <span class="arithmatex">\(V(s_{t+1})\)</span>. The stored <code>values[t+1]</code> belongs to a different episode and must not be used. The caller supplies the correct value as <code>bootstrap_values[env, t]</code>, which the Section 3 formula selects automatically. The carry is still severed (<span class="arithmatex">\(\beta_t = 0\)</span>) so no accumulation propagates across the boundary.</p>
+<h3 id="window-boundary-at-t-t-1">Window boundary at <span class="arithmatex">\(t = T-1\)</span></h3>
+<p>At the last step of the window, <span class="arithmatex">\(V(s_T)\)</span> lies one step past the end of the <code>values</code> tensor. The caller supplies it as <code>bootstrap_values[env, T-1]</code> when the episode continues past the window, or leaves it zero if the episode terminated at <span class="arithmatex">\(T-1\)</span>.</p>
+<p>This value enters <span class="arithmatex">\(\alpha_{T-1}\)</span> as the ordinary next-state value that completes the one-step TD residual. The scan's boundary carry is always <span class="arithmatex">\(\Delta_T = 0\)</span>:</p>
+<div class="arithmatex">\[\Delta_t = (\text{local scan result})_t + (\text{decay product})_t \cdot 0 = (\text{local scan result})_t\]</div>
+<p>A value-delta carry would represent trace mass from steps <em>past</em> the buffer, and there is none to represent: <code>bootstrap_values[env, T-1]</code> already prices <span class="arithmatex">\(V(s_T)\)</span> into <span class="arithmatex">\(\alpha_{T-1}\)</span> at weight 1, exactly as the infinite-horizon recurrence in Section 3 requires.</p>
+<h3 id="the-unifying-rule">The unifying rule</h3>
+<p><code>bootstrap_values</code> holds the true continuation value <span class="arithmatex">\(V(s_{t+1})\)</span> at exactly those positions where <code>values[t+1]</code> is invalid -- truncated steps and the final column -- and zero everywhere else. Its shape is <code>[num_envs, seq_len]</code>.</p>
+<p>For the common case where no interior truncations occur, the <code>last_value</code> argument (shape <code>[num_envs]</code>) provides a convenience: the caller passes the window-edge continuation value directly and the kernel populates <code>bootstrap_values[:, -1]</code> automatically. <code>last_value</code> and <code>bootstrap_values</code> are mutually exclusive.</p>
+<h3 id="boundary-summary">Boundary summary</h3>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th><span class="arithmatex">\(d_t\)</span></th>
+<th><span class="arithmatex">\(d_t^{\text{term}}\)</span></th>
+<th>Bootstrap <span class="arithmatex">\(V(s_{t+1})\)</span> in <span class="arithmatex">\(\alpha_t\)</span></th>
+<th>Decay <span class="arithmatex">\(\beta_t\)</span></th>
+<th>Scan carry <span class="arithmatex">\(\Delta_T\)</span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Terminated</strong></td>
+<td>1</td>
+<td>1</td>
+<td>Zeroed by <span class="arithmatex">\((1-d_t^{\text{term}})\)</span>; <code>bootstrap_values</code> ignored</td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span></td>
+</tr>
+<tr>
+<td><strong>Truncated</strong></td>
+<td>1</td>
+<td>0</td>
+<td>Kept; caller supplies <code>bootstrap_values[env, t]</code></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span></td>
+</tr>
+<tr>
+<td><strong>Window end</strong></td>
+<td>0</td>
+<td>0</td>
+<td>Kept; caller supplies <code>bootstrap_values[env, T-1]</code></td>
+<td><span class="arithmatex">\(0\)</span> -- scan stops</td>
+<td><span class="arithmatex">\(0\)</span> (always -- never seeded from the bootstrap)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-reconstructing-targets-and-advantages">6. Reconstructing Targets and Advantages</h2>
+<p>Once the <span class="arithmatex">\(O(\log N)\)</span> scan finishes, the fused kernel computes targets and advantages in the same Triton program before returning to the host. Targets are formed as <span class="arithmatex">\(v_t = \Delta_t + V(s_t)\)</span> directly in registers and written to HBM, then a second pass over the stored targets computes the advantages:</p>
+<div class="arithmatex">\[v_t = \Delta_t + V(s_t)\]</div>
+<div class="arithmatex">\[A_t = \rho_t(r_t + \gamma v_{t+1} - V(s_t))\]</div>
+<p>For sequences exceeding the flat kernel limit, the chunked path performs the equivalent additions in PyTorch after the scan.</p>
+<hr />
+<h2 id="7-hardware-execution">7. Hardware Execution</h2>
+<p>V-Trace runs on the identical kernel architecture as GAE and inherits the same memory lifecycle: one coalesced HBM load of all <span class="arithmatex">\(\alpha_t\)</span> and <span class="arithmatex">\(\beta_t\)</span> arrays into SRAM, the <span class="arithmatex">\(O(\log N)\)</span> reduction entirely within registers and SRAM, and a single synchronized HBM store of the <span class="arithmatex">\(\Delta_t\)</span> results. See the <a href="../gae/#6-the-hardware-reality-what-triton-actually-does">GAE hardware section</a> for the full breakdown.</p>
+<h2 id="8-v-trace-applications">8. V-Trace Applications</h2>
+<p>V-Trace was originally introduced as the core mathematical component of the IMPALA architecture to correct the "policy lag" that occurs when massively distributed CPU actors generate trajectories asynchronously for a centralized GPU learner (Espeholt et al., 2018). Because of this stability, algorithms like Asynchronous Proximal Policy Optimization (APPO; Berner et al., 2019) rely directly on V-Trace targets to safely optimize policies using stale trajectories collected by out-of-sync workers.</p>
+<hr />
+<h2 id="references">References</h2>
+<ul>
+<li>Espeholt, L., Soyer, H., Munos, R., Simonyan, K., Mnih, V., Ward, T., ... &amp; Kavukcuoglu, K. (2018). <em>IMPALA: Scalable Distributed Deep-RL with Importance Weighted Actor-Learner Architectures.</em> ICML 2018. arXiv:1802.01561.</li>
+<li>Berner, C., Brockman, G., Chan, B., Cheung, V., Dębiak, P., Dennison, C., ... &amp; Zoph, B. (2019). <em>Dota 2 with Large Scale Deep Reinforcement Learning.</em> arXiv:1912.06680.</li>
+</ul>
+<h2 id="further-reading">Further Reading</h2>
+<ul>
+<li><a href="https://pseudo-rnd-thoughts.github.io/blog/off-policy-correction/">Off-Policy Correction</a> -- A visual explanation of off-policy correction methods, covering the importance sampling rationale behind V-Trace and related algorithms.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

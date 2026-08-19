@@ -25,26 +25,17 @@ keywords:
   - gae
   - vtrace
 doi: "10.5281/zenodo.21984504"
-
-# ---------------------------------------------------------------------------
-# ARXIV DOI -- ADD AFTER SUBMISSION. Nothing below exists yet; do not fill in
-# a DOI until the arXiv ID is assigned.
-#
-# 1. Add the arXiv identifier for the paper:
-# identifiers:
-#   - type: other
-#     value: "arXiv:XXXX.XXXXX"
-#     description: The arXiv preprint of the accompanying paper.
-#
-# 2. Point citations at the paper rather than the software:
-# preferred-citation:
-#   type: article
-#   title: "rl-triton: High-Performance Triton GPU Kernels for Reinforcement Learning Credit Assignment"
-#   authors:
-#     - given-names: "Lars Simon"
-#       family-names: "Zehnder"
-#       affiliation: "Independent Researcher"
-#   year: 2026
-#   journal: "arXiv preprint"
-#   doi: "10.48550/arXiv.XXXX.XXXXX"
-# ---------------------------------------------------------------------------
+identifiers:
+  - type: other
+    value: "arXiv:2608.17641"
+    description: The arXiv preprint of the accompanying paper.
+preferred-citation:
+  type: article
+  title: "rl-triton: High-Performance Triton GPU Kernels for Reinforcement Learning Credit Assignment"
+  authors:
+    - given-names: "Lars Simon"
+      family-names: "Zehnder"
+      affiliation: "Independent Researcher"
+  year: 2026
+  journal: "arXiv preprint"
+  doi: "10.48550/arXiv.2608.17641"

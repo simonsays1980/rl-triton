@@ -167,8 +167,8 @@ venv.bak/
 # mkdocs documentation
 /site
 
-# Paper -- PDF only is committed; LaTeX source stays private until arXiv submission
-# Tracked: paper/rl-triton.pdf
+# Paper -- LaTeX source and build output stay private. The paper itself is
+# public via arXiv:2608.17641; nothing under paper/ is tracked in this repo.
 paper/*.tex
 paper/*.bib
 paper/*.sty

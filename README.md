@@ -7,6 +7,7 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for rein
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21984504.svg)](https://doi.org/10.5281/zenodo.21984504)
+[![arXiv](https://img.shields.io/badge/arXiv-2608.17641-b31b1b.svg)](https://arxiv.org/abs/2608.17641)
 
 ## Kernels
 
@@ -30,9 +31,19 @@ API reference): **[simonsays1980.github.io/rl-triton](https://simonsays1980.gith
 ## Paper
 
 A preprint describing the kernels, the associative-scan formulation, and the
-benchmark methodology is available:
-[paper/rl-triton.pdf](paper/rl-triton.pdf)
-(preprint -- arXiv version forthcoming).
+benchmark methodology is available on arXiv:
+[arXiv:2608.17641](https://arxiv.org/abs/2608.17641)
+([local PDF](paper/rl-triton.pdf)).
+
+```bibtex
+@article{zehnder2026rltriton,
+  title   = {rl-triton: High-Performance Triton GPU Kernels for Reinforcement Learning Credit Assignment},
+  author  = {Zehnder, Lars Simon},
+  journal = {arXiv preprint arXiv:2608.17641},
+  year    = {2026},
+  doi     = {10.48550/arXiv.2608.17641}
+}
+```
 
 ## Installation
 

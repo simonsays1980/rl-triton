@@ -67,6 +67,6 @@ Full sweep, methodology, and truncation-path results: [Benchmarks](benchmarks.md
 
 {%
   include-markdown "../README.md"
-  start="num_envs=4096, seq_len=128"
+  start="<!-- PERF_HEADLINE_START -->"
   end="<!-- BENCH_END -->"
 %}

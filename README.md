@@ -6,7 +6,7 @@ High-performance [Triton](https://github.com/openai/triton) GPU kernels for rein
 [![GPU Tests](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml/badge.svg)](https://github.com/simonsays1980/rl-triton/actions/workflows/gpu-tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python >=3.10](https://img.shields.io/badge/python-%3E%3D3.10-blue.svg)](pyproject.toml)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21984504.svg)](https://doi.org/10.5281/zenodo.21984504)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21984504-blue.svg)](https://doi.org/10.5281/zenodo.21984504)
 [![arXiv](https://img.shields.io/badge/arXiv-2608.17641-b31b1b.svg)](https://arxiv.org/abs/2608.17641)
 
 ## Kernels
@@ -61,7 +61,7 @@ benchmark methodology is available on arXiv:
 **Use it in your project:**
 
 ```bash
-pip install git+https://github.com/simonsays1980/rl-triton
+pip install git+https://github.com/simonsays1980/rl-triton@v0.1.3
 ```
 
 **From source, editable (for modifying the kernels):**

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+
+jobs:
+  cpu-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package (CPU-only, no kernel execution)
+        # Triton kernels require a real CUDA device to launch -- there is no
+        # CPU or meta-device execution path for @triton.jit code, so this
+        # job never invokes one; it only needs rl_triton to be importable.
+        # Same install order as docs.yml: CPU torch first, then triton, then
+        # the package with --no-deps, so the editable install never drags in
+        # a default (CUDA) torch over the CPU one.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install triton
+          pip install -e "." --no-deps
+          pip install ruff
+
+      - name: Import check
+        run: python -c "import rl_triton"
+
+      - name: Lint
+        run: ruff check src/ tests/

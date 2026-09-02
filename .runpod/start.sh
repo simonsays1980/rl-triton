@@ -42,7 +42,22 @@ apt-get update -qq
 apt-get install -y --no-install-recommends gh
 
 # ---------------------------------------------------------------------------
-# 2. Clone repo and install package + dev deps
+# 2. Install uv + pre-fetch Python 3.12
+#    uv provides a standalone CPython 3.12 (python-build-standalone) that
+#    version_matrix.sh's venvs use, independent of whatever Python this base
+#    image ships (currently py3.11 per the image tag -- see this directory's
+#    README.md). This
+#    keeps that dependency out of the test script itself: version_matrix.sh
+#    only asserts a 3.12 venv was created and fails loudly otherwise, it never
+#    installs anything. Non-privileged, user-local install -- no apt/deadsnakes
+#    PPA, so a flaky PPA can never masquerade as a test failure.
+# ---------------------------------------------------------------------------
+command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv python install 3.12
+
+# ---------------------------------------------------------------------------
+# 3. Clone repo and install package + dev deps
 #    --no-deps skips torch/triton so the pre-installed CUDA build is preserved.
 #    The individual dev extras (pytest, pytest-benchmark, numpy) don't pull
 #    torch, so a plain install of those is safe.
@@ -52,7 +67,7 @@ pip install --quiet --no-deps -e "${REPO_DIR}"
 pip install --quiet pytest pytest-benchmark numpy
 
 # ---------------------------------------------------------------------------
-# 3. Download latest actions/runner release
+# 4. Download latest actions/runner release
 # ---------------------------------------------------------------------------
 mkdir -p "${WORK_DIR}"
 cd "${WORK_DIR}"
@@ -67,7 +82,7 @@ curl -fsSL \
     | tar -xz
 
 # ---------------------------------------------------------------------------
-# 4. Mint a fresh registration token (short-lived — must be done at boot)
+# 5. Mint a fresh registration token (short-lived — must be done at boot)
 # ---------------------------------------------------------------------------
 REG_TOKEN=$(curl -fsSL \
     -X POST \
@@ -77,7 +92,7 @@ REG_TOKEN=$(curl -fsSL \
     | jq -r '.token')
 
 # ---------------------------------------------------------------------------
-# 5. Configure the runner
+# 6. Configure the runner
 #    Labels: gpu,triton — matched by runs-on: [self-hosted, linux, gpu]
 #    --replace: re-registers if a stale runner entry exists from a prior boot.
 #    RUNNER_ALLOW_RUNASROOT: RunPod pods run as root; the runner refuses otherwise.
@@ -93,7 +108,7 @@ RUNNER_ALLOW_RUNASROOT=1 ./config.sh \
     --replace
 
 # ---------------------------------------------------------------------------
-# 6. Launch runner in a detached tmux session, then sleep to keep pod alive.
+# 7. Launch runner in a detached tmux session, then sleep to keep pod alive.
 #    Attach over SSH with: tmux attach -t runner
 # ---------------------------------------------------------------------------
 tmux new-session -d -s runner \

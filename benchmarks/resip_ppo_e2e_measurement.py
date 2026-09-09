@@ -332,9 +332,9 @@ def _make_pufferlib_arm():
     """
     ext_dir = Path(__file__).parent / "pufferlib_ext"
     sys.path.insert(0, str(ext_dir))
-    from build import get_puffer_extension  # vendored, SHA256-pinned source
+    from build import load_puff_advantage  # vendored, SHA256-pinned source
 
-    ext = get_puffer_extension()
+    op, _source = load_puff_advantage()
 
     def puffer_gae(rewards, values, terminateds, gamma, lambda_):
         # PufferLib's index convention: PR[1:]=R[:-1], PD[1:]=D[:-1] (see
@@ -342,13 +342,15 @@ def _make_pufferlib_arm():
         # Row T-1 is structurally unwritten by puff_advantage_row_cuda; we
         # zero-pad it the same way a real PufferLib caller's output buffer
         # would (torch.zeros(...) before the kernel call).
-        n, t = rewards.shape
         pr = torch.zeros_like(rewards)
         pd = torch.zeros_like(terminateds)
         pr[:, 1:] = rewards[:, :-1]
         pd[:, 1:] = terminateds[:, :-1]
+        importance = torch.ones_like(rewards)
         adv = torch.zeros_like(rewards)
-        ext.compute_puff_advantage(pr, pd, values, adv, gamma, lambda_, 1.0, 1.0)
+        # op signature (build.py): (values, rewards, dones, importance,
+        # advantages, gamma, lambda, rho_clip, c_clip) -> None, in place.
+        op(values, pr, pd, importance, adv, gamma, lambda_, 1.0, 1.0)
         return adv
 
     return puffer_gae
@@ -401,6 +403,29 @@ def _agg_trials(trial_sample_lists):
     return min(trial_medians), max(trial_medians) - min(trial_medians), winning_iqr
 
 
+def _ref_gae_matched_window(rewards, values, terminateds, gamma, lambda_):
+    """Independent reference for PufferLib's correctness check.
+
+    PufferLib's own recursion treats the last time-step as absent (value 0),
+    not as a real bootstrapped value. Triton's full-window output uses a
+    real bootstrap there instead. Comparing PufferLib against a truncated
+    slice of Triton's output is therefore wrong: the two recursions differ
+    near the boundary by construction, not by kernel error. This function
+    reproduces PufferLib's own boundary assumption instead, so the
+    comparison is apples-to-apples. Ported from benchmark_gae_vs_pufferlib.py's
+    `_ref_gae_matched_window`, where it is verified against both kernels.
+    """
+    n, t = rewards.shape
+    out = torch.zeros(n, t - 1, device=rewards.device, dtype=rewards.dtype)
+    carry = torch.zeros(n, device=rewards.device, dtype=rewards.dtype)
+    for i in reversed(range(t - 1)):
+        not_term = 1.0 - terminateds[:, i]
+        delta = rewards[:, i] + gamma * not_term * values[:, i + 1] - values[:, i]
+        carry = delta + gamma * lambda_ * not_term * carry
+        out[:, i] = carry
+    return out
+
+
 def correctness_gate(cfg, arms, device="cuda"):
     torch.manual_seed(SEED)
     rollout = _make_rollout(cfg, seed=42, device=device)
@@ -415,11 +440,18 @@ def correctness_gate(cfg, arms, device="cuda"):
             continue
         fn = _ARMS[name][0]()
         adv = fn(rewards, old_values, dones, gamma=GAMMA, lambda_=LAMBDA)
-        diff = (adv - ref_adv).abs()
+        if name == "pufferlib":
+            # Use the independent matched-window reference, not Triton's own
+            # output. See _ref_gae_matched_window's docstring for why.
+            adv_cmp = adv[:, :-1]
+            ref_cmp = _ref_gae_matched_window(rewards, old_values, dones, GAMMA, LAMBDA)
+        else:
+            adv_cmp, ref_cmp = adv, ref_adv
+        diff = (adv_cmp - ref_cmp).abs()
         max_abs = diff.max().item()
-        denom = ref_adv.abs().clamp_min(1e-12)
+        denom = ref_cmp.abs().clamp_min(1e-12)
         max_rel = (diff / denom).max().item()
-        ok = torch.allclose(adv, ref_adv, atol=1e-4, rtol=1e-4)
+        ok = torch.allclose(adv_cmp, ref_cmp, atol=1e-4, rtol=1e-4)
         results[name] = (ok, max_abs, max_rel)
         status = "PASS" if ok else "FAIL"
         print(f"         {name:<12} {status}  max_abs={max_abs:.3e}  max_rel={max_rel:.3e}")

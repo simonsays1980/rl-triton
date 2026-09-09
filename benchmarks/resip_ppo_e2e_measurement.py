@@ -111,6 +111,49 @@ file's docstring for the full derivation of each choice):
     (within-trial noise) and the spread across all 5 trial medians
     (across-trial noise) -- see _agg_trials's docstring.
 
+RECOMPUTATION CADENCE (--recompute {frozen,every_epoch,every_k}):
+
+By default (--recompute frozen), values/GAE/returns are computed ONCE after
+"rollout collection" and reused for every PPO epoch -- this is the published
+ResiP behavior verified in the BASE-POLICY SCOPING note above and the only
+mode this script originally supported. Two additional modes answer a
+narrower, adjacent question: for a FIXED n_epochs, does the GRANULARITY of
+recomputation itself matter?
+
+    frozen        (default): recompute once, before epoch 0. Matches ResiP.
+    every_epoch:  reevaluate the critic and recompute GAE/returns before
+                  EVERY epoch (--recompute-k is ignored).
+    every_k:      reevaluate critic + recompute GAE every K epochs
+                  (--recompute-k K, e.g. K=5 or K=10); epoch 0 always gets
+                  the initial computation regardless of K.
+
+The "forward" stage is therefore split into two: "critic_reeval" (the
+critic-only forward pass immediately before a GAE refresh, no_grad, used
+only to get fresh values) and "forward" (the per-epoch policy+critic
+forward pass inside the optimization step, which always runs regardless of
+cadence). "refresh_total" (critic_reeval + gae, reported alongside them) is
+the combined cost of one recomputation event, since a caller deciding
+whether a given cadence is worth it cares about that combined number first.
+
+NOTE ON TRAINING-SIGNAL METRICS: the recomputation-cadence question is
+sometimes accompanied by a request to log training return, policy/value
+loss, KL, and explained variance per epoch. This script deliberately does
+NOT compute or log any of those: it draws one freshly-seeded i.i.d. random
+rollout per measured iteration, with no environment and no policy actually
+improving across iterations, so "training return" has no definition here,
+and the loss/KL/explained-variance formulas would evaluate to real numbers
+carrying no training-relevant meaning (nothing here is converging) -- a
+risk of exactly the kind of number that later gets miscited as a
+learning-quality result. Actor gradient-norm and cosine-similarity between
+consecutive epochs ARE computed and logged (--recompute-track-grad): unlike
+the metrics above, this is a property of the optimization trajectory itself
+under whatever advantages are in use (frozen vs. refreshed), not a claim
+about learning quality, so it is meaningful evidence for that comparison
+even on synthetic data. It is off by default because it adds a
+CPU-side flatten+dot per epoch that is irrelevant to the cadence-cost
+question itself; enable it only when the gradient-stability comparison is
+specifically wanted.
+
 Usage:
     python benchmarks/resip_ppo_e2e_measurement.py                 # full sweep (T x epochs)
     python benchmarks/resip_ppo_e2e_measurement.py --seq-lens 700  # one horizon only
@@ -119,6 +162,9 @@ Usage:
                                                                     # include PufferLib CUDA arm
     python benchmarks/resip_ppo_e2e_measurement.py --trials 3 --iters-per-trial 50
                                                                     # shorter run
+    python benchmarks/resip_ppo_e2e_measurement.py --epochs 50 --recompute every_epoch
+    python benchmarks/resip_ppo_e2e_measurement.py --epochs 50 --recompute every_k --recompute-k 5,10 \\
+                                                    --recompute-track-grad
 """
 import argparse
 import datetime
@@ -167,7 +213,9 @@ N_ITERS_PER_TRIAL = 100  # "5 trials of 100 timed iterations" (this script's var
                           # convenience).
 SEED = 0
 
-STAGES = ("forward", "gather", "gae", "loss", "backward", "optimizer")
+STAGES = ("critic_reeval", "forward", "gather", "gae", "loss", "backward", "optimizer")
+
+RECOMPUTE_MODES = ("frozen", "every_epoch", "every_k")
 
 
 @dataclass(frozen=True)
@@ -178,10 +226,35 @@ class Config:
     n_trials: int = N_TRIALS
     n_iters_per_trial: int = N_ITERS_PER_TRIAL
     n_warmup: int = N_WARMUP
+    recompute: str = "frozen"     # "frozen" | "every_epoch" | "every_k"
+    recompute_k: int = 1          # only used when recompute == "every_k"
+    track_grad: bool = False      # actor grad-norm/cosine diagnostic (off by default)
+
+    def __post_init__(self):
+        if self.recompute not in RECOMPUTE_MODES:
+            raise ValueError(f"recompute must be one of {RECOMPUTE_MODES}, got {self.recompute!r}")
+
+    def refreshes_at(self, epoch):
+        """Whether this config recomputes critic values + GAE/returns before
+        running `epoch`. Epoch 0 always refreshes (every mode needs an
+        initial advantage/return estimate); "frozen" never refreshes again.
+        """
+        if epoch == 0:
+            return True
+        if self.recompute == "frozen":
+            return False
+        if self.recompute == "every_epoch":
+            return True
+        return epoch % self.recompute_k == 0  # "every_k"
 
     @property
     def label(self):
-        return f"T={self.seq_len} epochs={self.n_epochs} mb={self.n_minibatches}"
+        base = f"T={self.seq_len} epochs={self.n_epochs} mb={self.n_minibatches}"
+        if self.recompute != "frozen":
+            base += f" recompute={self.recompute}"
+            if self.recompute == "every_k":
+                base += f"(k={self.recompute_k})"
+        return base
 
 
 class ResidualActorCritic(nn.Module):
@@ -272,6 +345,35 @@ def _gaussian_log_prob(mean, log_std, actions):
     var = std * std
     return (-0.5 * ((actions - mean) ** 2) / var - log_std
             - 0.5 * torch.log(torch.tensor(2 * torch.pi, device=mean.device))).sum(-1)
+
+
+def _actor_grad_diagnostic(net, prev_flat_grad):
+    """Actor-only gradient norm and cosine similarity vs. the previous
+    epoch's actor gradient (--recompute-track-grad). Flattens actor_trunk +
+    actor_mean parameters (excludes critic and log_std): the question this
+    answers is specifically whether refreshing advantages changes the
+    ACTOR's gradient direction between epochs, not the critic's.
+
+    Returns (grad_norm, cosine_similarity_vs_prev, this_epoch_flat_grad).
+    cosine_similarity is None on the first epoch (no previous gradient to
+    compare against). Call AFTER loss.backward() and BEFORE
+    optimizer.zero_grad() of the next step, so .grad is still populated;
+    does not itself zero or step anything.
+    """
+    parts = []
+    for p in net.actor_trunk.parameters():
+        if p.grad is not None:
+            parts.append(p.grad.detach().reshape(-1))
+    for p in net.actor_mean.parameters():
+        if p.grad is not None:
+            parts.append(p.grad.detach().reshape(-1))
+    flat = torch.cat(parts) if parts else torch.zeros(0, device=next(net.parameters()).device)
+    norm = flat.norm().item()
+    cos = None
+    if prev_flat_grad is not None and prev_flat_grad.numel() == flat.numel() and flat.numel() > 0:
+        denom = (flat.norm() * prev_flat_grad.norm()).clamp_min(1e-12)
+        cos = (flat @ prev_flat_grad / denom).item()
+    return norm, cos, flat
 
 
 class _EventTimer:
@@ -464,40 +566,67 @@ def correctness_gate(cfg, arms, device="cuda"):
 
 
 def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
+    """One full PPO update. Values/GAE/returns are (re)computed according to
+    cfg.recompute (see Config.refreshes_at): "frozen" computes once before
+    epoch 0 and never again (published ResiP behavior, and this function's
+    only behavior before the --recompute option existed); "every_epoch" and
+    "every_k" recompute inside the loop on the schedule refreshes_at defines.
+    Epoch 0 always refreshes, so flat_advantages/flat_returns are always
+    defined by the time the first optimization step runs.
+
+    "critic_reeval" times the no-grad critic-only forward pass used to get
+    fresh values for a refresh; "forward" times the per-epoch policy+critic
+    forward pass inside the optimization step (this always runs, regardless
+    of cadence). "gae" is unchanged. gae_device_ms accumulates the GAE
+    kernel's own device time across ALL refreshes in this update (1 for
+    "frozen", cfg.n_epochs for "every_epoch", ceil(n_epochs/k) for
+    "every_k") -- summed rather than the last-refresh value, since callers
+    care about total device time spent on GAE within the update, not any
+    single refresh's cost.
+    """
     obs, base_actions, actions, old_log_probs, rewards, dones, old_values = rollout
     n, t = NUM_ENVS, cfg.seq_len
 
     gae_device_ms = 0.0
+    n_refreshes = 0
+    grad_norms, grad_cosines = [], []
+    prev_flat_grad = None
     total_timer.start("_total")
 
-    timer.start("forward")
-    with torch.no_grad():
-        flat_obs = obs.reshape(-1, OBS_DIM)
-        flat_base_actions = base_actions.reshape(-1, ACTION_DIM)
-        _, _, values_flat = net(flat_obs, flat_base_actions)
-        values = values_flat.reshape(n, t)
-    timer.stop()
-
-    dev_a = torch.cuda.Event(enable_timing=True)
-    dev_b = torch.cuda.Event(enable_timing=True)
-    timer.start("gae")
-    dev_a.record()
-    advantages = gae_fn(rewards, values, dones, gamma=GAMMA, lambda_=LAMBDA)
-    returns = advantages + values
-    dev_b.record()
-    timer.stop()
-
-    timer.start("gather")
+    flat_obs = obs.reshape(-1, OBS_DIM)
+    flat_base_actions = base_actions.reshape(-1, ACTION_DIM)
     flat_actions = actions.reshape(-1, ACTION_DIM)
     flat_old_log_probs = old_log_probs.reshape(-1)
-    flat_advantages = advantages.reshape(-1).detach()
-    flat_returns = returns.reshape(-1).detach()
-    timer.stop()
+    flat_advantages = flat_returns = None
 
     batch_size = n * t
     minibatch_size = batch_size // cfg.n_minibatches
 
     for epoch in range(cfg.n_epochs):
+        if cfg.refreshes_at(epoch):
+            n_refreshes += 1
+            timer.start("critic_reeval")
+            with torch.no_grad():
+                _, _, values_flat = net(flat_obs, flat_base_actions)
+                values = values_flat.reshape(n, t)
+            timer.stop()
+
+            dev_a = torch.cuda.Event(enable_timing=True)
+            dev_b = torch.cuda.Event(enable_timing=True)
+            timer.start("gae")
+            dev_a.record()
+            advantages = gae_fn(rewards, values, dones, gamma=GAMMA, lambda_=LAMBDA)
+            returns = advantages + values
+            dev_b.record()
+            timer.stop()
+            torch.cuda.synchronize()
+            gae_device_ms += dev_a.elapsed_time(dev_b)
+
+            timer.start("gather")
+            flat_advantages = advantages.reshape(-1).detach()
+            flat_returns = returns.reshape(-1).detach()
+            timer.stop()
+
         if cfg.n_minibatches == 1:
             idx = slice(None)
             mb_obs, mb_base_actions, mb_actions = flat_obs, flat_base_actions, flat_actions
@@ -530,6 +659,12 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
         loss.backward()
         timer.stop()
 
+        if cfg.track_grad:
+            grad_norm, grad_cos, prev_flat_grad = _actor_grad_diagnostic(net, prev_flat_grad)
+            grad_norms.append(grad_norm)
+            if grad_cos is not None:
+                grad_cosines.append(grad_cos)
+
         timer.start("optimizer")
         optimizer.step()
         timer.stop()
@@ -538,9 +673,11 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
     totals = total_timer.resolve()
     stages = timer.resolve()
     torch.cuda.synchronize()
-    gae_device_ms = dev_a.elapsed_time(dev_b)
     stages["_total"] = totals["_total"]
     stages["_gae_device"] = gae_device_ms
+    stages["_n_refreshes"] = n_refreshes
+    stages["_grad_norm_median"] = statistics.median(grad_norms) if grad_norms else 0.0
+    stages["_grad_cos_median"] = statistics.median(grad_cosines) if grad_cosines else float("nan")
     return stages
 
 
@@ -566,7 +703,8 @@ def measure(cfg, arms, device="cuda"):
         opts[name] = torch.optim.Adam(net.parameters(), lr=3e-4)
         fns[name] = _ARMS[name][0]()
 
-    metrics = (*STAGES, "_total", "_gae_device")
+    metrics = (*STAGES, "_total", "_gae_device", "_n_refreshes",
+               "_grad_norm_median", "_grad_cos_median")
     # samples[arm][metric][trial] -> list of per-iteration values in that trial
     samples = {n: {k: [[] for _ in range(cfg.n_trials)] for k in metrics} for n in arms}
     stage_timers = {name: _EventTimer() for name in arms}
@@ -619,6 +757,7 @@ def _row(samples, arms, ref="triton"):
         tot, tot_spread, tot_iqr = _agg_trials(s["_total"])
         gae, _, _ = _agg_trials(s["gae"])
         dev, _, _ = _agg_trials(s["_gae_device"])
+        critic_reeval, _, _ = _agg_trials(s["critic_reeval"])
 
         resid_trials = [
             [sum(s[st][trial][i] for st in STAGES) - s["_total"][trial][i]
@@ -637,7 +776,13 @@ def _row(samples, arms, ref="triton"):
             "total": tot, "total_spread": tot_spread, "total_iqr": tot_iqr,
             "resid": resid, "resid_spread": resid_spread,
             "gae": gae, "dev": dev,
+            "critic_reeval": critic_reeval,
+            "refresh_total": critic_reeval + gae,
             "share": gae / tot * 100 if tot else 0.0,
+            "refresh_share": (critic_reeval + gae) / tot * 100 if tot else 0.0,
+            "n_refreshes": _agg_trials(s["_n_refreshes"])[0],
+            "grad_norm_median": _agg_trials(s["_grad_norm_median"])[0],
+            "grad_cos_median": _agg_trials(s["_grad_cos_median"])[0],
             "speedup_vs_triton": sp, "speedup_vs_triton_spread": sp_spread,
             "speedup_vs_triton_iqr": sp_iqr,
             "stages": {st: _agg_trials(s[st])[0] for st in STAGES},
@@ -684,6 +829,20 @@ def main():
     parser.add_argument("--warmup", type=int, default=None,
                          help=f"untimed warmup iterations before the first trial "
                               f"(default {N_WARMUP}).")
+    parser.add_argument("--recompute", default="frozen", choices=RECOMPUTE_MODES,
+                         help="advantage/critic recomputation cadence: 'frozen' "
+                              "(default, published ResiP behavior) computes once "
+                              "before epoch 0; 'every_epoch' recomputes before every "
+                              "epoch; 'every_k' recomputes every --recompute-k epochs.")
+    parser.add_argument("--recompute-k", default="1",
+                         help="comma-separated K values for --recompute every_k "
+                              "(e.g. '5,10'); one config is run per K. Ignored for "
+                              "'frozen'/'every_epoch'.")
+    parser.add_argument("--recompute-track-grad", action="store_true",
+                         help="log actor gradient-norm/cosine-similarity between "
+                              "consecutive epochs (off by default; adds a CPU-side "
+                              "flatten+dot per epoch, irrelevant to the cadence-cost "
+                              "question itself).")
     args = parser.parse_args()
 
     arms = list(a.strip() for a in args.arms.split(",") if a.strip())
@@ -706,11 +865,14 @@ def main():
 
     seq_lens = [int(x) for x in args.seq_lens.split(",")]
     epochs_list = [int(x) for x in args.epochs.split(",")]
+    k_values = [int(x) for x in args.recompute_k.split(",")] if args.recompute == "every_k" else [1]
     grid = [Config(seq_len=t, n_epochs=e,
                    n_trials=args.trials or N_TRIALS,
                    n_iters_per_trial=args.iters_per_trial or N_ITERS_PER_TRIAL,
-                   n_warmup=args.warmup or N_WARMUP)
-            for t in seq_lens for e in epochs_list]
+                   n_warmup=args.warmup or N_WARMUP,
+                   recompute=args.recompute, recompute_k=k,
+                   track_grad=args.recompute_track_grad)
+            for t in seq_lens for e in epochs_list for k in k_values]
 
     gpu = torch.cuda.get_device_name(0)
     print(f"GPU: {gpu}  torch: {torch.__version__}")
@@ -735,13 +897,17 @@ def main():
         for name in arms:
             a = r[name]
             flag = "" if abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD else "  <-- CONTAMINATED"
+            grad_str = (f"  grad_norm {a['grad_norm_median']:.4f} grad_cos {a['grad_cos_median']:.4f}"
+                        if cfg.track_grad else "")
             print(f"  {name:<10} total {a['total']:>10.3f}ms "
                   f"(win-trial IQR {a['total_iqr']:.3f}, trial-spread {a['total_spread']:.3f})  "
-                  f"GAE {a['gae']:.4f}ms (dev {a['dev']:.4f})  share {a['share']:.4f}%  "
+                  f"GAE {a['gae']:.4f}ms (dev {a['dev']:.4f})  critic_reeval {a['critic_reeval']:.4f}ms  "
+                  f"refresh_total {a['refresh_total']:.4f}ms  refresh_share {a['refresh_share']:.4f}%  "
+                  f"n_refreshes {a['n_refreshes']:.1f}  share {a['share']:.4f}%  "
                   f"vs-triton {a['speedup_vs_triton']:.4f}x "
                   f"(win-trial IQR {a['speedup_vs_triton_iqr']:.4f}, "
                   f"trial-spread {a['speedup_vs_triton_spread']:.4f})  "
-                  f"resid {a['resid']:+.3f}{flag}")
+                  f"resid {a['resid']:+.3f}{grad_str}{flag}")
         raw_results.append({
             "config": asdict(cfg),
             "gpu": gpu,
@@ -760,17 +926,22 @@ def main():
 
     csv_path = out_dir / f"resip_ppo_e2e-{ts}.csv"
     with open(csv_path, "w") as f:
-        f.write("seq_len,n_epochs,arm,total_ms,total_iqr_ms,total_spread_ms,"
-                "gae_ms,gae_device_ms,gae_share_pct,speedup_vs_triton,"
-                "speedup_vs_triton_iqr,speedup_vs_triton_spread,"
-                "nongae_vs_ref,resid_ms,citable\n")
+        f.write("seq_len,n_epochs,recompute,recompute_k,arm,total_ms,total_iqr_ms,"
+                "total_spread_ms,gae_ms,gae_device_ms,critic_reeval_ms,refresh_total_ms,"
+                "gae_share_pct,refresh_share_pct,n_refreshes,grad_norm_median,"
+                "grad_cos_median,speedup_vs_triton,speedup_vs_triton_iqr,"
+                "speedup_vs_triton_spread,nongae_vs_ref,resid_ms,citable\n")
         for entry in raw_results:
             cfg = entry["config"]
             for name, a in entry["rows"].items():
                 citable = abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD
-                f.write(f"{cfg['seq_len']},{cfg['n_epochs']},{name},"
+                f.write(f"{cfg['seq_len']},{cfg['n_epochs']},{cfg['recompute']},"
+                        f"{cfg['recompute_k']},{name},"
                         f"{a['total']:.4f},{a['total_iqr']:.4f},{a['total_spread']:.4f},"
-                        f"{a['gae']:.5f},{a['dev']:.5f},{a['share']:.5f},"
+                        f"{a['gae']:.5f},{a['dev']:.5f},{a['critic_reeval']:.5f},"
+                        f"{a['refresh_total']:.5f},{a['share']:.5f},{a['refresh_share']:.5f},"
+                        f"{a['n_refreshes']:.1f},{a['grad_norm_median']:.5f},"
+                        f"{a['grad_cos_median']:.5f},"
                         f"{a['speedup_vs_triton']:.5f},{a['speedup_vs_triton_iqr']:.5f},"
                         f"{a['speedup_vs_triton_spread']:.5f},"
                         f"{a['nongae_vs_ref']:.5f},{a['resid']:.4f},{citable}\n")

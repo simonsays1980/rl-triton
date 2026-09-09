@@ -251,3 +251,9 @@ benchmarks/pufferlib.md
 # not. Kept on disk for reference.
 benchmarks/ppo-e2e-measurement-*.md
 benchmarks/ppo-e2e-single-puffer-op-point-*.md
+
+# Same convention for the ResiP-inspired learner-side PPO benchmark: the
+# script (resip_ppo_e2e_measurement.py) is tracked, its dated JSON/CSV
+# result files are paper-specific output and are not.
+benchmarks/resip_ppo_e2e-*.json
+benchmarks/resip_ppo_e2e-*.csv

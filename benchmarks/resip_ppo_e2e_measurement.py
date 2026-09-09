@@ -101,8 +101,15 @@ file's docstring for the full derivation of each choice):
     cost cannot legitimately differ between arms, since those stages run
     strictly after GAE has produced advantages/returns. If it does, the
     comparison is flagged and excluded from citable rows.
-  - Median + IQR across iterations (not a bare mean), because "the gain is
-    within noise" needs an actual noise estimate.
+  - Trial structure matches the paper's kernel-benchmark protocol
+    (sec:measurement) rather than a single flat pass: 20 untimed warmup
+    iterations, then 5 trials of 100 timed iterations each, reporting the
+    MINIMUM trial median (not a bare mean, and not the median of one pooled
+    iteration list) for every headline metric. This excludes whichever trial
+    got hit by a transient noise/thermal/scheduling spike. Two distinct noise
+    indicators are reported alongside it: the winning trial's own IQR
+    (within-trial noise) and the spread across all 5 trial medians
+    (across-trial noise) -- see _agg_trials's docstring.
 
 Usage:
     python benchmarks/resip_ppo_e2e_measurement.py                 # full sweep (T x epochs)
@@ -110,7 +117,8 @@ Usage:
     python benchmarks/resip_ppo_e2e_measurement.py --epochs 1,50   # boundary points only
     python benchmarks/resip_ppo_e2e_measurement.py --arms triton,scan,loop,pufferlib
                                                                     # include PufferLib CUDA arm
-    python benchmarks/resip_ppo_e2e_measurement.py --iters 15      # shorter run
+    python benchmarks/resip_ppo_e2e_measurement.py --trials 3 --iters-per-trial 50
+                                                                    # shorter run
 """
 import argparse
 import datetime
@@ -148,8 +156,15 @@ ACTOR_HIDDEN = (256, 256)    # compact residual actor -- see module docstring
 SPARSE_REWARD_P = 1.0 / 350  # ~1 nonzero reward per 350 steps -> ~2-3 nonzero
                               # rewards across a 700-1000 step episode, matching
                               # "one reward for one_leg, two for lamp/round_table"
-N_WARMUP = 8
-N_ITERS = 20
+N_WARMUP = 20        # untimed warmup iterations, matching the paper's kernel-benchmark
+                     # protocol (sec:measurement): "20 untimed warmup iterations."
+N_TRIALS = 5         # 5 trials, minimum trial median reported -- same protocol.
+N_ITERS_PER_TRIAL = 100  # "5 trials of 100 timed iterations" (this script's variant of
+                          # the paper's 50-iteration kernel-benchmark trials; ResiP's
+                          # long horizons make each iteration far more expensive than an
+                          # isolated GAE call, so iteration count is unchanged from the
+                          # paper's own convention rather than reduced for wall-clock
+                          # convenience).
 SEED = 0
 
 STAGES = ("forward", "gather", "gae", "loss", "backward", "optimizer")
@@ -160,7 +175,8 @@ class Config:
     seq_len: int
     n_epochs: int
     n_minibatches: int = 1        # published ResiP setting: one minibatch
-    n_iters: int = N_ITERS
+    n_trials: int = N_TRIALS
+    n_iters_per_trial: int = N_ITERS_PER_TRIAL
     n_warmup: int = N_WARMUP
 
     @property
@@ -347,6 +363,7 @@ DEFAULT_ARMS = ("triton", "scan", "loop")
 
 
 def _agg(samples):
+    """Median + IQR within one trial's samples."""
     s = sorted(samples)
     if not s:
         return 0.0, 0.0
@@ -358,12 +375,37 @@ def _agg(samples):
     return med, q3 - q1
 
 
+def _agg_trials(trial_sample_lists):
+    """Minimum trial median, matching the paper's kernel-benchmark protocol
+    (sec:measurement: "20 untimed warmup iterations, followed by 5 trials of
+    50 timed iterations. We report the minimum trial median."): compute each
+    trial's own median independently, then take the minimum across trials --
+    this excludes whichever trial got hit by a transient noise/thermal/
+    scheduling spike. Returns (min_trial_median, spread, winning_trial_iqr):
+      - spread = max trial median - min trial median: an ACROSS-trial noise
+        indicator (do the 5 trials agree with each other?), distinct from
+        within-trial noise.
+      - winning_trial_iqr = the IQR (via _agg) of the specific trial whose
+        median was selected as the minimum: a WITHIN-trial noise indicator
+        (how noisy was the trial that actually got reported?). A low spread
+        with a high winning_trial_iqr means the trials agree on the median
+        but each individually has wide iteration-to-iteration variance --
+        a different failure mode than trials disagreeing with each other.
+    """
+    trial_medians = [statistics.median(t) for t in trial_sample_lists if t]
+    if not trial_medians:
+        return 0.0, 0.0, 0.0
+    min_idx = trial_medians.index(min(trial_medians))
+    winning_trial = [t for t in trial_sample_lists if t][min_idx]
+    _, winning_iqr = _agg(winning_trial)
+    return min(trial_medians), max(trial_medians) - min(trial_medians), winning_iqr
+
+
 def correctness_gate(cfg, arms, device="cuda"):
     torch.manual_seed(SEED)
     rollout = _make_rollout(cfg, seed=42, device=device)
     _, _, _, _, rewards, dones, old_values = rollout
 
-    ref_fn = _ARMS["triton"][0]() if "triton" in _ARMS else compute_gae
     ref_adv = compute_gae(rewards, old_values, dones, gamma=GAMMA, lambda_=LAMBDA)
 
     print(f"  [gate] correctness vs triton, atol=1e-4 rtol=1e-4:")
@@ -471,6 +513,15 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
 
 
 def measure(cfg, arms, device="cuda"):
+    """Runs cfg.n_warmup untimed iterations once, then cfg.n_trials trials of
+    cfg.n_iters_per_trial timed iterations each, matching the paper's
+    kernel-benchmark protocol (sec:measurement). Returns samples structured as
+    samples[arm][metric] = list of n_trials lists, each holding that trial's
+    per-iteration values -- so _row() can take each trial's own median first,
+    then the minimum across trials, rather than pooling every iteration from
+    every trial into one flat median (which would silently reproduce the
+    single-pass behavior this restructuring is meant to replace).
+    """
     torch.manual_seed(SEED)
     ref_net = ResidualActorCritic().to(device)
     state = ref_net.state_dict()
@@ -483,67 +534,102 @@ def measure(cfg, arms, device="cuda"):
         opts[name] = torch.optim.Adam(net.parameters(), lr=3e-4)
         fns[name] = _ARMS[name][0]()
 
-    samples = {n: {k: [] for k in (*STAGES, "_total", "_gae_device")} for n in arms}
+    metrics = (*STAGES, "_total", "_gae_device")
+    # samples[arm][metric][trial] -> list of per-iteration values in that trial
+    samples = {n: {k: [[] for _ in range(cfg.n_trials)] for k in metrics} for n in arms}
     stage_timers = {name: _EventTimer() for name in arms}
     total_timers = {name: _EventTimer() for name in arms}
 
-    def run(name, rollout, record):
+    def run(name, rollout, trial_idx):
         res = _run_ppo_update(cfg, nets[name], opts[name], rollout, fns[name],
                                stage_timers[name], total_timers[name])
-        if record:
+        if trial_idx is not None:
             for k, v in res.items():
-                samples[name][k].append(v)
+                samples[name][k][trial_idx].append(v)
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
 
     for i in range(cfg.n_warmup):
         rollout = _make_rollout(cfg, seed=1000 + i, device=device)
         for name in arms:
-            run(name, rollout, record=False)
+            run(name, rollout, trial_idx=None)
         del rollout
 
-    for i in range(cfg.n_iters):
-        rollout = _make_rollout(cfg, seed=2000 + i, device=device)
-        order = arms[i % len(arms):] + arms[:i % len(arms)]
-        for name in order:
-            run(name, rollout, record=True)
-        del rollout
+    seed_counter = 2000
+    for trial in range(cfg.n_trials):
+        for i in range(cfg.n_iters_per_trial):
+            rollout = _make_rollout(cfg, seed=seed_counter, device=device)
+            seed_counter += 1
+            order = arms[i % len(arms):] + arms[:i % len(arms)]
+            for name in order:
+                run(name, rollout, trial_idx=trial)
+            del rollout
 
     return samples
 
 
 def _row(samples, arms, ref="triton"):
-    n_iters = len(samples[ref]["_total"])
+    """Collapses trial-structured samples (samples[arm][metric][trial] ->
+    list of per-iteration values) into one row per arm, using the minimum
+    trial median for every reported metric (see _agg_trials). Ratios
+    (speedup, nongae_vs_ref, resid) are computed PER ITERATION within each
+    trial first -- preserving the pairing between an arm's iteration and the
+    reference arm's SAME iteration, since both were measured on the same
+    interleaved rollout -- then each trial's own median of those per-iteration
+    ratios is taken, and finally the minimum across trials, mirroring
+    _agg_trials's two-stage reduction rather than pooling all trials' ratios
+    into one flat list.
+    """
+    n_trials = len(samples[ref]["_total"])
     out = {}
     for name in arms:
         s = samples[name]
-        tot, tot_iqr = _agg(s["_total"])
-        gae, _ = _agg(s["gae"])
-        dev, _ = _agg(s["_gae_device"])
-        per_iter_resid = [sum(s[st][i] for st in STAGES) - s["_total"][i]
-                           for i in range(n_iters)]
-        resid, resid_iqr = _agg(per_iter_resid)
-        ratios = [t / r for t, r in zip(s["_total"], samples[ref]["_total"]) if r > 0]
-        sp, sp_iqr = _agg(ratios)
+        tot, tot_spread, tot_iqr = _agg_trials(s["_total"])
+        gae, _, _ = _agg_trials(s["gae"])
+        dev, _, _ = _agg_trials(s["_gae_device"])
+
+        resid_trials = [
+            [sum(s[st][trial][i] for st in STAGES) - s["_total"][trial][i]
+             for i in range(len(s["_total"][trial]))]
+            for trial in range(n_trials)
+        ]
+        resid, resid_spread, _ = _agg_trials(resid_trials)
+
+        sp_trials = [
+            [t / r for t, r in zip(s["_total"][trial], samples[ref]["_total"][trial]) if r > 0]
+            for trial in range(n_trials)
+        ]
+        sp, sp_spread, sp_iqr = _agg_trials(sp_trials)
+
         out[name] = {
-            "total": tot, "total_iqr": tot_iqr,
-            "resid": resid, "resid_iqr": resid_iqr,
+            "total": tot, "total_spread": tot_spread, "total_iqr": tot_iqr,
+            "resid": resid, "resid_spread": resid_spread,
             "gae": gae, "dev": dev,
             "share": gae / tot * 100 if tot else 0.0,
-            "speedup_vs_triton": sp, "speedup_vs_triton_iqr": sp_iqr,
-            "stages": {st: _agg(s[st])[0] for st in STAGES},
+            "speedup_vs_triton": sp, "speedup_vs_triton_spread": sp_spread,
+            "speedup_vs_triton_iqr": sp_iqr,
+            "stages": {st: _agg_trials(s[st])[0] for st in STAGES},
         }
 
     ref_s = samples[ref]
     for name in arms:
         s = samples[name]
-        per_iter_nongae = [sum(s[st][i] for st in STAGES if st != "gae")
-                            for i in range(n_iters)]
-        per_iter_ref_nongae = [sum(ref_s[st][i] for st in STAGES if st != "gae")
-                                for i in range(n_iters)]
-        nongae, _ = _agg(per_iter_nongae)
-        nongae_ratios = [a / b for a, b in zip(per_iter_nongae, per_iter_ref_nongae) if b > 0]
-        nongae_vs_ref, _ = _agg(nongae_ratios)
+        nongae_trials = [
+            [sum(s[st][trial][i] for st in STAGES if st != "gae")
+             for i in range(len(s["_total"][trial]))]
+            for trial in range(n_trials)
+        ]
+        ref_nongae_trials = [
+            [sum(ref_s[st][trial][i] for st in STAGES if st != "gae")
+             for i in range(len(ref_s["_total"][trial]))]
+            for trial in range(n_trials)
+        ]
+        nongae, _, _ = _agg_trials(nongae_trials)
+        nongae_ratio_trials = [
+            [a / b for a, b in zip(nongae_trials[trial], ref_nongae_trials[trial]) if b > 0]
+            for trial in range(n_trials)
+        ]
+        nongae_vs_ref, _, _ = _agg_trials(nongae_ratio_trials)
         out[name]["nongae"] = nongae
         out[name]["nongae_vs_ref"] = nongae_vs_ref
     return out
@@ -557,7 +643,15 @@ def main():
     parser.add_argument("--seq-lens", default="700,1000")
     parser.add_argument("--epochs", default="1,4,10,50")
     parser.add_argument("--arms", default=",".join(DEFAULT_ARMS))
-    parser.add_argument("--iters", type=int, default=None)
+    parser.add_argument("--trials", type=int, default=None,
+                         help=f"number of trials (default {N_TRIALS}); the minimum "
+                              "trial median is reported, matching the paper's "
+                              "kernel-benchmark protocol.")
+    parser.add_argument("--iters-per-trial", type=int, default=None,
+                         help=f"timed iterations per trial (default {N_ITERS_PER_TRIAL}).")
+    parser.add_argument("--warmup", type=int, default=None,
+                         help=f"untimed warmup iterations before the first trial "
+                              f"(default {N_WARMUP}).")
     args = parser.parse_args()
 
     arms = list(a.strip() for a in args.arms.split(",") if a.strip())
@@ -581,7 +675,9 @@ def main():
     seq_lens = [int(x) for x in args.seq_lens.split(",")]
     epochs_list = [int(x) for x in args.epochs.split(",")]
     grid = [Config(seq_len=t, n_epochs=e,
-                   n_iters=args.iters or N_ITERS)
+                   n_trials=args.trials or N_TRIALS,
+                   n_iters_per_trial=args.iters_per_trial or N_ITERS_PER_TRIAL,
+                   n_warmup=args.warmup or N_WARMUP)
             for t in seq_lens for e in epochs_list]
 
     gpu = torch.cuda.get_device_name(0)
@@ -607,9 +703,12 @@ def main():
         for name in arms:
             a = r[name]
             flag = "" if abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD else "  <-- CONTAMINATED"
-            print(f"  {name:<10} total {a['total']:>10.3f}ms (IQR {a['total_iqr']:.3f})  "
+            print(f"  {name:<10} total {a['total']:>10.3f}ms "
+                  f"(win-trial IQR {a['total_iqr']:.3f}, trial-spread {a['total_spread']:.3f})  "
                   f"GAE {a['gae']:.4f}ms (dev {a['dev']:.4f})  share {a['share']:.4f}%  "
-                  f"vs-triton {a['speedup_vs_triton']:.4f}x (IQR {a['speedup_vs_triton_iqr']:.4f})  "
+                  f"vs-triton {a['speedup_vs_triton']:.4f}x "
+                  f"(win-trial IQR {a['speedup_vs_triton_iqr']:.4f}, "
+                  f"trial-spread {a['speedup_vs_triton_spread']:.4f})  "
                   f"resid {a['resid']:+.3f}{flag}")
         raw_results.append({
             "config": asdict(cfg),
@@ -629,17 +728,19 @@ def main():
 
     csv_path = out_dir / f"resip_ppo_e2e-{ts}.csv"
     with open(csv_path, "w") as f:
-        f.write("seq_len,n_epochs,arm,total_ms,total_iqr_ms,gae_ms,gae_device_ms,"
-                "gae_share_pct,speedup_vs_triton,speedup_vs_triton_iqr,"
+        f.write("seq_len,n_epochs,arm,total_ms,total_iqr_ms,total_spread_ms,"
+                "gae_ms,gae_device_ms,gae_share_pct,speedup_vs_triton,"
+                "speedup_vs_triton_iqr,speedup_vs_triton_spread,"
                 "nongae_vs_ref,resid_ms,citable\n")
         for entry in raw_results:
             cfg = entry["config"]
             for name, a in entry["rows"].items():
                 citable = abs(a["nongae_vs_ref"] - 1.0) < _CONTAMINATION_THRESHOLD
                 f.write(f"{cfg['seq_len']},{cfg['n_epochs']},{name},"
-                        f"{a['total']:.4f},{a['total_iqr']:.4f},{a['gae']:.5f},"
-                        f"{a['dev']:.5f},{a['share']:.5f},"
+                        f"{a['total']:.4f},{a['total_iqr']:.4f},{a['total_spread']:.4f},"
+                        f"{a['gae']:.5f},{a['dev']:.5f},{a['share']:.5f},"
                         f"{a['speedup_vs_triton']:.5f},{a['speedup_vs_triton_iqr']:.5f},"
+                        f"{a['speedup_vs_triton_spread']:.5f},"
                         f"{a['nongae_vs_ref']:.5f},{a['resid']:.4f},{citable}\n")
     print(f"Wrote {csv_path}")
     print("\nNOTE: raw output files are gitignored (paper-specific dated output, "

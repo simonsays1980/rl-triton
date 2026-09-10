@@ -149,10 +149,19 @@ consecutive epochs ARE computed and logged (--recompute-track-grad): unlike
 the metrics above, this is a property of the optimization trajectory itself
 under whatever advantages are in use (frozen vs. refreshed), not a claim
 about learning quality, so it is meaningful evidence for that comparison
-even on synthetic data. It is off by default because it adds a
-CPU-side flatten+dot per epoch that is irrelevant to the cadence-cost
-question itself; enable it only when the gradient-stability comparison is
-specifically wanted.
+even on synthetic data. It is off by default, and MUST NOT be combined with
+a run whose timing numbers are meant to be cited: computing it calls
+`.item()` on the gradient norm/cosine every epoch, which blocks until the
+value is materialized on the host -- a real device synchronization point,
+once or twice per epoch, run BEFORE the "optimizer" stage's timer.stop()
+but still inside the region total_timer wraps. This adds real, unattributed
+wall-clock to `_total` (contaminating resid, share, and speedup_vs_triton
+for every arm) and, for every_epoch/every_k, reintroduces the same
+per-epoch device-drain problem the gae_device_ms timing fix above
+specifically eliminates. Run --recompute-track-grad ONLY as its own
+dedicated invocation, and use only its grad_norm_median/grad_cos_median
+output; discard/ignore that run's timing numbers (total, share,
+speedup_vs_triton, etc.) entirely.
 
 Usage:
     python benchmarks/resip_ppo_e2e_measurement.py                 # full sweep (T x epochs)
@@ -894,9 +903,12 @@ def main():
                               "'frozen'/'every_epoch'.")
     parser.add_argument("--recompute-track-grad", action="store_true",
                          help="log actor gradient-norm/cosine-similarity between "
-                              "consecutive epochs (off by default; adds a CPU-side "
-                              "flatten+dot per epoch, irrelevant to the cadence-cost "
-                              "question itself).")
+                              "consecutive epochs (off by default). WARNING: calls "
+                              "device-syncing .item() every epoch, contaminating this "
+                              "run's timing numbers (total/share/speedup_vs_triton) -- "
+                              "run this ONLY as its own dedicated invocation and use "
+                              "just its grad_norm_median/grad_cos_median output; never "
+                              "cite timing numbers from a run that used this flag.")
     args = parser.parse_args()
 
     arms = list(a.strip() for a in args.arms.split(",") if a.strip())

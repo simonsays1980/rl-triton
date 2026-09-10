@@ -438,18 +438,63 @@ def _make_pufferlib_arm():
 
     op, _source = load_puff_advantage()
 
+    # Reusable buffers, allocated lazily on first call and reused for every
+    # subsequent call at the same shape (shape is fixed for the whole
+    # measure() invocation -- NUM_ENVS and seq_len do not change between
+    # iterations of one config). Reduces per-call allocator churn versus the
+    # original version, which called torch.zeros_like/torch.ones_like fresh
+    # every iteration for ALL FOUR of pr/pd/importance/adv -- allocator
+    # activity this arm's competitors (triton, scan) do not pay, and a real
+    # contributor to PufferLib's noisier-than-expected timing given its
+    # kernel's own low occupancy (1024 threads, one per env row, sequential
+    # O(T) scan within each thread -- see benchmark_gae_vs_pufferlib.py).
+    # `importance` is genuinely constant (all-ones, on-policy assumption)
+    # regardless of the rollout drawn, so it only needs to be built once,
+    # ever. `pr`/`pd` must still be rebuilt from the current call's
+    # rewards/terminateds (they are not constant across iterations), but
+    # reuse an existing buffer (zeroing column 0 in place) rather than a
+    # fresh torch.zeros_like allocation each time. `adv` is zeroed in place
+    # and reused as the output buffer rather than reallocated.
+    _cache = {}
+
     def puffer_gae(rewards, values, terminateds, gamma, lambda_):
+        # NOTE ON BUFFER REUSE SAFETY: this returns a view onto the cached
+        # `adv` buffer (via `advantages.reshape(-1).detach()` at the call
+        # site), which is zeroed and overwritten again on the NEXT call to
+        # this function (the next GAE refresh, for every_epoch/every_k).
+        # This is safe only because every op in this script runs on the
+        # single default CUDA stream: PyTorch preserves same-stream
+        # program order, so every kernel that reads the previous refresh's
+        # `adv` (e.g. `surr1 = ratio * mb_adv` at every epoch in between)
+        # is queued strictly before this call's `adv.zero_()` and kernel
+        # write are issued, and will complete first. If this script is ever
+        # changed to use multiple CUDA streams or non_blocking transfers
+        # around this arm, this ordering guarantee would need to be
+        # re-established explicitly (e.g. an event wait) rather than
+        # assumed.
+        shape = rewards.shape
+        buf = _cache.get(shape)
+        if buf is None:
+            buf = {
+                "pr": torch.zeros_like(rewards),
+                "pd": torch.zeros_like(terminateds),
+                "importance": torch.ones_like(rewards),
+                "adv": torch.zeros_like(rewards),
+            }
+            _cache[shape] = buf
+
         # PufferLib's index convention: PR[1:]=R[:-1], PD[1:]=D[:-1] (see
         # benchmark_gae_vs_pufferlib.py's STEP 0 for the full derivation).
         # Row T-1 is structurally unwritten by puff_advantage_row_cuda; we
         # zero-pad it the same way a real PufferLib caller's output buffer
-        # would (torch.zeros(...) before the kernel call).
-        pr = torch.zeros_like(rewards)
-        pd = torch.zeros_like(terminateds)
+        # would (torch.zeros(...) before the kernel call) -- column 0 is
+        # reset to 0 in place rather than reallocating the whole tensor.
+        pr, pd, importance, adv = buf["pr"], buf["pd"], buf["importance"], buf["adv"]
+        pr[:, 0].zero_()
+        pd[:, 0].zero_()
         pr[:, 1:] = rewards[:, :-1]
         pd[:, 1:] = terminateds[:, :-1]
-        importance = torch.ones_like(rewards)
-        adv = torch.zeros_like(rewards)
+        adv.zero_()
         # op signature (build.py): (values, rewards, dones, importance,
         # advantages, gamma, lambda, rho_clip, c_clip) -> None, in place.
         op(values, pr, pd, importance, adv, gamma, lambda_, 1.0, 1.0)
@@ -587,10 +632,19 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
     obs, base_actions, actions, old_log_probs, rewards, dones, old_values = rollout
     n, t = NUM_ENVS, cfg.seq_len
 
-    gae_device_ms = 0.0
     n_refreshes = 0
     grad_norms, grad_cosines = [], []
     prev_flat_grad = None
+    # GAE device-time event pairs are collected here and resolved with a
+    # SINGLE synchronize() after the epoch loop (see below), never inside
+    # it -- a mid-loop torch.cuda.synchronize() (as an earlier version of
+    # this function had, once per refresh) forces a full device drain that
+    # stalls the async pipeline, disproportionately inflating every_epoch/
+    # every_k's wall-clock (up to 50 drains/update) relative to frozen (1
+    # drain), independent of any real GAE cost. Matches
+    # ppo_e2e_measurement.py's pending_gae_events pattern (its own
+    # METHODOLOGY NOTE 2) exactly.
+    pending_gae_events = []
     total_timer.start("_total")
 
     flat_obs = obs.reshape(-1, OBS_DIM)
@@ -619,8 +673,7 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
             returns = advantages + values
             dev_b.record()
             timer.stop()
-            torch.cuda.synchronize()
-            gae_device_ms += dev_a.elapsed_time(dev_b)
+            pending_gae_events.append((dev_a, dev_b))
 
             timer.start("gather")
             flat_advantages = advantages.reshape(-1).detach()
@@ -673,6 +726,7 @@ def _run_ppo_update(cfg, net, optimizer, rollout, gae_fn, timer, total_timer):
     totals = total_timer.resolve()
     stages = timer.resolve()
     torch.cuda.synchronize()
+    gae_device_ms = sum(a.elapsed_time(b) for a, b in pending_gae_events)
     stages["_total"] = totals["_total"]
     stages["_gae_device"] = gae_device_ms
     stages["_n_refreshes"] = n_refreshes

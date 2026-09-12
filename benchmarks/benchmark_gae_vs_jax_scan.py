@@ -102,11 +102,14 @@ TWO REGIMES (same shapes as benchmark_gae_vs_pufferlib.py, for comparability)
      [4096..32768] -- Isaac Gym/Isaac Lab-style aspect ratio.
 
 ================================================================================
-Usage: python benchmarks/benchmark_gae_vs_jax_scan.py
-(Requires a CUDA-enabled jaxlib -- `pip install "jax[cuda12]"` -- so JAX runs
-on the same GPU as the Triton kernel. If jax.devices() has no GPU, the script
-exits with an explanation rather than silently benchmarking JAX-on-CPU
-against Triton-on-GPU.)
+Usage:
+  pip install -e ".[jax]"    # pulls in a CUDA-enabled jaxlib (jax[cuda12])
+  python benchmarks/benchmark_gae_vs_jax_scan.py
+(A CUDA-enabled jaxlib is required so JAX runs on the same GPU as the Triton
+kernel. If jax.devices() has no GPU -- e.g. the [jax] extra wasn't installed,
+or the pod's CUDA version doesn't match -- the script exits with an
+explanation rather than silently benchmarking JAX-on-CPU against
+Triton-on-GPU.)
 ================================================================================
 
 Verbatim source (thanks to Sasha Abramowitz for sharing it) for

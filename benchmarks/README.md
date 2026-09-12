@@ -32,7 +32,8 @@ script is the tracked artifact, kept on disk for reference but not published.
 |---|---|---|
 | Headline release sweep (all 7 algorithms, all timing granularities, production regime) | [`benchmarks.md`](../benchmarks.md) (repo root) | `tests/bench_release.py` |
 | README summary table draft (human applies manually) | [`readme_table_draft.md`](readme_table_draft.md) | `tests/bench_release.py` |
-| PufferLib comparison (GAE + V-Trace, both regimes) | [`gae_vs_pufferlib-2026-08-05.md`](gae_vs_pufferlib-2026-08-05.md) | `benchmark_gae_vs_pufferlib.py` -- this script's output is what the paper's PufferLib figures are built from |
+| PufferLib comparison vs. **3.0.0** (GAE + V-Trace, both regimes) -- the paper's baseline | [`gae_vs_pufferlib-2026-08-05.md`](gae_vs_pufferlib-2026-08-05.md) | `benchmark_gae_vs_pufferlib.py` -- this script's output is what the paper's PufferLib figures are built from |
+| PufferLib comparison vs. **5.0** (GAE only, both regimes) -- unreleased branch, NOT the paper's baseline | [`gae_vs_pufferlib_5_0-2026-08-20.md`](gae_vs_pufferlib_5_0-2026-08-20.md) | `benchmark_gae_vs_pufferlib_5_0.py` |
 | Chunked-vs-flat dispatch robustness study (long seq_len, out of target regime) | [`chunked_scan.md`](chunked_scan.md) | `compare_chunked.py` |
 | `HAS_BOOTSTRAP=False` scalar-allocation skip, isolated | [`bootstrap_skip.md`](bootstrap_skip.md) | `measure_bootstrap_skip.py` |
 | Retrace register-pressure study (the `seq_len<=2048` dispatch ceiling) | [`retrace_register_pressure.md`](retrace_register_pressure.md) | `measure_retrace_register_pressure.py` |

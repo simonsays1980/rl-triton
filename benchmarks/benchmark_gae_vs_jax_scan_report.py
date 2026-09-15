@@ -477,7 +477,7 @@ def main():
     table_md = print_markdown_table(results, NUM_ENVS_LIST, SEQ_LENS)
     find_crossovers(results, NUM_ENVS_LIST, SEQ_LENS, "production regime")
 
-    fig_path = Path(__file__).parent.parent / "gae_performance_crossover_jax.png"
+    fig_path = Path(__file__).parent / "gae_performance_crossover_jax.png"
     plot_results(results, fig_path, x_axis="seq_len", num_envs_list=NUM_ENVS_LIST,
                  seq_lens=SEQ_LENS, colors=COLORS,
                  title="rl-triton GAE vs. JAX associative-scan GAE -- "
@@ -517,7 +517,7 @@ def main():
     find_crossovers(results_short, NUM_ENVS_LIST_LARGE, SEQ_LENS_SHORT,
                      "massively-parallel-sim regime")
 
-    fig_path_short = Path(__file__).parent.parent / "gae_performance_short_horizon_jax.png"
+    fig_path_short = Path(__file__).parent / "gae_performance_short_horizon_jax.png"
     plot_results(results_short, fig_path_short, x_axis="num_envs",
                  num_envs_list=NUM_ENVS_LIST_LARGE, seq_lens=SEQ_LENS_SHORT,
                  colors=COLORS_SHORT,
@@ -551,7 +551,7 @@ def main():
         "",
     ]
 
-    report_path = Path(__file__).parent.parent / f"gae_vs_jax_scan-{report_date}.md"
+    report_path = Path(__file__).parent / f"gae_vs_jax_scan-{report_date}.md"
     report_path.write_text("\n".join(report_lines))
     print(f"\nWrote {report_path} (tables + verdicts, reference only -- not part of "
           f"benchmarks.md/README's recurring tables; run-on-demand, review before committing).")

@@ -62,6 +62,25 @@ import jax.numpy as jnp
 
 DEFAULT_RESULTS_DIR = Path(__file__).parent / "jax_gae_results"
 
+# JAX versions actually verified working in this JAX-only venv against a
+# real GPU (not just CPU-imported): jax==0.10.2 confirmed end-to-end on a
+# pod (RTX 4000 Ada, driver reporting CUDA 13.2, jax[cuda12] resolving a
+# cu13-based jaxlib/plugin stack -- see NOTES.md's cuDNN-conflict section).
+# jax==0.9.2 was checked for the equivalence-gate math on CPU only, never
+# confirmed against a real GPU device -- do not treat it as equally
+# verified. pyproject.toml's `jax` extra floor (`jax[cuda12]>=0.9.2`) is
+# looser than this on purpose (a floor, not a pin) since jax has no known
+# torch-style hard pin conflict of its own to guard against here -- this
+# constant instead exists to flag drift for anyone rerunning later.
+KNOWN_GOOD_JAX_VERSIONS = ("0.10.2",)
+
+
+def _check_known_good_version():
+    if jax.__version__ not in KNOWN_GOOD_JAX_VERSIONS:
+        print(f"WARNING: jax {jax.__version__} not in the versions this benchmark has "
+              f"been run against on a real GPU ({', '.join(KNOWN_GOOD_JAX_VERSIONS)}). "
+              f"Results may still be valid but are unverified at this version.")
+
 
 def _to_jax_inputs(rewards, values, terminateds):
     """Append the length-(T+1) bootstrap slot and shift terminated/truncated
@@ -239,6 +258,8 @@ def main():
     print(f"dtype:          float32")
     print(f"gamma={GAMMA}  lambda={LAMBDA}")
     print(f"results dir:    {results_dir}")
+    print()
+    _check_known_good_version()
     print()
 
     run_jax_equivalence_gate(results_dir, jax_gae_fn)

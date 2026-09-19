@@ -160,6 +160,34 @@ from torch.profiler import ProfilerActivity, profile
 
 DEFAULT_RESULTS_DIR = Path(__file__).parent / "jax_gae_results"
 
+# Exact versions this benchmark has actually been run against (matches
+# pyproject.toml's exact-pinned dependencies -- torch==2.4.1, triton==3.0.0
+# -- and every report file's own provenance stamp). A fresh
+# `pip install -e ".[dev]"` should land here exactly; if it doesn't, either
+# pyproject.toml has been updated without this constant (update both
+# together) or something upgraded torch/triton out from under the venv
+# (see NOTES.md's "torch==2.4.1 and jax[cuda12] cannot share one venv"
+# section for a real instance of this happening via pip's resolver).
+# CUDA build tag (+cu121, +cu124, ...) is NOT pinned here -- confirmed
+# backward-compatible across recent driver versions (e.g. a +cu121 torch
+# wheel ran fine against a CUDA 13.2 driver on a real pod), so only the
+# torch/triton version numbers themselves are checked, not the CUDA suffix.
+KNOWN_GOOD_TORCH_VERSION = "2.4.1"
+KNOWN_GOOD_TRITON_VERSION = "3.0.0"
+
+
+def _check_known_good_versions():
+    torch_base = torch.__version__.split("+")[0]
+    if torch_base != KNOWN_GOOD_TORCH_VERSION:
+        print(f"WARNING: torch {torch.__version__} != known-good "
+              f"{KNOWN_GOOD_TORCH_VERSION} -- this benchmark's numbers, and every "
+              f"other report in this repo, were produced against torch=="
+              f"{KNOWN_GOOD_TORCH_VERSION}. Results may still be valid but are "
+              f"unverified at this version.")
+    if triton.__version__ != KNOWN_GOOD_TRITON_VERSION:
+        print(f"WARNING: triton {triton.__version__} != known-good "
+              f"{KNOWN_GOOD_TRITON_VERSION} -- same caveat as above.")
+
 
 # ------------------------------------------------------------------------
 # Shared input generation (also mirrored, numpy-only, in the JAX-phase
@@ -360,6 +388,8 @@ def main():
     print(f"dtype:          float32")
     print(f"gamma={GAMMA}  lambda={LAMBDA}  termination_prob={TERM_PROB}")
     print(f"results dir:    {args.results_dir}")
+    print()
+    _check_known_good_versions()
     print()
 
     run_triton_equivalence_gate(args.results_dir, device)

@@ -1255,3 +1255,65 @@ production-regime harness allocation fix documented above -- three
 separate causes have each moved GAE/V-Trace's headline numbers across
 recent releases; do not attribute a speedup delta to one without checking
 which of the three (or a combination) actually explains it.
+
+## `torch==2.4.1` and `jax[cuda12]` cannot share one venv -- confirmed on a real pod, not theoretical
+
+`benchmark_gae_vs_jax_scan_{triton,jax,report}.py` (comparing rl-triton's
+GAE kernel against a JAX/XLA `associative_scan`-based implementation) was
+originally written as a single process, like `benchmark_gae_vs_pufferlib.py`:
+rl-triton via torch/Triton, the JAX side moved on/off-device via dlpack.
+That does not work, and the failure is not a version-pinning nuance to be
+tuned away -- it is a structural incompatibility:
+
+- `torch==2.4.1` (this repo's pinned, validated version -- every existing
+  benchmark report in this repo, PufferLib and JAX alike, is stamped
+  `torch 2.4.1`) hard-pins `nvidia-cudnn-cu12==9.1.0.70` (`==`, not a floor).
+- `jax[cuda12]`'s GPU plugin requires cuDNN `>=9.8.0` -- checked at both
+  jax 0.9.2 and 0.10.2, same requirement both times, so this is not a
+  version drift issue that stepping to an older jax release would route
+  around. There is no `jax[cuda12]` release compiled against cuDNN as old
+  as 9.1.0.70.
+
+Installing both packages in one venv leaves the loaded `nvidia-cudnn-cu12`
+at whichever version pip's resolver landed on last -- there is no version
+that satisfies both pins simultaneously. When JAX ends up with the
+too-old cuDNN (9.1.0 loaded, 9.8.0 expected), XLA's GPU compiler hard-fails
+on **any** GPU program:
+
+```
+jax.errors.JaxRuntimeError: INTERNAL: RET_CHECK failure
+(external/xla/xla/service/gpu/gpu_compiler.cc:2798) dnn_support != nullptr
+```
+
+This is not gated on the program actually calling a cuDNN op -- GAE's
+computation here is pure elementwise arithmetic plus
+`jax.lax.associative_scan`, never touching cuDNN, and it crashes anyway.
+XLA's GPU compiler apparently initializes a cuDNN handle unconditionally
+while compiling any GPU program, so the crash is unavoidable in a shared
+env regardless of whether cuDNN is ever dispatched to at runtime.
+`pip`'s resolver will also silently upgrade `torch` itself past 2.4.1 while
+trying to satisfy `jax[cuda12]`'s transitive dependency chain (observed:
+`torch` jumped to `2.14.0` unprompted) -- so even reordering install
+commands does not produce a stable combination; only two separate venvs do.
+
+**Fix:** the benchmark is split into three phases across two venvs,
+exchanging data as `.npz` files under `benchmarks/jax_gae_results/` (see
+`benchmark_gae_vs_jax_scan_triton.py`'s module docstring for the full
+phase breakdown and the derivation of the JAX/rl-triton buffer-convention
+index mapping). `pyproject.toml`'s `jax` extra
+(`jax = ["jax[cuda12]>=0.9.2"]`) exists only as a version reference for
+what to install in the **separate** JAX-only venv -- `pip install
+-e ".[jax]"` must never be run in the same venv as `pip install -e ".[dev]"`
+(which pulls in the pinned `torch==2.4.1`). `benchmarks/setup_jax_gae_venvs.sh`
+builds both venvs correctly in one step; prefer it over installing by hand.
+
+**Also confirmed independently, unrelated to jax:** `pyproject.toml`'s
+`dependencies` used to be floors (`torch>=2.4.1`, `triton>=3.0.0`) with no
+ceiling, so even a fresh `pip install -e ".[dev]"` with **no jax involved
+at all** could silently resolve to whatever's newest at install time --
+observed drifting to `torch==2.14.0+cu130`/`triton==3.8.0` on a pod, months
+after this repo's kernels/tuning tables were last validated at
+`torch==2.4.1`/`triton==3.0.0`. Exact-pinned (`==`) in `pyproject.toml` now,
+so a version bump requires a deliberate edit rather than silent pip
+drift -- see git history for `pyproject.toml` around the commit that
+tightened this.

@@ -1,0 +1,1755 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-performance Triton GPU kernels for reinforcement learning">
+      
+      
+      
+        <link rel="canonical" href="https://simonsays1980.github.io/rl-triton/benchmark-history/v0.1.0/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/icon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Benchmarks archive: v0.1.0 - rl-triton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmarks-archive-v010" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="rl-triton" class="md-header__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rl-triton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmarks archive: v0.1.0
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../kernels/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Kernels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../benchmarks/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="rl-triton" class="md-nav__button md-logo" aria-label="rl-triton" data-md-component="logo">
+      
+  <img src="../../assets/icon.svg" alt="logo">
+
+    </a>
+    rl-triton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/simonsays1980/rl-triton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    simonsays1980/rl-triton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../kernels/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Kernels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/gae/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GAE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/vtrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    V-Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/retrace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Retrace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/returns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Returns
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/prefix_sum/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Episodic Prefix Sum
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kernels/gpu-concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#v010-2026-07-09-nvidia-rtx-2000-ada-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v0.1.0 – 2026-07-09 – NVIDIA RTX 2000 Ada Generation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="v0.1.0 – 2026-07-09 – NVIDIA RTX 2000 Ada Generation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gae-compute_gae" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAE (compute_gae)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gae-with-truncations-compute_gae" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAE – with truncations (compute_gae)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v-trace-compute_vtrace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        V-Trace (compute_vtrace)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#v-trace-with-truncations-compute_vtrace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        V-Trace – with truncations (compute_vtrace)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#retrace-compute_retrace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Retrace(λ) (compute_retrace)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#-returns-compute_lambda_returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        λ-returns (compute_lambda_returns)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#-returns-with-truncations-compute_lambda_returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        λ-returns – with truncations (compute_lambda_returns)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discounted-returns-compute_discounted_returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discounted returns (compute_discounted_returns)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discounted-returns-with-truncations-compute_discounted_returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discounted returns – with truncations (compute_discounted_returns)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#eligibility-traces-compute_eligibility_traces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Eligibility traces (compute_eligibility_traces)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#episodic-prefix-sum-compute_episodic_prefix_sum" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Episodic prefix sum (compute_episodic_prefix_sum)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="benchmarks-archive-v010">Benchmarks archive: v0.1.0</h1>
+<p><strong>Note:</strong> these numbers predate the log-space baseline underflow fix (see NOTES.md's log-space-underflow note) and are not comparable to later releases -- <code>compile(vec)</code> here is the old, since-replaced log-space cumsum baseline. Left unaltered below as the historical record of what was actually measured at the time.</p>
+<h2 id="v010-2026-07-09-nvidia-rtx-2000-ada-generation">v0.1.0 – 2026-07-09 – NVIDIA RTX 2000 Ada Generation</h2>
+<h4 id="gae-compute_gae">GAE (<code>compute_gae</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">compile(assoc) (ms)</th>
+<th style="text-align: center;">vs assoc</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">np→triton→np (ms)</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">np→tri→np vs numpy</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.061</td>
+<td style="text-align: center;">1.5x</td>
+<td style="text-align: center;">0.118</td>
+<td style="text-align: center;">3.0x</td>
+<td style="text-align: center;">39.693</td>
+<td style="text-align: center;">1001.1x</td>
+<td style="text-align: center;">0.170</td>
+<td style="text-align: center;">17.285</td>
+<td style="text-align: center;">101.5x</td>
+<td style="text-align: center;">436.0x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.094</td>
+<td style="text-align: center;">2.3x</td>
+<td style="text-align: center;">0.140</td>
+<td style="text-align: center;">3.5x</td>
+<td style="text-align: center;">101.307</td>
+<td style="text-align: center;">2524.6x</td>
+<td style="text-align: center;">0.360</td>
+<td style="text-align: center;">41.381</td>
+<td style="text-align: center;">115.1x</td>
+<td style="text-align: center;">1031.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.143</td>
+<td style="text-align: center;">3.6x</td>
+<td style="text-align: center;">0.147</td>
+<td style="text-align: center;">3.7x</td>
+<td style="text-align: center;">83.521</td>
+<td style="text-align: center;">2108.3x</td>
+<td style="text-align: center;">0.603</td>
+<td style="text-align: center;">55.962</td>
+<td style="text-align: center;">92.7x</td>
+<td style="text-align: center;">1412.6x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.068</td>
+<td style="text-align: center;">0.439</td>
+<td style="text-align: center;">6.4x</td>
+<td style="text-align: center;">1.035</td>
+<td style="text-align: center;">15.2x</td>
+<td style="text-align: center;">172.795</td>
+<td style="text-align: center;">2535.1x</td>
+<td style="text-align: center;">1.616</td>
+<td style="text-align: center;">110.270</td>
+<td style="text-align: center;">68.2x</td>
+<td style="text-align: center;">1617.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.197</td>
+<td style="text-align: center;">0.908</td>
+<td style="text-align: center;">4.6x</td>
+<td style="text-align: center;">2.881</td>
+<td style="text-align: center;">14.7x</td>
+<td style="text-align: center;">397.756</td>
+<td style="text-align: center;">2023.1x</td>
+<td style="text-align: center;">3.060</td>
+<td style="text-align: center;">226.156</td>
+<td style="text-align: center;">73.9x</td>
+<td style="text-align: center;">1150.3x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="gae-with-truncations-compute_gae">GAE – with truncations (<code>compute_gae</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec-trunc) (ms)</th>
+<th style="text-align: center;">vs vec-trunc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.072</td>
+<td style="text-align: center;">0.129</td>
+<td style="text-align: center;">1.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.071</td>
+<td style="text-align: center;">0.147</td>
+<td style="text-align: center;">2.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.078</td>
+<td style="text-align: center;">0.161</td>
+<td style="text-align: center;">2.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.114</td>
+<td style="text-align: center;">1.053</td>
+<td style="text-align: center;">9.3x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.307</td>
+<td style="text-align: center;">2.879</td>
+<td style="text-align: center;">9.4x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="v-trace-compute_vtrace">V-Trace (<code>compute_vtrace</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">compile(assoc) (ms)</th>
+<th style="text-align: center;">vs assoc</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">np→triton→np (ms)</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">np→tri→np vs numpy</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.046</td>
+<td style="text-align: center;">0.094</td>
+<td style="text-align: center;">2.0x</td>
+<td style="text-align: center;">0.139</td>
+<td style="text-align: center;">3.0x</td>
+<td style="text-align: center;">13.310</td>
+<td style="text-align: center;">287.4x</td>
+<td style="text-align: center;">0.260</td>
+<td style="text-align: center;">31.546</td>
+<td style="text-align: center;">121.2x</td>
+<td style="text-align: center;">681.3x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.047</td>
+<td style="text-align: center;">0.112</td>
+<td style="text-align: center;">2.4x</td>
+<td style="text-align: center;">0.170</td>
+<td style="text-align: center;">3.6x</td>
+<td style="text-align: center;">26.232</td>
+<td style="text-align: center;">554.3x</td>
+<td style="text-align: center;">0.589</td>
+<td style="text-align: center;">39.616</td>
+<td style="text-align: center;">67.3x</td>
+<td style="text-align: center;">837.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.046</td>
+<td style="text-align: center;">0.172</td>
+<td style="text-align: center;">3.7x</td>
+<td style="text-align: center;">0.170</td>
+<td style="text-align: center;">3.7x</td>
+<td style="text-align: center;">26.186</td>
+<td style="text-align: center;">566.7x</td>
+<td style="text-align: center;">1.041</td>
+<td style="text-align: center;">72.856</td>
+<td style="text-align: center;">70.0x</td>
+<td style="text-align: center;">1576.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.176</td>
+<td style="text-align: center;">0.748</td>
+<td style="text-align: center;">4.2x</td>
+<td style="text-align: center;">1.271</td>
+<td style="text-align: center;">7.2x</td>
+<td style="text-align: center;">51.869</td>
+<td style="text-align: center;">294.6x</td>
+<td style="text-align: center;">2.779</td>
+<td style="text-align: center;">108.903</td>
+<td style="text-align: center;">39.2x</td>
+<td style="text-align: center;">618.5x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.317</td>
+<td style="text-align: center;">1.684</td>
+<td style="text-align: center;">5.3x</td>
+<td style="text-align: center;">3.496</td>
+<td style="text-align: center;">11.0x</td>
+<td style="text-align: center;">106.227</td>
+<td style="text-align: center;">335.1x</td>
+<td style="text-align: center;">5.232</td>
+<td style="text-align: center;">164.316</td>
+<td style="text-align: center;">31.4x</td>
+<td style="text-align: center;">518.4x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="v-trace-with-truncations-compute_vtrace">V-Trace – with truncations (<code>compute_vtrace</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec-trunc) (ms)</th>
+<th style="text-align: center;">vs vec-trunc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.047</td>
+<td style="text-align: center;">0.143</td>
+<td style="text-align: center;">3.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.048</td>
+<td style="text-align: center;">0.164</td>
+<td style="text-align: center;">3.4x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.049</td>
+<td style="text-align: center;">0.180</td>
+<td style="text-align: center;">3.6x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.221</td>
+<td style="text-align: center;">1.269</td>
+<td style="text-align: center;">5.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.411</td>
+<td style="text-align: center;">3.494</td>
+<td style="text-align: center;">8.5x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="retrace-compute_retrace">Retrace(λ) (<code>compute_retrace</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">np→triton→np (ms)</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">np→tri→np vs numpy</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.052</td>
+<td style="text-align: center;">0.077</td>
+<td style="text-align: center;">1.5x</td>
+<td style="text-align: center;">13.122</td>
+<td style="text-align: center;">250.2x</td>
+<td style="text-align: center;">0.417</td>
+<td style="text-align: center;">17.623</td>
+<td style="text-align: center;">42.3x</td>
+<td style="text-align: center;">336.0x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.072</td>
+<td style="text-align: center;">0.115</td>
+<td style="text-align: center;">1.6x</td>
+<td style="text-align: center;">26.791</td>
+<td style="text-align: center;">371.6x</td>
+<td style="text-align: center;">1.049</td>
+<td style="text-align: center;">68.046</td>
+<td style="text-align: center;">64.9x</td>
+<td style="text-align: center;">943.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.101</td>
+<td style="text-align: center;">0.166</td>
+<td style="text-align: center;">1.6x</td>
+<td style="text-align: center;">26.199</td>
+<td style="text-align: center;">259.1x</td>
+<td style="text-align: center;">1.784</td>
+<td style="text-align: center;">143.103</td>
+<td style="text-align: center;">80.2x</td>
+<td style="text-align: center;">1415.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.409</td>
+<td style="text-align: center;">0.730</td>
+<td style="text-align: center;">1.8x</td>
+<td style="text-align: center;">51.985</td>
+<td style="text-align: center;">127.1x</td>
+<td style="text-align: center;">5.743</td>
+<td style="text-align: center;">549.803</td>
+<td style="text-align: center;">95.7x</td>
+<td style="text-align: center;">1343.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.977</td>
+<td style="text-align: center;">1.463</td>
+<td style="text-align: center;">1.5x</td>
+<td style="text-align: center;">127.534</td>
+<td style="text-align: center;">130.5x</td>
+<td style="text-align: center;">11.131</td>
+<td style="text-align: center;">1114.477</td>
+<td style="text-align: center;">100.1x</td>
+<td style="text-align: center;">1140.2x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="-returns-compute_lambda_returns">λ-returns (<code>compute_lambda_returns</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">compile(assoc) (ms)</th>
+<th style="text-align: center;">vs assoc</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.061</td>
+<td style="text-align: center;">1.5x</td>
+<td style="text-align: center;">0.107</td>
+<td style="text-align: center;">2.6x</td>
+<td style="text-align: center;">37.736</td>
+<td style="text-align: center;">933.0x</td>
+<td style="text-align: center;">3.203</td>
+<td style="text-align: center;">79.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.041</td>
+<td style="text-align: center;">0.093</td>
+<td style="text-align: center;">2.3x</td>
+<td style="text-align: center;">0.140</td>
+<td style="text-align: center;">3.4x</td>
+<td style="text-align: center;">76.196</td>
+<td style="text-align: center;">1861.7x</td>
+<td style="text-align: center;">7.903</td>
+<td style="text-align: center;">193.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.153</td>
+<td style="text-align: center;">3.8x</td>
+<td style="text-align: center;">0.145</td>
+<td style="text-align: center;">3.6x</td>
+<td style="text-align: center;">68.489</td>
+<td style="text-align: center;">1708.1x</td>
+<td style="text-align: center;">10.331</td>
+<td style="text-align: center;">257.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.067</td>
+<td style="text-align: center;">0.439</td>
+<td style="text-align: center;">6.5x</td>
+<td style="text-align: center;">0.991</td>
+<td style="text-align: center;">14.8x</td>
+<td style="text-align: center;">139.139</td>
+<td style="text-align: center;">2071.5x</td>
+<td style="text-align: center;">33.941</td>
+<td style="text-align: center;">505.3x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.197</td>
+<td style="text-align: center;">0.900</td>
+<td style="text-align: center;">4.6x</td>
+<td style="text-align: center;">2.835</td>
+<td style="text-align: center;">14.4x</td>
+<td style="text-align: center;">332.615</td>
+<td style="text-align: center;">1689.3x</td>
+<td style="text-align: center;">77.977</td>
+<td style="text-align: center;">396.0x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="-returns-with-truncations-compute_lambda_returns">λ-returns – with truncations (<code>compute_lambda_returns</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec-trunc) (ms)</th>
+<th style="text-align: center;">vs vec-trunc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.041</td>
+<td style="text-align: center;">0.106</td>
+<td style="text-align: center;">2.6x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.042</td>
+<td style="text-align: center;">0.135</td>
+<td style="text-align: center;">3.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.042</td>
+<td style="text-align: center;">0.152</td>
+<td style="text-align: center;">3.6x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.084</td>
+<td style="text-align: center;">1.022</td>
+<td style="text-align: center;">12.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.279</td>
+<td style="text-align: center;">2.835</td>
+<td style="text-align: center;">10.2x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="discounted-returns-compute_discounted_returns">Discounted returns (<code>compute_discounted_returns</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">compile(assoc) (ms)</th>
+<th style="text-align: center;">vs assoc</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.038</td>
+<td style="text-align: center;">0.059</td>
+<td style="text-align: center;">1.5x</td>
+<td style="text-align: center;">0.103</td>
+<td style="text-align: center;">2.7x</td>
+<td style="text-align: center;">23.275</td>
+<td style="text-align: center;">606.6x</td>
+<td style="text-align: center;">2.004</td>
+<td style="text-align: center;">52.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.038</td>
+<td style="text-align: center;">0.069</td>
+<td style="text-align: center;">1.8x</td>
+<td style="text-align: center;">0.122</td>
+<td style="text-align: center;">3.2x</td>
+<td style="text-align: center;">49.350</td>
+<td style="text-align: center;">1298.1x</td>
+<td style="text-align: center;">5.138</td>
+<td style="text-align: center;">135.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.038</td>
+<td style="text-align: center;">0.068</td>
+<td style="text-align: center;">1.8x</td>
+<td style="text-align: center;">0.121</td>
+<td style="text-align: center;">3.2x</td>
+<td style="text-align: center;">47.614</td>
+<td style="text-align: center;">1241.0x</td>
+<td style="text-align: center;">7.010</td>
+<td style="text-align: center;">182.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.063</td>
+<td style="text-align: center;">0.089</td>
+<td style="text-align: center;">1.4x</td>
+<td style="text-align: center;">0.899</td>
+<td style="text-align: center;">14.3x</td>
+<td style="text-align: center;">95.241</td>
+<td style="text-align: center;">1513.1x</td>
+<td style="text-align: center;">22.327</td>
+<td style="text-align: center;">354.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.120</td>
+<td style="text-align: center;">0.245</td>
+<td style="text-align: center;">2.0x</td>
+<td style="text-align: center;">2.636</td>
+<td style="text-align: center;">21.9x</td>
+<td style="text-align: center;">206.878</td>
+<td style="text-align: center;">1720.8x</td>
+<td style="text-align: center;">48.039</td>
+<td style="text-align: center;">399.6x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="discounted-returns-with-truncations-compute_discounted_returns">Discounted returns – with truncations (<code>compute_discounted_returns</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec-trunc) (ms)</th>
+<th style="text-align: center;">vs vec-trunc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.041</td>
+<td style="text-align: center;">0.101</td>
+<td style="text-align: center;">2.5x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.040</td>
+<td style="text-align: center;">0.121</td>
+<td style="text-align: center;">3.1x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.043</td>
+<td style="text-align: center;">0.122</td>
+<td style="text-align: center;">2.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.074</td>
+<td style="text-align: center;">0.909</td>
+<td style="text-align: center;">12.3x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.236</td>
+<td style="text-align: center;">2.638</td>
+<td style="text-align: center;">11.2x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="eligibility-traces-compute_eligibility_traces">Eligibility traces (<code>compute_eligibility_traces</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+<th style="text-align: center;">loop gpu (ms)</th>
+<th style="text-align: center;">vs loop</th>
+<th style="text-align: center;">numpy cpu (ms)</th>
+<th style="text-align: center;">vs numpy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.037</td>
+<td style="text-align: center;">0.051</td>
+<td style="text-align: center;">1.4x</td>
+<td style="text-align: center;">25.321</td>
+<td style="text-align: center;">687.5x</td>
+<td style="text-align: center;">1.996</td>
+<td style="text-align: center;">54.2x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.037</td>
+<td style="text-align: center;">0.086</td>
+<td style="text-align: center;">2.3x</td>
+<td style="text-align: center;">54.708</td>
+<td style="text-align: center;">1486.6x</td>
+<td style="text-align: center;">5.096</td>
+<td style="text-align: center;">138.5x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.037</td>
+<td style="text-align: center;">0.145</td>
+<td style="text-align: center;">4.0x</td>
+<td style="text-align: center;">53.058</td>
+<td style="text-align: center;">1451.9x</td>
+<td style="text-align: center;">7.005</td>
+<td style="text-align: center;">191.7x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.039</td>
+<td style="text-align: center;">0.427</td>
+<td style="text-align: center;">11.0x</td>
+<td style="text-align: center;">93.916</td>
+<td style="text-align: center;">2421.5x</td>
+<td style="text-align: center;">22.197</td>
+<td style="text-align: center;">572.3x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.072</td>
+<td style="text-align: center;">0.817</td>
+<td style="text-align: center;">11.3x</td>
+<td style="text-align: center;">207.945</td>
+<td style="text-align: center;">2872.8x</td>
+<td style="text-align: center;">48.142</td>
+<td style="text-align: center;">665.1x</td>
+</tr>
+</tbody>
+</table>
+<h4 id="episodic-prefix-sum-compute_episodic_prefix_sum">Episodic prefix sum (<code>compute_episodic_prefix_sum</code>)</h4>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">num_envs</th>
+<th style="text-align: center;">seq_len</th>
+<th style="text-align: center;">triton (ms)</th>
+<th style="text-align: center;">compile(vec) (ms)</th>
+<th style="text-align: center;">vs vec</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">64</td>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">0.035</td>
+<td style="text-align: center;">0.028</td>
+<td style="text-align: center;">0.8x</td>
+</tr>
+<tr>
+<td style="text-align: center;">128</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.036</td>
+<td style="text-align: center;">0.035</td>
+<td style="text-align: center;">1.0x</td>
+</tr>
+<tr>
+<td style="text-align: center;">256</td>
+<td style="text-align: center;">1024</td>
+<td style="text-align: center;">0.035</td>
+<td style="text-align: center;">0.035</td>
+<td style="text-align: center;">1.0x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">2048</td>
+<td style="text-align: center;">0.039</td>
+<td style="text-align: center;">0.036</td>
+<td style="text-align: center;">0.9x</td>
+</tr>
+<tr>
+<td style="text-align: center;">512</td>
+<td style="text-align: center;">4096</td>
+<td style="text-align: center;">0.063</td>
+<td style="text-align: center;">0.066</td>
+<td style="text-align: center;">1.0x</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.indexes", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

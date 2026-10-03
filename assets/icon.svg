@@ -1,0 +1,29 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>rl-triton icon</title>
+  <desc>Minimal pixel T icon for rl-triton</desc>
+  <rect width="128" height="128" fill="#0a0a0f" rx="16"/>
+  <rect x="9"  y="12" width="14" height="14" fill="#f77f00" rx="2"/>
+  <rect x="25" y="12" width="14" height="14" fill="#f77f00" rx="2"/>
+  <rect x="41" y="12" width="14" height="14" fill="#e040c0" rx="2"/>
+  <rect x="57" y="12" width="14" height="14" fill="#9b59ff" rx="2"/>
+  <rect x="73" y="12" width="14" height="14" fill="#9b59ff" rx="2"/>
+  <rect x="89" y="12" width="14" height="14" fill="#e040c0" rx="2"/>
+  <rect x="105" y="12" width="14" height="14" fill="#f77f00" rx="2"/>
+  <rect x="9"  y="28" width="14" height="14" fill="#d96800" rx="2"/>
+  <rect x="25" y="28" width="14" height="14" fill="#d96800" rx="2"/>
+  <rect x="41" y="28" width="14" height="14" fill="#c02898" rx="2"/>
+  <rect x="57" y="28" width="14" height="14" fill="#7c3aed" rx="2"/>
+  <rect x="73" y="28" width="14" height="14" fill="#7c3aed" rx="2"/>
+  <rect x="89" y="28" width="14" height="14" fill="#c02898" rx="2"/>
+  <rect x="105" y="28" width="14" height="14" fill="#d96800" rx="2"/>
+  <rect x="57" y="44" width="14" height="14" fill="#38bdf8" rx="2"/>
+  <rect x="73" y="44" width="14" height="14" fill="#9b59ff" rx="2"/>
+  <rect x="57" y="60" width="14" height="14" fill="#38bdf8" rx="2"/>
+  <rect x="73" y="60" width="14" height="14" fill="#9b59ff" rx="2"/>
+  <rect x="57" y="76" width="14" height="14" fill="#38bdf8" rx="2"/>
+  <rect x="73" y="76" width="14" height="14" fill="#9b59ff" rx="2"/>
+  <rect x="57" y="92" width="14" height="14" fill="#0ea5e9" rx="2"/>
+  <rect x="73" y="92" width="14" height="14" fill="#7c3aed" rx="2"/>
+  <rect x="57" y="108" width="14" height="14" fill="#0890cc" rx="2"/>
+  <rect x="73" y="108" width="14" height="14" fill="#6620cc" rx="2"/>
+</svg>

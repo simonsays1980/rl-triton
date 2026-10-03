@@ -17,8 +17,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    "torch>=2.4.1",
-    "triton>=3.0.0",
+    "torch==2.4.1",
+    "triton==3.0.0",
 ]
 
 [project.urls]
@@ -28,7 +28,16 @@ Documentation = "https://simonsays1980.github.io/rl-triton"
 "Bug Tracker" = "https://github.com/simonsays1980/rl-triton/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-benchmark", "numpy"]
+dev = ["pytest", "pytest-benchmark", "numpy", "matplotlib"]
+# DO NOT install alongside [dev] in the same venv: jax[cuda12] requires
+# cuDNN >=9.8.0, while [dev]'s pinned torch==2.4.1 hard-requires
+# nvidia-cudnn-cu12==9.1.0.70 -- the two cannot coexist (confirmed on a real
+# pod: XLA's GPU compiler hard-crashes with a null cuDNN handle). This extra
+# exists only as a version reference for the SEPARATE JAX-only venv used by
+# benchmark_gae_vs_jax_scan_jax.py -- see that script's and
+# benchmark_gae_vs_jax_scan_triton.py's module docstrings, NOTES.md, and
+# benchmarks/setup_jax_gae_venvs.sh (which builds both venvs correctly).
+jax = ["jax[cuda12]>=0.9.2"]
 docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.7",

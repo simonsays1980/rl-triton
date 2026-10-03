@@ -2,7 +2,17 @@ name: GPU Tests
 
 on:
   push:
-    branches-ignore: [main]   # correctness on every branch push; main only via merge
+    # main IS included here (unlike before) so a merge produces a run whose
+    # ref is main -- the GPU Tests README badge only reflects runs where the
+    # triggering ref resolves to main; a pull_request run (ref refs/pull/N)
+    # never counts towards it, however green its checks were. Without this,
+    # the badge went stale/misleading regardless of PR health -- see
+    # NOTES.md's "GPU Tests badge was stale" section for the full story.
+    # This does NOT reintroduce the double-run-per-merge problem the old
+    # branches-ignore:[main] guarded against: that concern was two runs
+    # firing for the SAME commit on the SAME open PR branch (push +
+    # pull_request events both firing pre-merge); a push to main only ever
+    # happens post-merge, once, when no pull_request event fires for it.
     paths-ignore: &docs-only-paths
       - "**/*.md"
       - "docs/**"

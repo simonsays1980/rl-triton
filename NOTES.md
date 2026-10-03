@@ -1317,3 +1317,43 @@ after this repo's kernels/tuning tables were last validated at
 so a version bump requires a deliberate edit rather than silent pip
 drift -- see git history for `pyproject.toml` around the commit that
 tightened this.
+
+## GPU Tests badge was stale -- two separate causes, both fixed
+
+The README's GPU Tests badge
+(`.github/workflows/gpu-tests.yml/badge.svg`) tracks the latest completed
+run whose triggering ref resolves to `main` specifically. Two independent
+problems kept it stale/misleading:
+
+1. **`secrets.GH_PAT` (used by every `actions/checkout@v4` step across all
+   three jobs) expired.** `actions/checkout` with an invalid token does not
+   fail fast -- `git fetch` over HTTPS with a bad/empty credential produces
+   `fatal: could not read Username for 'https://github.com': terminal
+   prompts disabled` and retries with backoff indefinitely, so the job hangs
+   until GitHub's 24-hour job timeout force-cancels it (visible in
+   `gh run list --workflow=gpu-tests.yml`: a long run of `cancelled`
+   results each lasting almost exactly 24h0m, across every branch, starting
+   from whenever the PAT lapsed). Fix: rotate the PAT at
+   `github.com/settings/tokens` and update the `GH_PAT` repo secret at
+   `Settings > Secrets and variables > Actions` -- GitHub never shows the
+   old value, only lets you overwrite it. Confirmed fixed when a run after
+   rotation completed in under a minute instead of hanging.
+
+2. **The workflow never actually ran *on* `main` at all, independent of the
+   PAT issue.** The original trigger config had `push: branches-ignore:
+   [main]` -- intentionally, to avoid a merge commit firing a *second*,
+   redundant `correctness` run on top of the `pull_request` run that had
+   already gated the merge (see the `concurrency` block's comment on the
+   `correctness` job for the GPU-contention concern this was guarding
+   against). But a `pull_request` run's triggering ref is `refs/pull/N/merge`,
+   not `main` -- it never counts towards the `main`-branch badge, however
+   green its checks were. Combined with merging docs-only PRs (correctly
+   skipped entirely via `paths-ignore`, so they produce no run either), the
+   badge had no recent `main`-ref run to reflect regardless of actual repo
+   health. Fix: added `main` back to the `push` trigger (removed the
+   `branches-ignore` restriction entirely, so `push` now fires on every
+   branch including `main`). This does NOT reintroduce the double-run
+   concern the original restriction guarded against: that concern was two
+   events (`push` + `pull_request`) firing for the SAME commit on the SAME
+   open PR branch, pre-merge; a push to `main` only happens post-merge, once,
+   when no `pull_request` event fires for that commit at all.

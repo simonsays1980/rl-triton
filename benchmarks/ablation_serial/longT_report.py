@@ -24,6 +24,22 @@ def main():
         r = json.loads(line)
         (res.__setitem__((r["num_envs"], r["seq_len"], r["kernel"]), r) if r["kind"] == "result"
          else sweep.append(r))
+    # Clean isolated rerun of the 12 compiled-scan rows (the original scan rows
+    # overlapped a few seconds of an unrelated small GPU probe). Rule fixed in
+    # advance: replace a recorded row only if the rerun differs by more than
+    # the +-10% noise band in full-call or device time.
+    rerun = HERE / "longT_scan_rerun.jsonl"
+    if rerun.exists():
+        for r in map(json.loads, rerun.read_text().splitlines()):
+            key = (r["num_envs"], r["seq_len"], "scan")
+            o = res[key]
+            fr, dr = r["fullcall_ms"] / o["fullcall_ms"], r["device_ms"] / o["device_ms"]
+            if r["validated"] and not (0.9 <= fr <= 1.1 and 0.9 <= dr <= 1.1):
+                r["note"] = (f"replaced by isolated rerun (full-call {fr:.3f}x, device {dr:.3f}x "
+                             f"of original {o['fullcall_ms']:.4f}/{o['device_ms']:.4f} ms)")
+                res[key] = r
+            else:
+                o["note"] = f"isolated rerun within band (full-call {fr:.3f}x, device {dr:.3f}x); original kept"
     shapes = sorted({(e, t) for e, t, _ in res})
     envs = sorted({e for e, _ in shapes})
 

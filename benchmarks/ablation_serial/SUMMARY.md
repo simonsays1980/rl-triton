@@ -207,6 +207,180 @@ protocol above. Outputs are in `resip_gapfill.csv` and `resip_gapfill_log.txt`.
 - **E2E: scan/triton = 1.0025×** (winning-trial IQR 0.0097, trial spread 0.0025). The GAE
   difference alone predicts 1.0020×. The IQR spans 1.0, so this is **within noise**.
 
+## Memory behaviour of each implementation
+
+- **Tree (shipped `gae_fused_kernel`)**
+  - One program per env row.
+  - Loads the whole row from HBM into registers once.
+  - Runs a log-depth scan (`tl.associative_scan`) on-chip.
+  - Writes the output once, in a single launch.
+  - Precision note: it issues a second, shifted load of `values` for V(s_{t+1}). That load
+    hits mostly in L1/L2, so HBM traffic is still about one read per input element.
+- **Fused serial (S_env / S_time)**
+  - One program per block of BLOCK_E envs, in ONE launch.
+  - A loop over t runs INSIDE the kernel and loads one timestep per iteration from HBM.
+    With UNROLL > 1, it loads UNROLL timesteps per iteration.
+  - The carry and delta/beta stay in registers.
+  - Each input element is read once and each output written once, so total HBM traffic
+    equals the tree's.
+  - The difference is load timing (per step vs. whole row) and dependency depth (T vs. log T).
+- **Compiled PyTorch scan (`torch.compile(vectorized_gae_with_truncations)`)**
+  - log2(T) doubling stages. Every kernel writes and re-reads full [E,T] tensors in HBM.
+  - Measured with torch.profiler, Inductor fuses some stages, so the launch count is below
+    one per stage: **3 launches at T=8 (3 stages), 5 at T=128 (7 stages), 8 at T=4096
+    (12 stages)**.
+- **PyTorch loop (`reference_gae`)**
+  - T steps, each several kernel launches: **about 9 launches per step measured** (76 per
+    call at T=8, 1156 at T=128).
+  - The carry and all intermediates go to HBM and back every step.
+
+## Follow-up results (second session, 2026-10-29)
+
+These tasks were run in order. Every timed row passed the correctness check against the
+independent sequential reference (atol=rtol=1e-4, ~5% terminations, nonzero bootstrap)
+before being timed. Each (shape, kernel) pair ran in its own subprocess. Protocol as in
+Step 3. All four tasks are committed and pushed to `origin/ablation-serial`.
+
+### Task 1: headline provenance
+
+**Verdict: after fix.**
+
+- **Fix** (`compiled_extra_fn`, zero-tensor allocation moved out of the timed compiled
+  closure): `c5695c5c14fede4325008295ccf8b25298fb7989`, 2026-08-04 13:02:39 +0000.
+- **Last change to the production-regime tables in benchmarks.md** (v0.1.3 promote):
+  `3e7088776db4cfaed7ce642f87913631571547ce`, 2026-08-08 14:13:30 +0100.
+- The H100 sweep behind the tables (`90d3c26`, 2026-08-08) has the fix as an ancestor.
+  `tests/bench_release.py` at that commit contains `compiled_extra_fn`.
+- Details: `task1_provenance.md`.
+
+### Task 2: long-horizon, few-env shapes
+
+Shapes: num_envs ∈ {16, 64, 256} × T ∈ {8192, 16384, 32768, 65536}. Outputs:
+`longT_results.csv`, `fig_longT.pdf`.
+
+**Notes on the setup:**
+- **Tree warps:** tree warp counts are tuned only up to BLOCK_SIZE=16384. Above that, `_WARPS`
+  has no entry and dispatch falls back to 16 warps, so T ≥ 32768 runs untuned.
+- **Serial tuning:** BLOCK_E ≤ num_envs, with BLOCK_E ∈ {8, 16} added (see NOTES.md).
+- **Loop:** timed only for T ≤ 16384, with `torch.cuda.synchronize()` before the start event
+  and after the end event of every call.
+- **Excluded configs:** 560 of 3072 serial configs were excluded, all `NUM_STAGES=3` compile
+  failures. None produced wrong numbers.
+- **Scan rows:** the 12 compiled-scan rows were rerun in isolation, because the original ones
+  overlapped a few seconds of a small unrelated GPU probe. Device time matched within 1%.
+  11/12 full-call values were within ±10% and kept. 16×16384 (+10.6%) was replaced by the
+  rerun value. Conclusions are unchanged.
+
+**Absolute device time (ms):**
+
+| num_envs | T | tree | S_env | S_time | scan | loop (full-call, synced) |
+|---|---|---|---|---|---|---|
+| 16 | 8192 | 0.0089 | 0.392 | 0.354 | 0.0133 | 460.9 |
+| 16 | 16384 | 0.0171 | 0.784 | 0.707 | 0.0194 | 964.6 |
+| 16 | 32768 | **0.155** | 1.568 | 1.414 | 0.0269 | — |
+| 16 | 65536 | **0.387** | 3.135 | 2.834 | 0.0544 | — |
+| 64 | 8192 | 0.0090 | 0.392 | 0.362 | 0.0247 | 474.5 |
+| 64 | 16384 | 0.0178 | 0.784 | 0.723 | 0.0507 | 978.6 |
+| 64 | 32768 | **0.227** | 1.696 | 1.705 | 0.1033 | — |
+| 64 | 65536 | **0.660** | 3.542 | 3.473 | 0.2647 | — |
+| 256 | 8192 | 0.0194 | 0.433 | 0.431 | 0.0993 | 495.8 |
+| 256 | 16384 | 0.0522 | 0.890 | 0.873 | 0.2413 | 970.0 |
+| 256 | 32768 | **1.057** | 1.782 | 1.733 | 0.4704 | — |
+| 256 | 65536 | **2.767** | 3.566 | 3.464 | 1.0067 | — |
+
+**Tree speedup on full-call** (other ÷ tree; above 1 means the tree is faster):
+
+| num_envs | vs S_env (T=8192 / 16384 / 32768 / 65536) | vs S_time | vs scan | vs loop (T=8192 / 16384) |
+|---|---|---|---|---|
+| 16 | 14.9 / 21.5 / 9.1 / 7.8 | 13.6 / 19.4 / 8.2 / 7.0 | 3.24 / 2.81 / **0.58 / 0.26** | 16 669 / 25 699 |
+| 64 | 14.4 / 21.9 / 7.0 / 5.2 | 13.3 / 20.2 / 7.0 / 5.1 | 3.32 / 2.70 / **0.57 / 0.44** | 16 495 / 26 546 |
+| 256 | 10.8 / 12.7 / 1.67 / 1.29 | 10.7 / 12.4 / 1.63 / 1.25 | 3.18 / 3.86 / **0.47 / 0.38** | 11 755 / 13 466 |
+
+**Crossover T per num_envs:**
+- **Tree vs. S_env and vs. S_time:** none. The tree is faster at every long-T shape, on both
+  full-call (1.25×–21.9×) and device time.
+- **Tree vs. compiled scan: the scan overtakes the tree** between T=16384 and T=32768 at every
+  num_envs.
+  - Full-call crossover: T≈25 800 (E=16), ≈25 500 (E=64), ≈25 600 (E=256).
+  - Device-time crossover: T≈17 200, ≈24 300, ≈25 800.
+
+**Interpretation.**
+- The tree's device time jumps 9× (E=16), 13× (E=64) and 20× (E=256) when T doubles from 16384
+  to 32768. That is exactly where dispatch leaves the tuned `_WARPS` table. A whole 32k–64k row
+  per program at 16 warps means 64–128 elements per thread per tensor, consistent with
+  register spilling.
+- This is inferred from timings only; ncu was not used. Re-tuning warps for BLOCK_SIZE ≥ 32768
+  is a library-side follow-up and was not done here, since library kernels were not to be modified.
+- The serial kernels never get close. Their dependency chain is 32k–64k steps long, and with
+  E ≤ 256 there are at most 32 programs.
+
+### Task 3: packed-environment tree kernel
+
+`packed_gae.py` uses the shipped plain-path math and the shipped `_combine`. Each program owns
+a [BLOCK_E, BLOCK_T] tile, and the scan runs along axis=1. **Triton 3.0 compiles the axis=1 scan
+on a 2D tile without problems.**
+
+- **Tuning:** BLOCK_E ∈ {1,2,4,8,16,32} × num_warps ∈ {1,2,4,8}.
+- **Shapes:** Grid B plus the long-T controls (512,512) and (512,4096).
+- **Configs:** 523/528 validated, 0 mismatches. 5 were skipped at 512×4096: 3 by the
+  32k-elements-per-warp size cap and 2 by the 120 s compile timeout. All are listed in
+  `packed_results.csv` and NOTES.md.
+- **512×4096 history:** the first attempt at that shape was stopped after ptxas spent more than
+  25 min on one oversized config. The shape was rerun with both rules and finished in 8.3 min.
+- **Outputs:** `packed_results.csv`, joined with the earlier tree / S_env / S_time / scan rows,
+  and `fig_packed.pdf`.
+
+**Device time (µs).** Packed uses its best-device config, re-measured over 5 trials. The other
+columns are from `results.csv`.
+
+| num_envs | T=8 tree / packed / S_time | T=16 | T=32 | T=64 | T=128 |
+|---|---|---|---|---|---|
+| 4096 | 3.7 / **1.3** / 1.4 | 3.7 / **1.4** / 2.0 | 3.7 / **1.6** / 3.0 | 3.8 / **2.1** / 4.0 | 4.0 / **3.1** / 8.0 |
+| 8192 | 6.1 / **1.4** / 1.6 | 6.1 / **1.6** / 2.0 | 6.1 / **1.9** / 3.0 | 6.3 / **3.0** / 4.8 | 6.5 / **4.7** / 7.1 |
+| 16384 | 11.0 / **1.6** / 1.7 | 11.1 / **1.9** / 2.2 | 11.1 / **2.7** / 3.2 | 11.2 / **4.6** / 5.1 | 11.5 / **7.6** / 9.3 |
+| 32768 | 20.9 / 1.9 / **1.8** | 20.9 / **2.5** / 2.6 | 20.9 / **4.0** / 4.0 | 21.2 / 8.4 / **6.8** | 23.2 / **23.1** / 23.7 |
+
+- **Shipped tree ÷ packed (device time):** 1.28×–10.8× on Grid B, largest at 32768×8. At
+  32768×128 it is 1.00×: both are at bandwidth, and BLOCK_E=1 wins, which is the shipped geometry.
+- **Long-T controls:**
+  - 512×512: packed 2.3 µs vs. tree 2.2 µs, a tie with BLOCK_E=1.
+  - 512×4096: packed 11.6 µs vs. tree 15.8 µs (1.36×), but with BLOCK_E=1 and 4 warps. That is
+    the shipped geometry with fewer warps than `_WARPS`' 16, so it is a warp-count effect, not
+    packing.
+- **Full-call:** packed vs. tree at 32768 envs is 27.9–30.0 µs vs. 40.0–41.3 µs for T ≤ 64,
+  which removes the tree's full-call loss there. Against S_time, packed full-call sits at
+  0.93×–1.13× everywhere on Grid B, inside the tie band.
+
+**Does packing close the gap to S_time at T ≤ 64? Yes, except at one shape.**
+- At 13 of the 16 Grid B shapes with T ≤ 64, the packed tree is at least as fast as S_time on
+  device time. S_time ÷ packed is 1.05×–1.86× there.
+- At 32768×8 (0.95×) and 32768×32 (0.99×) it is within 5%.
+- At **32768×64, S_time is still 19% faster** (6.8 vs. 8.4 µs).
+- So the shipped tree's flat ~21 µs at 32768 envs was a **program-count artifact** of the
+  one-env-per-program geometry, not a cost of the tree scan itself.
+
+### Task 4: synchronized loop re-timing at (4096,128)
+
+Same function and inputs as the benchmarks.md row (`bench_release._ref_gae`, `_make_gae`).
+CUDA events, `torch.cuda.synchronize()` around every call, 20 warmup, 5 × 50, min of medians.
+Files: `task4_loop_sync.py`, `task4_loop_sync.json`, `task4_diag.py`, `task4_diag.json`.
+
+| | loop (ms) | compute_gae full-call (ms) | loop ÷ compute_gae |
+|---|---|---|---|
+| benchmarks.md v0.1.3 H100 (recorded) | 10.312 | 0.033 | 316.9× |
+| release method `_bench_cpu`, this session | 9.123 | 0.0296 | 308.5× |
+| **synchronized, CUDA events (this task)** | **7.052** | **0.0296** | **238.5×** |
+
+- **The synchronized loop is faster than the recorded number**: 0.68× of it, and 0.77× of the
+  same-session `_bench_cpu` figure.
+- The diagnostic (`task4_diag.py`, fresh process, per-call `perf_counter`) shows that
+  synchronizing itself costs about +6% (7.27 → 7.73 ms mean). Mean vs. min-of-medians
+  differs by only about 2%.
+- Neither explains the gap. The likely cause is `_bench_cpu`'s 3-call warmup and 0.5 s window
+  (about 55 calls, with single calls up to 11.5 ms). This is inferred, not proven.
+- Consequence: the recorded 316.9× loop speedup is **overstated relative to a synchronized
+  measurement**. The synchronized figure is 238.5×.
+
 ## Files
 
 | file | contents |
@@ -220,4 +394,8 @@ protocol above. Outputs are in `resip_gapfill.csv` and `resip_gapfill_log.txt`.
 | `serial_gae.py`, `bench_worker.py`, `run_ablation.py`, `make_report.py`, `e2e_gapfill.py` | code; rerun with `python benchmarks/ablation_serial/run_ablation.py && python benchmarks/ablation_serial/make_report.py` |
 | `check_equivalence.py`, `equivalence_check.txt` | direct serial vs. tree / scan / fp64 equivalence check, incl. edge cases |
 | `RESULTS_FOR_OPUS.md` | self-contained results brief |
-| `NOTES.md` | Step 0 paths and every deviation from the task spec |
+| `task1_provenance.md` | Task 1 provenance check |
+| `longT_*.py`, `longT_results.csv`, `longT_sweep_serial.csv`, `longT_raw.jsonl`, `longT_scan_rerun.jsonl`, `longT_report_stats.txt`, `fig_longT.pdf` | Task 2 long-T sweep |
+| `packed_gae.py`, `packed_*.py`, `packed_results.csv`, `packed_sweep.csv`, `packed_raw.jsonl`, `packed_report_stats.txt`, `fig_packed.pdf` | Task 3 packed tree kernel |
+| `task4_loop_sync.py`/`.json`, `task4_diag.py`/`.json` | Task 4 synchronized loop re-timing |
+| `NOTES.md` | Step 0 paths and every deviation from the task spec, incl. follow-up skips |

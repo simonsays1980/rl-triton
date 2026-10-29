@@ -1,0 +1,29 @@
+## failures
+  5/528 packed configs skipped (never run): 512x4096 BLOCK_E=16,num_warps=1 (size cap: 65536 tile elements per warp > 32768), 512x4096 BLOCK_E=16,num_warps=2 (compile timeout (>120s)), 512x4096 BLOCK_E=32,num_warps=1 (size cap: 131072 tile elements per warp > 32768), 512x4096 BLOCK_E=32,num_warps=2 (size cap: 65536 tile elements per warp > 32768), 512x4096 BLOCK_E=32,num_warps=4 (compile timeout (>120s))
+  0/528 packed configs failed compile/correctness: none
+
+## per shape (device us: tree / packed[best-dev cfg] / S_time / S_env; full-call us: tree / packed / S_time)
+  512x512: dev 2.2 / 2.3 [BLOCK_E=1,num_warps=4] / 24.0 / 48.7  -> tree/packed 0.98x, S_time/packed 10.49x | full 25.2 / 28.0 [BLOCK_E=1,num_warps=8] / 45.4  -> S_time/packed 1.62x
+  512x4096: dev 15.8 / 11.6 [BLOCK_E=1,num_warps=4] / 216.2 / 396.2  -> tree/packed 1.36x, S_time/packed 18.62x | full 35.2 / 32.3 [BLOCK_E=1,num_warps=4] / 237.4  -> S_time/packed 7.34x
+  4096x8: dev 3.7 / 1.3 [BLOCK_E=32,num_warps=8] / 1.4 / 1.6  -> tree/packed 2.91x, S_time/packed 1.15x | full 26.0 / 26.8 [BLOCK_E=32,num_warps=4] / 28.8  -> S_time/packed 1.08x
+  4096x16: dev 3.7 / 1.4 [BLOCK_E=16,num_warps=8] / 2.0 / 2.2  -> tree/packed 2.65x, S_time/packed 1.45x | full 27.5 / 27.2 [BLOCK_E=8,num_warps=4] / 27.5  -> S_time/packed 1.01x
+  4096x32: dev 3.7 / 1.6 [BLOCK_E=16,num_warps=8] / 3.0 / 4.8  -> tree/packed 2.32x, S_time/packed 1.86x | full 27.4 / 27.5 [BLOCK_E=8,num_warps=4] / 29.2  -> S_time/packed 1.06x
+  4096x64: dev 3.8 / 2.1 [BLOCK_E=8,num_warps=8] / 4.0 / 7.6  -> tree/packed 1.77x, S_time/packed 1.86x | full 26.5 / 26.1 [BLOCK_E=8,num_warps=4] / 26.2  -> S_time/packed 1.00x
+  4096x128: dev 4.0 / 3.1 [BLOCK_E=2,num_warps=4] / 8.0 / 13.6  -> tree/packed 1.28x, S_time/packed 2.56x | full 24.9 / 28.7 [BLOCK_E=4,num_warps=8] / 28.5  -> S_time/packed 0.99x
+  8192x8: dev 6.1 / 1.4 [BLOCK_E=32,num_warps=8] / 1.6 / 1.6  -> tree/packed 4.48x, S_time/packed 1.14x | full 27.0 / 25.8 [BLOCK_E=16,num_warps=4] / 27.5  -> S_time/packed 1.06x
+  8192x16: dev 6.1 / 1.6 [BLOCK_E=32,num_warps=8] / 2.0 / 2.9  -> tree/packed 3.91x, S_time/packed 1.29x | full 25.1 / 28.0 [BLOCK_E=8,num_warps=4] / 27.6  -> S_time/packed 0.99x
+  8192x32: dev 6.1 / 1.9 [BLOCK_E=16,num_warps=8] / 3.0 / 7.1  -> tree/packed 3.20x, S_time/packed 1.56x | full 26.2 / 28.5 [BLOCK_E=32,num_warps=8] / 27.0  -> S_time/packed 0.95x
+  8192x64: dev 6.3 / 3.0 [BLOCK_E=8,num_warps=8] / 4.8 / 12.9  -> tree/packed 2.11x, S_time/packed 1.63x | full 26.7 / 29.0 [BLOCK_E=16,num_warps=8] / 26.9  -> S_time/packed 0.93x
+  8192x128: dev 6.5 / 4.7 [BLOCK_E=2,num_warps=2] / 7.1 / 24.6  -> tree/packed 1.37x, S_time/packed 1.51x | full 26.7 / 27.6 [BLOCK_E=2,num_warps=2] / 29.0  -> S_time/packed 1.05x
+  16384x8: dev 11.0 / 1.6 [BLOCK_E=32,num_warps=8] / 1.7 / 2.0  -> tree/packed 6.98x, S_time/packed 1.05x | full 30.9 / 27.7 [BLOCK_E=32,num_warps=4] / 29.8  -> S_time/packed 1.08x
+  16384x16: dev 11.1 / 1.9 [BLOCK_E=32,num_warps=8] / 2.2 / 4.0  -> tree/packed 5.90x, S_time/packed 1.17x | full 29.6 / 26.9 [BLOCK_E=16,num_warps=8] / 27.1  -> S_time/packed 1.01x
+  16384x32: dev 11.1 / 2.7 [BLOCK_E=16,num_warps=8] / 3.2 / 11.9  -> tree/packed 4.14x, S_time/packed 1.19x | full 31.0 / 27.4 [BLOCK_E=16,num_warps=8] / 28.0  -> S_time/packed 1.02x
+  16384x64: dev 11.2 / 4.6 [BLOCK_E=4,num_warps=4] / 5.1 / 21.9  -> tree/packed 2.42x, S_time/packed 1.10x | full 31.4 / 27.0 [BLOCK_E=4,num_warps=2] / 28.8  -> S_time/packed 1.07x
+  16384x128: dev 11.5 / 7.6 [BLOCK_E=2,num_warps=1] / 9.3 / 42.2  -> tree/packed 1.52x, S_time/packed 1.22x | full 30.1 / 28.3 [BLOCK_E=2,num_warps=1] / 30.5  -> S_time/packed 1.08x
+  32768x8: dev 20.9 / 1.9 [BLOCK_E=32,num_warps=8] / 1.8 / 2.6  -> tree/packed 10.75x, S_time/packed 0.95x | full 40.1 / 28.9 [BLOCK_E=16,num_warps=4] / 27.6  -> S_time/packed 0.96x
+  32768x16: dev 20.9 / 2.5 [BLOCK_E=32,num_warps=8] / 2.6 / 7.0  -> tree/packed 8.33x, S_time/packed 1.05x | full 40.7 / 28.0 [BLOCK_E=32,num_warps=2] / 27.2  -> S_time/packed 0.97x
+  32768x32: dev 20.9 / 4.0 [BLOCK_E=16,num_warps=8] / 4.0 / 22.0  -> tree/packed 5.23x, S_time/packed 0.99x | full 41.3 / 27.9 [BLOCK_E=8,num_warps=4] / 31.4  -> S_time/packed 1.13x
+  32768x64: dev 21.2 / 8.4 [BLOCK_E=8,num_warps=4] / 6.8 / 42.8  -> tree/packed 2.52x, S_time/packed 0.81x | full 40.0 / 30.0 [BLOCK_E=8,num_warps=4] / 29.1  -> S_time/packed 0.97x
+  32768x128: dev 23.2 / 23.1 [BLOCK_E=1,num_warps=1] / 23.7 / 87.5  -> tree/packed 1.00x, S_time/packed 1.02x | full 41.6 / 44.1 [BLOCK_E=1,num_warps=1] / 44.3  -> S_time/packed 1.00x
+
+wrote packed_results.csv, packed_sweep.csv, fig_packed.pdf/.png

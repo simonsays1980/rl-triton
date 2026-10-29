@@ -39,3 +39,28 @@ Deviations from the task spec, and why:
 - **Tree config is the library's own dispatch** (`_WARPS`, `num_stages`), not re-tuned,
   so it matches the paper. `tree_lib` (public `compute_gae` with its asserts) is also
   measured, to tie these numbers to the paper's.
+
+## Follow-up tasks (2026-10-29, second session): deviations and skipped configs
+
+- **Task 2 serial tuning.** BLOCK_E is restricted to ≤ num_envs, as specified. The original
+  set {32,64,128,256} is empty at num_envs=16, so BLOCK_E ∈ {8,16} was added to the candidate
+  list (`longT_worker.py::LONG_T_BLOCK_ES`). BLOCK_E=8 then won most long-T shapes.
+- **Task 3 skipped configs at 512×4096**, the only shape where a skip rule could trigger
+  (BLOCK_T=4096). These 5 configs were never run and are listed in `packed_results.csv` as
+  kernel `packed (skipped config)`, with the reason in `validated`.
+
+  | config | reason |
+  |---|---|
+  | BLOCK_E=16, num_warps=1 | size cap: 65536 tile elements per warp > 32768 |
+  | BLOCK_E=16, num_warps=2 | compile timeout (> 120 s, child process killed with its ptxas) |
+  | BLOCK_E=32, num_warps=1 | size cap: 131072 tile elements per warp > 32768 |
+  | BLOCK_E=32, num_warps=2 | size cap: 65536 tile elements per warp > 32768 |
+  | BLOCK_E=32, num_warps=4 | compile timeout (> 120 s) |
+
+  How this came about:
+  - The first attempt at this shape ran without either rule. ptxas spent more than 25 min
+    on BLOCK_E=16, num_warps=1 without finishing, so the run was stopped.
+  - The shape was then rerun from scratch with the 32k-elements-per-warp size cap and a
+    120 s per-config compile timeout. The rerun took 8.3 min.
+  - The other 21 shapes ran before either rule existed. Neither rule could trigger there:
+    their tiles are at most 32×128 = 4096 elements.

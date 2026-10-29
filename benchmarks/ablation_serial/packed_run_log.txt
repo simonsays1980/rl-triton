@@ -1,0 +1,28 @@
+[4096x8] packed: 3s (total 0.0 min)
+[4096x16] packed: 5s (total 0.1 min)
+[4096x32] packed: 5s (total 0.2 min)
+[4096x64] packed: 7s (total 0.3 min)
+[4096x128] packed: 3s (total 0.4 min)
+[8192x8] packed: 3s (total 0.4 min)
+[8192x16] packed: 3s (total 0.5 min)
+[8192x32] packed: 3s (total 0.5 min)
+[8192x64] packed: 3s (total 0.6 min)
+[8192x128] packed: 3s (total 0.6 min)
+[16384x8] packed: 3s (total 0.7 min)
+[16384x16] packed: 3s (total 0.7 min)
+[16384x32] packed: 3s (total 0.7 min)
+[16384x64] packed: 3s (total 0.8 min)
+[16384x128] packed: 3s (total 0.8 min)
+[32768x8] packed: 3s (total 0.9 min)
+[32768x16] packed: 3s (total 0.9 min)
+[32768x32] packed: 3s (total 1.0 min)
+[32768x64] packed: 3s (total 1.0 min)
+[32768x128] packed: 3s (total 1.1 min)
+[512x512] packed: 3s (total 1.1 min)
+[512x4096] packed: 500s (total 8.3 min)
+    skipped BLOCK_E=16,num_warps=1: size cap: 65536 tile elements per warp > 32768
+    skipped BLOCK_E=16,num_warps=2: compile timeout (>120s)
+    skipped BLOCK_E=32,num_warps=1: size cap: 131072 tile elements per warp > 32768
+    skipped BLOCK_E=32,num_warps=2: size cap: 65536 tile elements per warp > 32768
+    skipped BLOCK_E=32,num_warps=4: compile timeout (>120s)
+done; subprocess failures: none

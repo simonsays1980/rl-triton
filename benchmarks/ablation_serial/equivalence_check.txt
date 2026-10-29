@@ -1,0 +1,80 @@
+E=16384 T=128 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 2.86e-06  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 3.99e-06   tree vs fp64: 2.80e-06  scan vs fp64: 2.21e-06
+  serial vs tree      : max 3.81e-06  bit-identical: False
+  serial vs scan      : max 3.81e-06  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=512 T=4096 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 3.34e-06  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 5.66e-06   tree vs fp64: 2.80e-06  scan vs fp64: 2.21e-06
+  serial vs tree      : max 5.72e-06  bit-identical: False
+  serial vs scan      : max 5.72e-06  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=32768 T=8 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 1.43e-06  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 1.65e-06   tree vs fp64: 1.19e-06  scan vs fp64: 1.20e-06
+  serial vs tree      : max 1.43e-06  bit-identical: False
+  serial vs scan      : max 1.91e-06  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=100 T=40 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 1.67e-06  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 1.49e-06   tree vs fp64: 1.21e-06  scan vs fp64: 1.34e-06
+  serial vs tree      : max 1.43e-06  bit-identical: False
+  serial vs scan      : max 1.91e-06  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=1 T=8 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 2.38e-07  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 4.51e-07   tree vs fp64: 4.51e-07  scan vs fp64: 4.51e-07
+  serial vs tree      : max 2.38e-07  bit-identical: False
+  serial vs scan      : max 2.38e-07  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=3 T=1 p_term=0.05 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 0.00e+00  bit-identical to fp32 ref: True
+  serial vs fp64 ref  : max 1.28e-07   tree vs fp64: 1.28e-07  scan vs fp64: 1.28e-07
+  serial vs tree      : max 0.00e+00  bit-identical: True
+  serial vs scan      : max 0.00e+00  bit-identical: True
+  serial configs agree bitwise with each other: True  (2 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=1024 T=256 p_term=0.0 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 3.81e-06  bit-identical to fp32 ref: False
+  serial vs fp64 ref  : max 4.76e-06   tree vs fp64: 2.06e-06  scan vs fp64: 2.27e-06
+  serial vs tree      : max 4.77e-06  bit-identical: False
+  serial vs scan      : max 4.29e-06  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=1024 T=256 p_term=1.0 gamma=0.99 lam=0.95
+  serial vs fp32 ref  : max 0.00e+00  bit-identical to fp32 ref: True
+  serial vs fp64 ref  : max 2.38e-07   tree vs fp64: 2.38e-07  scan vs fp64: 2.38e-07
+  serial vs tree      : max 0.00e+00  bit-identical: True
+  serial vs scan      : max 0.00e+00  bit-identical: True
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=1024 T=256 p_term=0.05 gamma=1.0 lam=1.0
+  serial vs fp32 ref  : max 0.00e+00  bit-identical to fp32 ref: True
+  serial vs fp64 ref  : max 1.08e-05   tree vs fp64: 4.16e-06  scan vs fp64: 3.84e-06
+  serial vs tree      : max 1.14e-05  bit-identical: False
+  serial vs scan      : max 1.34e-05  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True
+E=1024 T=256 p_term=0.05 gamma=0.999 lam=0.0
+  serial vs fp32 ref  : max 0.00e+00  bit-identical to fp32 ref: True
+  serial vs fp64 ref  : max 6.00e-07   tree vs fp64: 6.00e-07  scan vs fp64: 5.00e-07
+  serial vs tree      : max 0.00e+00  bit-identical: True
+  serial vs scan      : max 9.54e-07  bit-identical: False
+  serial configs agree bitwise with each other: True  (8 variants)
+  tree == compute_gae bitwise: True
+  ALL within 1e-4 of reference: True

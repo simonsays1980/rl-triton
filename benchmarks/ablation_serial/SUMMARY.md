@@ -68,6 +68,22 @@ The chosen configs are in `results.csv` under `best_config`. UNROLL=8 wins at mo
 - **Excluded configs:** 720 of 7680 serial sweep configs, all `NUM_STAGES=3`, all of them
   Triton 3.0 software-pipeliner *compile* failures (`arith.select` layout mismatch). No config
   compiled and then produced wrong numbers. No shape was excluded.
+- **Direct cross-kernel check** (`check_equivalence.py`, output in `equivalence_check.txt`).
+  Serial kernels are compared directly against the tree kernel, the compiled scan and
+  `compute_gae`, plus fp32 and fp64 sequential references. The 10 cases are 16384×128,
+  512×4096, 32768×8, 100×40 (T not a power of 2, E not a multiple of BLOCK_E), 1×8, 3×1,
+  0% and 100% terminations, γ=λ=1, and λ=0.
+  - Serial vs. tree: max difference 1.4e-6 to 5.7e-6 (1.1e-5 at γ=λ=1).
+  - Serial vs. scan: max difference 1.9e-6 to 5.7e-6 (1.3e-5 at γ=λ=1).
+  - All kernels are within 1e-4 of the reference in all 10 cases.
+  - **Not bit-identical**, which is expected because the summation order differs. Outputs are
+    bit-identical only where nothing accumulates (T=1, all terminated, λ=0).
+  - All serial variants (both layouts, 4 configs each) are bit-identical to each other. The tree
+    wrapper is bit-identical to `compute_gae`.
+  - Against fp64, the serial kernels' error grows faster with T than the tree's (5.7e-6 vs.
+    2.8e-6 at T=4096): T sequential roundings vs. about log T. Both are far inside the 1e-4
+    tolerance.
+  - T must be a multiple of UNROLL (asserted, not handled). All benchmarked T are powers of two.
 
 ## Timing protocol (Step 3)
 
@@ -202,4 +218,6 @@ protocol above. Outputs are in `resip_gapfill.csv` and `resip_gapfill_log.txt`.
 | `e2e_gapfill.csv`, `e2e_gapfill_log.txt` | Step 4 PPO E2E, 9 reruns × 2 arms |
 | `resip_gapfill.csv`, `resip_gapfill_log.txt` | Step 4 ResiP learner benchmark |
 | `serial_gae.py`, `bench_worker.py`, `run_ablation.py`, `make_report.py`, `e2e_gapfill.py` | code; rerun with `python benchmarks/ablation_serial/run_ablation.py && python benchmarks/ablation_serial/make_report.py` |
+| `check_equivalence.py`, `equivalence_check.txt` | direct serial vs. tree / scan / fp64 equivalence check, incl. edge cases |
+| `RESULTS_FOR_OPUS.md` | self-contained results brief |
 | `NOTES.md` | Step 0 paths and every deviation from the task spec |

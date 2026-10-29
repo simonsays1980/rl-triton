@@ -1,0 +1,27 @@
+rerun 1/9
+  triton  total 70.758ms  GAE 0.0296ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.843ms  GAE 0.0988ms share 0.140%  vs-triton 0.9986  non-GAE 0.9976
+rerun 2/9
+  triton  total 70.752ms  GAE 0.0296ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.781ms  GAE 0.0995ms share 0.141%  vs-triton 0.9974  non-GAE 0.9963
+rerun 3/9
+  triton  total 70.703ms  GAE 0.0293ms share 0.041%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.878ms  GAE 0.0996ms share 0.141%  vs-triton 1.0036  non-GAE 1.0025
+rerun 4/9
+  triton  total 70.699ms  GAE 0.0293ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.855ms  GAE 0.0996ms share 0.141%  vs-triton 1.0056  non-GAE 1.0046
+rerun 5/9
+  triton  total 70.832ms  GAE 0.0297ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.892ms  GAE 0.0998ms share 0.141%  vs-triton 0.9999  non-GAE 0.9990
+rerun 6/9
+  triton  total 70.809ms  GAE 0.0296ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.869ms  GAE 0.0997ms share 0.141%  vs-triton 1.0008  non-GAE 0.9997
+rerun 7/9
+  triton  total 70.854ms  GAE 0.0297ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 71.070ms  GAE 0.0996ms share 0.140%  vs-triton 1.0047  non-GAE 1.0041
+rerun 8/9
+  triton  total 70.772ms  GAE 0.0296ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 70.914ms  GAE 0.0997ms share 0.141%  vs-triton 0.9977  non-GAE 0.9967
+rerun 9/9
+  triton  total 70.921ms  GAE 0.0296ms share 0.042%  vs-triton 1.0000  non-GAE 1.0000
+  scan    total 71.032ms  GAE 0.0994ms share 0.140%  vs-triton 1.0051  non-GAE 1.0041

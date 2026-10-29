@@ -1,0 +1,123 @@
+## invalid / excluded
+  serial sweep configs failing compile/correctness: 720/7680
+  serial_time BLOCK_E=128,num_warps=8,UNROLL=1,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=128,num_warps=8,UNROLL=2,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=128,num_warps=8,UNROLL=4,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=128,num_warps=8,UNROLL=8,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=2,UNROLL=1,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=2,UNROLL=2,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=2,UNROLL=4,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=2,UNROLL=8,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=4,UNROLL=1,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=4,UNROLL=2,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=4,UNROLL=4,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=4,UNROLL=8,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=8,UNROLL=1,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=8,UNROLL=2,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=8,UNROLL=4,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=32,num_warps=8,UNROLL=8,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=64,num_warps=4,UNROLL=1,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=64,num_warps=4,UNROLL=2,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=64,num_warps=4,UNROLL=4,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=64,num_warps=4,UNROLL=8,NUM_STAGES=3 (RuntimeError); serial_time BLOCK_E=64,num_warps=8,U
+
+## tree speedup over serial (fullcall_ms): ratio = serial / tree
+  serial_env             max 11.82x @ 512x4096  min 0.70x @ 32768x8  serial/baseline wins at 5/30: 4096x16 (0.97x), 16384x8 (0.86x), 16384x16 (0.91x), 32768x8 (0.70x), 32768x16 (0.72x)
+  serial_time            max 6.74x @ 512x4096  min 0.67x @ 32768x16  serial/baseline wins at 9/30: 4096x64 (0.99x), 16384x8 (0.97x), 16384x16 (0.92x), 16384x32 (0.90x), 16384x64 (0.92x), 32768x8 (0.69x), 32768x16 (0.67x), 32768x32 (0.76x), 32768x64 (0.73x)
+  serial_env_naive       max 21.61x @ 512x4096  min 0.67x @ 32768x8  serial/baseline wins at 6/30: 4096x16 (0.97x), 4096x32 (0.99x), 16384x8 (0.88x), 16384x16 (0.90x), 32768x8 (0.67x), 32768x16 (0.74x)
+  serial_time_naive      max 35.40x @ 512x4096  min 0.67x @ 32768x16  serial/baseline wins at 7/30: 16384x8 (0.99x), 16384x16 (0.91x), 16384x32 (0.93x), 32768x8 (0.72x), 32768x16 (0.67x), 32768x32 (0.69x), 32768x64 (0.96x)
+  serial_time+transpose  max 8.13x @ 512x4096  min 1.33x @ 32768x32  serial/baseline wins at 0/30: none
+  scan                   max 5.66x @ 4096x2048  min 1.37x @ 32768x16  serial/baseline wins at 0/30: none
+  crossovers serial_env:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:2.87
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:4.39
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:4.79
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:1.47, 512:2.79, 2048:7.73, 4096:11.82
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: between T=8 (1.06x) and T=16 (0.97x), interp. T~12 [tree->serial wins above]; between T=16 (0.97x) and T=32 (1.00x), interp. T~30 [serial->tree wins above]
+      ratios: 8:1.06, 16:0.97, 32:1.00, 64:1.12, 128:1.40, 512:2.54, 2048:3.23
+    num_envs=8192   T=[8, 16, 32, 64, 128]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.06, 16:1.16, 32:1.17, 64:1.33, 128:1.71
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: between T=16 (0.91x) and T=32 (1.07x), interp. T~24 [serial->tree wins above]
+      ratios: 8:0.86, 16:0.91, 32:1.07, 64:1.39, 128:2.09, 512:2.81
+    num_envs=32768  T=[8, 16, 32, 64, 128]: between T=16 (0.72x) and T=32 (1.04x), interp. T~29 [serial->tree wins above]
+      ratios: 8:0.70, 16:0.72, 32:1.04, 64:1.63, 128:2.60
+  crossovers serial_time:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:1.91
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:2.58
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:2.73
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:1.14, 512:1.80, 2048:4.16, 4096:6.74
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: between T=32 (1.06x) and T=64 (0.99x), interp. T~58 [tree->serial wins above]; between T=64 (0.99x) and T=128 (1.15x), interp. T~67 [serial->tree wins above]
+      ratios: 8:1.10, 16:1.00, 32:1.06, 64:0.99, 128:1.15, 512:1.90, 2048:1.96
+    num_envs=8192   T=[8, 16, 32, 64, 128]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.02, 16:1.10, 32:1.03, 64:1.01, 128:1.09
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: between T=64 (0.92x) and T=128 (1.01x), interp. T~117 [serial->tree wins above]
+      ratios: 8:0.97, 16:0.92, 32:0.90, 64:0.92, 128:1.01, 512:1.11
+    num_envs=32768  T=[8, 16, 32, 64, 128]: between T=64 (0.73x) and T=128 (1.07x), interp. T~114 [serial->tree wins above]
+      ratios: 8:0.69, 16:0.67, 32:0.76, 64:0.73, 128:1.07
+  crossovers serial_time+transpose:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:3.23
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:3.89
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:4.16
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:2.32, 512:3.12, 2048:6.35, 4096:8.13
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: no crossover in range (tree wins everywhere)
+      ratios: 8:2.18, 16:2.12, 32:2.04, 64:2.06, 128:2.33, 512:3.55, 2048:4.86
+    num_envs=8192   T=[8, 16, 32, 64, 128]: no crossover in range (tree wins everywhere)
+      ratios: 8:2.19, 16:2.30, 32:2.08, 64:2.07, 128:2.24
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.94, 16:1.83, 32:1.81, 64:1.81, 128:2.70, 512:4.19
+    num_envs=32768  T=[8, 16, 32, 64, 128]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.46, 16:1.34, 32:1.33, 64:2.01, 128:3.40
+
+## tree speedup over serial (device_ms): ratio = serial / tree
+  serial_env             max 51.59x @ 128x1024  min 0.13x @ 32768x8  serial/baseline wins at 8/30: 4096x8 (0.43x), 4096x16 (0.60x), 8192x8 (0.27x), 8192x16 (0.47x), 16384x8 (0.19x), 16384x16 (0.36x), 32768x8 (0.13x), 32768x16 (0.34x)
+  serial_time            max 25.32x @ 128x1024  min 0.09x @ 32768x8  serial/baseline wins at 16/30: 4096x8 (0.40x), 4096x16 (0.55x), 4096x32 (0.80x), 8192x8 (0.25x), 8192x16 (0.33x), 8192x32 (0.49x), 8192x64 (0.77x), 16384x8 (0.15x), 16384x16 (0.20x), 16384x32 (0.29x), 16384x64 (0.45x), 16384x128 (0.80x), 32768x8 (0.09x), 32768x16 (0.13x), 32768x32 (0.19x), 32768x64 (0.32x)
+  serial_env_naive       max 88.90x @ 128x1024  min 0.19x @ 32768x8  serial/baseline wins at 8/30: 4096x8 (0.48x), 4096x16 (0.78x), 8192x8 (0.34x), 8192x16 (0.55x), 16384x8 (0.23x), 16384x16 (0.51x), 32768x8 (0.19x), 32768x16 (0.40x)
+  serial_time_naive      max 93.85x @ 128x1024  min 0.13x @ 32768x8  serial/baseline wins at 10/30: 4096x8 (0.71x), 8192x8 (0.43x), 8192x16 (0.67x), 16384x8 (0.25x), 16384x16 (0.38x), 16384x32 (0.64x), 32768x8 (0.13x), 32768x16 (0.21x), 32768x32 (0.35x), 32768x64 (0.78x)
+  serial_time+transpose  max 31.92x @ 128x1024  min 0.42x @ 32768x8  serial/baseline wins at 4/30: 16384x8 (0.66x), 16384x16 (0.90x), 32768x8 (0.42x), 32768x16 (0.63x)
+  scan                   max 9.22x @ 4096x512  min 0.30x @ 32768x8  serial/baseline wins at 6/30: 8192x8 (0.68x), 8192x16 (0.90x), 16384x8 (0.44x), 16384x16 (0.58x), 32768x8 (0.30x), 32768x16 (0.45x)
+  crossovers serial_env:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:33.04
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:51.59
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:40.07
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:8.20, 512:21.69, 2048:27.42, 4096:25.08
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: between T=16 (0.60x) and T=32 (1.31x), interp. T~25 [serial->tree wins above]
+      ratios: 8:0.43, 16:0.60, 32:1.31, 64:2.00, 128:3.39, 512:5.91, 2048:3.89
+    num_envs=8192   T=[8, 16, 32, 64, 128]: between T=16 (0.47x) and T=32 (1.15x), interp. T~29 [serial->tree wins above]
+      ratios: 8:0.27, 16:0.47, 32:1.15, 64:2.05, 128:3.80
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: between T=16 (0.36x) and T=32 (1.08x), interp. T~31 [serial->tree wins above]
+      ratios: 8:0.19, 16:0.36, 32:1.08, 64:1.95, 128:3.66, 512:3.53
+    num_envs=32768  T=[8, 16, 32, 64, 128]: between T=16 (0.34x) and T=32 (1.05x), interp. T~31 [serial->tree wins above]
+      ratios: 8:0.13, 16:0.34, 32:1.05, 64:2.02, 128:3.78
+  crossovers serial_time:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:16.43
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:25.32
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:19.70
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:4.26, 512:10.70, 2048:13.48, 4096:13.69
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: between T=32 (0.80x) and T=64 (1.05x), interp. T~57 [serial->tree wins above]
+      ratios: 8:0.40, 16:0.55, 32:0.80, 64:1.05, 128:2.00, 512:3.39, 2048:2.23
+    num_envs=8192   T=[8, 16, 32, 64, 128]: between T=64 (0.77x) and T=128 (1.10x), interp. T~106 [serial->tree wins above]
+      ratios: 8:0.25, 16:0.33, 32:0.49, 64:0.77, 128:1.10
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: between T=128 (0.80x) and T=512 (1.13x), interp. T~313 [serial->tree wins above]
+      ratios: 8:0.15, 16:0.20, 32:0.29, 64:0.45, 128:0.80, 512:1.13
+    num_envs=32768  T=[8, 16, 32, 64, 128]: between T=64 (0.32x) and T=128 (1.02x), interp. T~126 [serial->tree wins above]
+      ratios: 8:0.09, 16:0.13, 32:0.19, 64:0.32, 128:1.02
+  crossovers serial_time+transpose:
+    num_envs=64     T=[512]: no crossover in range (tree wins everywhere)
+      ratios: 512:21.36
+    num_envs=128    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:31.92
+    num_envs=256    T=[1024]: no crossover in range (tree wins everywhere)
+      ratios: 1024:26.60
+    num_envs=512    T=[128, 512, 2048, 4096]: no crossover in range (tree wins everywhere)
+      ratios: 128:8.29, 512:16.69, 2048:21.98, 4096:17.26
+    num_envs=4096   T=[8, 16, 32, 64, 128, 512, 2048]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.71, 16:2.04, 32:2.81, 64:4.02, 128:6.28, 512:10.27, 2048:6.17
+    num_envs=8192   T=[8, 16, 32, 64, 128]: no crossover in range (tree wins everywhere)
+      ratios: 8:1.10, 16:1.35, 32:2.30, 64:3.68, 128:6.03
+    num_envs=16384  T=[8, 16, 32, 64, 128, 512]: between T=16 (0.90x) and T=32 (1.85x), interp. T~18 [serial->tree wins above]
+      ratios: 8:0.66, 16:0.90, 32:1.85, 64:3.28, 128:5.84, 512:5.66
+    num_envs=32768  T=[8, 16, 32, 64, 128]: between T=16 (0.63x) and T=32 (1.57x), interp. T~23 [serial->tree wins above]
+      ratios: 8:0.42, 16:0.63, 32:1.57, 64:3.12, 128:5.51
+
+wrote results.csv, sweep_serial.csv, fig_tree_vs_serial{,_device}.pdf/.png

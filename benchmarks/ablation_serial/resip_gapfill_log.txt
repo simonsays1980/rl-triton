@@ -1,0 +1,14 @@
+GPU: NVIDIA H100 80GB HBM3  torch: 2.4.1+cu124
+ResiP-inspired learner-side PPO benchmark. num_envs=1024, gamma=0.999, lambda=0.95, action_dim=10, obs_dim=16, n_minibatches=1, arms=['triton', 'scan']
+This is a LEARNER-SIDE benchmark: no simulator, no base-policy inference, synthetic rollout tensors. See module docstring for full scoping.
+
+=== T=700 epochs=50 mb=1 recompute=every_epoch ===
+  [gate] correctness vs triton, atol=1e-4 rtol=1e-4:
+         scan         PASS  max_abs=3.576e-07  max_rel=5.456e-02
+  triton     total   1006.153ms (win-trial IQR 13.692, trial-spread 6.671)  GAE 0.9992ms (dev 0.6994)  critic_reeval 232.4299ms  refresh_total 233.4291ms  refresh_share 23.2002%  n_refreshes 50.0  share 0.0993%  vs-triton 1.0000x (win-trial IQR 0.0000, trial-spread 0.0000)  resid -1.403
+  scan       total   1009.929ms (win-trial IQR 13.362, trial-spread 5.344)  GAE 2.9764ms (dev 2.6763)  critic_reeval 232.5145ms  refresh_total 235.4909ms  refresh_share 23.3176%  n_refreshes 50.0  share 0.2947%  vs-triton 1.0025x (win-trial IQR 0.0097, trial-spread 0.0025)  resid -1.396
+
+Wrote /tmp/claude-0/-rl-triton/f172fd13-3060-412c-940c-a8c867239a4a/scratchpad/resip_run/resip_ppo_e2e-2026-10-29.json
+Wrote /tmp/claude-0/-rl-triton/f172fd13-3060-412c-940c-a8c867239a4a/scratchpad/resip_run/resip_ppo_e2e-2026-10-29.csv
+
+NOTE: raw output files are gitignored (paper-specific dated output, matching this repo's convention for ppo_e2e_measurement.py -- see benchmarks/README.md). The script itself is the tracked artifact.

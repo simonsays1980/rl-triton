@@ -1,0 +1,19 @@
+{
+  "shape": [
+    4096,
+    128
+  ],
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "recorded_benchmarks_md_v0.1.3": {
+    "loop_ms": 10.312,
+    "triton_ms": 0.033,
+    "speedup": 316.9
+  },
+  "loop_bench_cpu_same_session_ms": 9.122843492183495,
+  "loop_synchronized_events_ms": 7.051616191864014,
+  "compute_gae_fullcall_ms": 0.02956799976527691,
+  "speedup_synchronized_loop_over_compute_gae": 238.48810362022047,
+  "speedup_bench_cpu_loop_over_compute_gae": 308.5377287812644,
+  "synchronized_vs_recorded_loop": 0.6838262404833217,
+  "synchronized_vs_same_session_bench_cpu": 0.7729625305866399
+}

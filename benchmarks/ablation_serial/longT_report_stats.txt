@@ -1,0 +1,52 @@
+## not validated
+  serial sweep configs failing: 560/3072
+
+## absolute times (device / full-call, ms)
+  16x8192: tree 0.0089/0.0276 | serial_env 0.3922/0.4129 | serial_time 0.3537/0.3746 | scan 0.0133/0.0897 | loop 85.7109/460.8531
+  16x16384: tree 0.0171/0.0375 | serial_env 0.7843/0.8057 | serial_time 0.7073/0.7278 | scan 0.0193/0.0953 | loop 171.3586/964.6479
+  16x32768: tree 0.1547/0.1746 | serial_env 1.5675/1.5898 | serial_time 1.4144/1.4369 | scan 0.0269/0.1018 | loop -
+  16x65536: tree 0.3872/0.4071 | serial_env 3.1349/3.1572 | serial_time 2.8341/2.8566 | scan 0.0544/0.1061 | loop -
+  64x8192: tree 0.0090/0.0288 | serial_env 0.3921/0.4139 | serial_time 0.3615/0.3827 | scan 0.0247/0.0956 | loop 83.6955/474.5248
+  64x16384: tree 0.0178/0.0369 | serial_env 0.7840/0.8060 | serial_time 0.7234/0.7444 | scan 0.0507/0.0995 | loop 168.1650/978.5908
+  64x32768: tree 0.2272/0.2462 | serial_env 1.6963/1.7197 | serial_time 1.7050/1.7266 | scan 0.1033/0.1403 | loop -
+  64x65536: tree 0.6595/0.6819 | serial_env 3.5422/3.5632 | serial_time 3.4727/3.4950 | scan 0.2647/0.3025 | loop -
+  256x8192: tree 0.0194/0.0422 | serial_env 0.4328/0.4544 | serial_time 0.4308/0.4513 | scan 0.0993/0.1342 | loop 98.9646/495.7914
+  256x16384: tree 0.0522/0.0720 | serial_env 0.8904/0.9124 | serial_time 0.8733/0.8942 | scan 0.2413/0.2781 | loop 198.9458/970.0040
+  256x32768: tree 1.0569/1.0770 | serial_env 1.7823/1.8037 | serial_time 1.7332/1.7540 | scan 0.4704/0.5073 | loop -
+  256x65536: tree 2.7667/2.7876 | serial_env 3.5656/3.5916 | serial_time 3.4644/3.4857 | scan 1.0067/1.0467 | loop -
+
+## tree speedup (fullcall_ms) = other / tree
+  serial_env             E=16   T8192:14.93, T16384:21.47, T32768:9.11, T65536:7.76  | crossover: none in range
+  serial_env             E=64   T8192:14.39, T16384:21.86, T32768:6.99, T65536:5.23  | crossover: none in range
+  serial_env             E=256  T8192:10.77, T16384:12.67, T32768:1.67, T65536:1.29  | crossover: none in range
+  serial_time            E=16   T8192:13.55, T16384:19.39, T32768:8.23, T65536:7.02  | crossover: none in range
+  serial_time            E=64   T8192:13.30, T16384:20.19, T32768:7.01, T65536:5.13  | crossover: none in range
+  serial_time            E=256  T8192:10.70, T16384:12.41, T32768:1.63, T65536:1.25  | crossover: none in range
+  serial_time+transpose  E=16   T8192:16.21, T16384:22.57, T32768:9.46, T65536:7.88  | crossover: none in range
+  serial_time+transpose  E=64   T8192:15.96, T16384:23.81, T32768:7.18, T65536:5.20  | crossover: none in range
+  serial_time+transpose  E=256  T8192:11.90, T16384:13.72, T32768:1.81, T65536:1.40  | crossover: none in range
+  scan                   E=16   T8192:3.24, T16384:2.54, T32768:0.58, T65536:0.26  | crossover: between T=16384 (2.54x) and T=32768 (0.58x), interp. T~25415 [tree->serial wins above]
+  scan                   E=64   T8192:3.32, T16384:2.70, T32768:0.57, T65536:0.44  | crossover: between T=16384 (2.70x) and T=32768 (0.57x), interp. T~25503 [tree->serial wins above]
+  scan                   E=256  T8192:3.18, T16384:3.86, T32768:0.47, T65536:0.38  | crossover: between T=16384 (3.86x) and T=32768 (0.47x), interp. T~25570 [tree->serial wins above]
+  loop                   E=16   T8192:16668.59, T16384:25699.27  | crossover: none in range
+  loop                   E=64   T8192:16494.88, T16384:26545.97  | crossover: none in range
+  loop                   E=256  T8192:11755.30, T16384:13466.29  | crossover: none in range
+
+## tree speedup (device_ms) = other / tree
+  serial_env             E=16   T8192:44.17, T16384:45.75, T32768:10.13, T65536:8.10  | crossover: none in range
+  serial_env             E=64   T8192:43.35, T16384:44.04, T32768:7.47, T65536:5.37  | crossover: none in range
+  serial_env             E=256  T8192:22.26, T16384:17.04, T32768:1.69, T65536:1.29  | crossover: none in range
+  serial_time            E=16   T8192:39.84, T16384:41.25, T32768:9.14, T65536:7.32  | crossover: none in range
+  serial_time            E=64   T8192:39.97, T16384:40.64, T32768:7.51, T65536:5.27  | crossover: none in range
+  serial_time            E=256  T8192:22.16, T16384:16.72, T32768:1.64, T65536:1.25  | crossover: none in range
+  serial_time+transpose  E=16   T8192:45.68, T16384:46.89, T32768:10.39, T65536:8.18  | crossover: none in range
+  serial_time+transpose  E=64   T8192:46.57, T16384:47.41, T32768:7.71, T65536:5.35  | crossover: none in range
+  serial_time+transpose  E=256  T8192:25.08, T16384:18.64, T32768:1.83, T65536:1.40  | crossover: none in range
+  scan                   E=16   T8192:1.50, T16384:1.12, T32768:0.17, T65536:0.14  | crossover: between T=16384 (1.12x) and T=32768 (0.17x), interp. T~17116 [tree->serial wins above]
+  scan                   E=64   T8192:2.73, T16384:2.85, T32768:0.45, T65536:0.40  | crossover: between T=16384 (2.85x) and T=32768 (0.45x), interp. T~24334 [tree->serial wins above]
+  scan                   E=256  T8192:5.11, T16384:4.62, T32768:0.45, T65536:0.36  | crossover: between T=16384 (4.62x) and T=32768 (0.45x), interp. T~25781 [tree->serial wins above]
+  loop                   E=16   T8192:9653.54, T16384:9995.16  | crossover: none in range
+  loop                   E=64   T8192:9253.24, T16384:9446.03  | crossover: none in range
+  loop                   E=256  T8192:5089.80, T16384:3808.01  | crossover: none in range
+
+wrote longT_results.csv, longT_sweep_serial.csv, fig_longT.pdf/.png

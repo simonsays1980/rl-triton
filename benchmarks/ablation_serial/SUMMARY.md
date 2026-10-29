@@ -381,6 +381,121 @@ Files: `task4_loop_sync.py`, `task4_loop_sync.json`, `task4_diag.py`, `task4_dia
 - Consequence: the recorded 316.9× loop speedup is **overstated relative to a synchronized
   measurement**. The synchronized figure is 238.5×.
 
+## Follow-up results (third session, 2026-10-29)
+
+### Task A: warp re-tuning of the shipped tree kernel at long T
+
+**Method.**
+- The shipped `gae_fused_kernel` is launched directly, exactly as the library dispatch does:
+  `BLOCK_SIZE=next_pow2(T)`, `num_stages=2`, plain path with bootstrap. The only change is an
+  explicit `num_warps ∈ {4, 8, 16, 32}`; `_WARPS` is not edited (`warp_worker.py`).
+- The shipped value is `_WARPS.get(next_pow2(T), 16)`: 32 warps at T=16384, and 16 warps at
+  T ≥ 32768, which falls back to the default because the table has no entry above 16384.
+- One subprocess per shape; each config is compiled in a child process with a 120 s timeout.
+- Every config is gated against the reference (atol=rtol=1e-4). **All 36 configs passed and none
+  were skipped** (max abs err ≤ 1e-5).
+- Best config = lowest full-call. Ratios use the compiled-scan, S_env and S_time rows of
+  `longT_results.csv` (Task 2). A ratio < 1 means the tree is faster.
+- The whole sweep was repeated in a second process (`warp_raw_repeat.jsonl`).
+  - Device times agree within 1% for every config.
+  - Full-call times agree within 6% at T ≥ 32768.
+  - At T=16384, full-call jitters between 0.036 and 0.070 ms on device times of only
+    0.013–0.017 ms. The full-call winner there is noise: it flips between 8 and 32 warps at
+    E=16. The device-time winner at T=16384 is 16 warps at every E.
+- The shipped rows reproduce the Task 2 tree device times within 2% (e.g., 0.158 vs 0.155 ms at
+  16×32768).
+
+Times are in ms, full-call / device; ratio columns show full-call (device).
+
+| E × T | shipped warps | shipped | best warps | best re-tuned | gain (full) | tree / scan | tree / S_env | tree / S_time |
+|---|---|---|---|---|---|---|---|---|
+| 16 × 16384 | 32 | 0.0684 / 0.0173 | 8 | 0.0362 / 0.0146 | 1.89× | 0.34 (0.75) | 0.045 (0.019) | 0.050 (0.021) |
+| 64 × 16384 | 32 | 0.0755 / 0.0178 | 8 | 0.0483 / 0.0154 | 1.56× | 0.49 (0.30) | 0.060 (0.020) | 0.065 (0.021) |
+| 256 × 16384 | 32 | 0.0788 / 0.0524 | 16 | 0.0756 / 0.0428 | 1.04× | 0.27 (0.18) | 0.083 (0.048) | 0.085 (0.049) |
+| 16 × 32768 | 16 | 0.1871 / 0.1578 | 32 | 0.0765 / 0.0461 | 2.45× | 0.75 (1.71) | 0.048 (0.029) | 0.053 (0.033) |
+| 64 × 32768 | 16 | 0.2543 / 0.2288 | 32 | 0.1068 / 0.0648 | 2.38× | 0.76 (0.63) | 0.062 (0.038) | 0.062 (0.038) |
+| 256 × 32768 | 16 | 1.0787 / 1.0551 | 32 | 0.2221 / 0.1899 | 4.86× | 0.44 (0.40) | 0.123 (0.107) | 0.127 (0.110) |
+| 16 × 65536 | 16 | 0.4140 / 0.3921 | 32 | 0.2410 / 0.2192 | 1.72× | 2.27 (4.03) | 0.076 (0.070) | 0.084 (0.077) |
+| 64 × 65536 | 16 | 0.6876 / 0.6655 | 32 | 0.4001 / 0.3711 | 1.72× | 1.32 (1.40) | 0.112 (0.105) | 0.114 (0.107) |
+| 256 × 65536 | 16 | 2.7940 / 2.7725 | 32 | 1.6179 / 1.5975 | 1.73× | 1.55 (1.59) | 0.450 (0.448) | 0.464 (0.461) |
+
+**Does re-tuning remove the T=32768 slowdown? Largely, but not completely.**
+- 32 warps wins every shape at T ≥ 32768. At T=32768 it is 2.4–4.9× faster than the shipped 16 warps (1.7× at T=65536).
+- Going from T=16384 to T=32768 (device time, best config at each T), the cost now grows
+  3.5× / 4.7× / 4.4× at E = 16 / 64 / 256. With the shipped table it grew 9.1× / 12.9× / 20×.
+- That is still more than the 2× that doubling T alone would explain. A smaller cliff remains,
+  which a `num_warps` override cannot remove: 32 warps is the hardware maximum of 1024 threads.
+- The likely cause is per-thread register pressure (32 elements per thread per tensor at
+  T=32768). That is inferred: no ptxas or spill statistics were collected.
+
+**Does the tree beat the compiled scan again at T ≥ 32768? At T=32768 yes; at T=65536 no.**
+- **T=32768:**
+  - Full-call: the re-tuned tree beats the scan at all three E (0.44–0.76× the scan's time).
+  - Device time: it beats the scan at E=64 and E=256 (0.63×, 0.40×), but not at E=16 (1.71×).
+    At E=16 the scan's full-call (0.10 ms) is dominated by launch overhead.
+- **T=65536:** the scan stays faster at every E, by 1.3–2.3× full-call and 1.4–4.0× device.
+- **Against S_env and S_time:** the re-tuned tree is faster at every shape, by 2.2–22× full-call.
+
+Files: `warp_worker.py`, `warp_run.py`, `warp_report.py`, `warp_raw.jsonl`,
+`warp_raw_repeat.jsonl`, `warp_run_log.txt`, `warp_run_repeat_log.txt`, `warp_retune.csv`.
+
+### Task B: synchronized loop re-measurement
+
+**Method.**
+- Same as Task 4: CUDA events with `torch.cuda.synchronize()` before the start event and after
+  the end event of every call; 20 warmup, 5 × 50, min of trial medians.
+- One subprocess per job (`loop_sync_worker.py`). Each loop is the exact function, inputs and
+  arguments `tests/bench_release.py` passes to `_bench_cpu` for the "loop gpu" column:
+  - `_ref_gae`, `_ref_vtrace`, `_ref_retrace`, `_ref_lambda`, `_ref_disc`, `_ref_traces`;
+  - `reference_episodic_prefix_sum` for the prefix sum;
+  - inputs from the `_make_*` helpers (seed 0).
+- Each loop output was first gated (atol=rtol=1e-4) against the shipped library op on the same
+  inputs. **All 9 passed** (max abs err ≤ 1e-5).
+- The same-session `_bench_cpu` (release method) value was also recorded.
+- **Tree time source:** the "triton full-call (ms)" column of that algorithm's own table in
+  benchmarks.md, section "v0.1.3 – 2026-08-08 – NVIDIA H100 80GB HBM3" (exact line in the last
+  column). Every algorithm's table has a 4096×128 row, so the Production-regime table was not
+  needed.
+- **Speedups:**
+  - Recorded speedup = that row's "vs loop" column.
+  - Synced speedup = synchronized loop ÷ recorded tree full-call. The tree times have only
+    3-decimal precision (±1.5% at 0.033 ms).
+- The first run hit a bug in the worker's error-printing line: V-Trace returns a tuple. The
+  correctness gate itself had passed. The line was fixed and all 9 jobs were rerun together;
+  that rerun is what is reported.
+
+| algorithm | E × T | loop, synced (ms) | loop, `_bench_cpu` same session (ms) | loop, recorded (ms) | tree full-call, recorded (ms) | speedup synced | speedup recorded | synced / recorded | tree source |
+|---|---|---|---|---|---|---|---|---|---|
+| GAE | 4096 × 128 | 7.455 | 8.510 | 10.312 | 0.033 | 225.9× | 316.9× | 0.71 | benchmarks.md:328 (GAE) |
+| V-Trace | 4096 × 128 | 2.872 | 2.992 | 4.094 | 0.043 | 66.8× | 96.2× | 0.69 | benchmarks.md:362 (V-Trace) |
+| Retrace(λ) | 4096 × 128 | 2.653 | 2.880 | 3.908 | 0.054 | 49.1× | 72.2× | 0.68 | benchmarks.md:396 (Retrace) |
+| λ-returns | 4096 × 128 | 6.121 | 6.400 | 9.261 | 0.035 | 174.9× | 267.0× | 0.66 | benchmarks.md:430 (λ-returns) |
+| Discounted returns | 4096 × 128 | 4.197 | 4.510 | 5.662 | 0.034 | 123.4× | 167.4× | 0.74 | benchmarks.md:464 (Discounted) |
+| Eligibility traces | 4096 × 128 | 4.317 | 4.433 | 5.904 | 0.031 | 139.3× | 191.0× | 0.73 | benchmarks.md:498 (Eligibility traces) |
+| Episodic prefix sum | 4096 × 128 | 3.343 | 3.516 | 4.933 | 0.030 | 111.4× | 167.0× | 0.67 | benchmarks.md:515 (Episodic prefix sum) |
+| GAE | 64 × 512 | 30.059 | 31.797 | 45.968 | 0.031 | 969.7× | 1464.3× | 0.66 | benchmarks.md:321 (GAE) |
+| GAE | 512 × 4096 | 254.413 | 243.894 | 330.190 | 0.044 | 5782.1× | 7570.4× | 0.76 | benchmarks.md:325 (GAE) |
+
+**Findings.**
+- **Every recorded loop speedup is overstated relative to a synchronized measurement**, by a
+  consistent factor: the synced speedup is 0.66–0.76× the recorded one (all 9 rows). The
+  ordering of algorithms is unchanged.
+- **Most of the gap is not caused by synchronization.**
+  - In this session, the release method (`_bench_cpu`) gives 0.96–1.14× the synchronized time
+    (synced / `_bench_cpu` = 0.88–1.04). Both are well below the recorded values.
+  - So the loop, which is bound by Python and kernel-launch dispatch, simply ran faster in this
+    session than in the 2026-08-08 sweep.
+  - Task 4 saw a larger same-session gap at GAE 4096×128 (7.05 vs 9.12 ms). That number
+    differs between sessions too.
+- The cause of the session-to-session drift (host CPU state, driver, clocks) was not
+  investigated.
+- For the paper, the synchronized figures are the defensible ones. For example, GAE at
+  4096×128 is about 226× rather than 317×, and the 512×4096 headline is about 5.8k× rather
+  than 7.6k×.
+
+Files: `loop_sync_worker.py`, `loop_sync_run.py`, `loop_sync_report.py`, `loop_sync_raw.jsonl`,
+`loop_sync_run_log.txt`, `loop_sync.csv`.
+
 ## Files
 
 | file | contents |
@@ -398,4 +513,6 @@ Files: `task4_loop_sync.py`, `task4_loop_sync.json`, `task4_diag.py`, `task4_dia
 | `longT_*.py`, `longT_results.csv`, `longT_sweep_serial.csv`, `longT_raw.jsonl`, `longT_scan_rerun.jsonl`, `longT_report_stats.txt`, `fig_longT.pdf` | Task 2 long-T sweep |
 | `packed_gae.py`, `packed_*.py`, `packed_results.csv`, `packed_sweep.csv`, `packed_raw.jsonl`, `packed_report_stats.txt`, `fig_packed.pdf` | Task 3 packed tree kernel |
 | `task4_loop_sync.py`/`.json`, `task4_diag.py`/`.json` | Task 4 synchronized loop re-timing |
+| `warp_*.py`, `warp_raw.jsonl`, `warp_raw_repeat.jsonl`, `warp_run*_log.txt`, `warp_retune.csv` | Task A warp re-tuning |
+| `loop_sync_*.py`, `loop_sync_raw.jsonl`, `loop_sync_run_log.txt`, `loop_sync.csv` | Task B synchronized loop re-measurement |
 | `NOTES.md` | Step 0 paths and every deviation from the task spec, incl. follow-up skips |

@@ -1,0 +1,46 @@
+[16x16384] 18s (total 0.3 min)
+    nw=4  valid=True full 0.1771 dev 0.1572
+    nw=8  valid=True full 0.0362 dev 0.0146
+    nw=16 valid=True full 0.0435 dev 0.0133
+    nw=32 valid=True full 0.0684 dev 0.0173
+[64x16384] 13s (total 0.5 min)
+    nw=4  valid=True full 0.2935 dev 0.2743
+    nw=8  valid=True full 0.0483 dev 0.0154
+    nw=16 valid=True full 0.0673 dev 0.0138
+    nw=32 valid=True full 0.0755 dev 0.0178
+[256x16384] 13s (total 0.7 min)
+    nw=4  valid=True full 0.5506 dev 0.5305
+    nw=8  valid=True full 0.1012 dev 0.0545
+    nw=16 valid=True full 0.0756 dev 0.0428
+    nw=32 valid=True full 0.0788 dev 0.0524
+[16x32768] 28s (total 1.2 min)
+    nw=4  valid=True full 0.5002 dev 0.4803
+    nw=8  valid=True full 0.2672 dev 0.2385
+    nw=16 valid=True full 0.1871 dev 0.1578
+    nw=32 valid=True full 0.0765 dev 0.0461
+[64x32768] 14s (total 1.4 min)
+    nw=4  valid=True full 0.7736 dev 0.7541
+    nw=8  valid=True full 0.4050 dev 0.3822
+    nw=16 valid=True full 0.2543 dev 0.2288
+    nw=32 valid=True full 0.1068 dev 0.0648
+[256x32768] 16s (total 1.7 min)
+    nw=4  valid=True full 1.4574 dev 1.4370
+    nw=8  valid=True full 1.0920 dev 1.0681
+    nw=16 valid=True full 1.0787 dev 1.0551
+    nw=32 valid=True full 0.2221 dev 0.1899
+[16x65536] 101s (total 3.4 min)
+    nw=4  valid=True full 1.6202 dev 1.5979
+    nw=8  valid=True full 0.7356 dev 0.7127
+    nw=16 valid=True full 0.4140 dev 0.3921
+    nw=32 valid=True full 0.2410 dev 0.2192
+[64x65536] 18s (total 3.7 min)
+    nw=4  valid=True full 2.2834 dev 2.2627
+    nw=8  valid=True full 1.1446 dev 1.1218
+    nw=16 valid=True full 0.6876 dev 0.6655
+    nw=32 valid=True full 0.4001 dev 0.3711
+[256x65536] 22s (total 4.1 min)
+    nw=4  valid=True full 3.7647 dev 3.7442
+    nw=8  valid=True full 2.5940 dev 2.5716
+    nw=16 valid=True full 2.7940 dev 2.7725
+    nw=32 valid=True full 1.6179 dev 1.5975
+done
